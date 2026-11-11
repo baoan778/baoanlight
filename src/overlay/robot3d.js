@@ -1584,17 +1584,56 @@ if (host && renderer) {
   hatRidge.position.y = 0.17;
   hat.add(hatRidge);
 
-  // 头部装饰：无 / 天线 / 安全帽。一次只显示一个。
+  // ---- 皇冠：金色底圈 + 一圈尖角，戴在头顶像加冕一样 -------------------------
+  const crown = new THREE.Group();
+  crown.position.set(0, 0.46, 0.02);
+  head.add(crown);
+  const crownMat = new THREE.MeshStandardMaterial({ color: 0xf0c33c, roughness: 0.32, metalness: 0.75 });
+  const crownBand = mesh(new THREE.CylinderGeometry(0.28, 0.30, 0.11, 24), crownMat);
+  crownBand.position.y = 0.06;
+  crown.add(crownBand);
+  for (let k = 0; k < 6; k++) {
+    const a = (k / 6) * Math.PI * 2;
+    const spike = mesh(new THREE.ConeGeometry(0.034, 0.15, 6), crownMat);
+    spike.position.set(Math.cos(a) * 0.26, 0.18, Math.sin(a) * 0.26);
+    crown.add(spike);
+  }
+
+  // ---- 眼镜：一对圆框架在双筒镜筒外圈，中间鼻梁相连，像戴了副圆框眼镜 --------
+  const glasses = new THREE.Group();
+  glasses.position.set(0, 0.13, 0.235);
+  head.add(glasses);
+  const glassesMat = new THREE.MeshStandardMaterial({ color: 0x8a5a3a, roughness: 0.4, metalness: 0.35 });
+  for (const sx of [-1, 1]) {
+    const frame = mesh(new THREE.TorusGeometry(0.30, 0.022, 10, 36), glassesMat);
+    frame.position.set(sx * 0.285, 0, 0);
+    glasses.add(frame);
+  }
+  const glassesBridge = mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.10, 8), glassesMat);
+  glassesBridge.rotation.z = Math.PI / 2;
+  glassesBridge.position.set(0, 0.02, 0);
+  glasses.add(glassesBridge);
+  for (const sx of [-1, 1]) {
+    const leg = mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.30, 8), glassesMat);
+    leg.rotation.x = Math.PI / 2;
+    leg.position.set(sx * 0.50, 0.02, -0.14);
+    glasses.add(leg);
+  }
+
+  // 头部装饰：无 / 天线 / 安全帽 / 皇冠 / 眼镜。一次只显示一个。
+  const DECORATIONS = ['无', '天线', '安全帽', '皇冠', '眼镜'];
   let decoration = '无';
   function setDecoration(name) {
     decoration = name;
     antenna.visible = name === '天线';
     hat.visible = name === '安全帽';
+    crown.visible = name === '皇冠';
+    glasses.visible = name === '眼镜';
   }
   setDecoration('无');
   window.addEventListener('bao:decoration', (e) => {
     const name = e.detail && e.detail.decoration;
-    if (['无', '天线', '安全帽'].includes(name)) setDecoration(name);
+    if (DECORATIONS.includes(name)) setDecoration(name);
   });
 
   // The iris ring and the brow both carry expression, and both are shared
