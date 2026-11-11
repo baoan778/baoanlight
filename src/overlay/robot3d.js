@@ -1568,6 +1568,35 @@ if (host && renderer) {
   antennaBase.position.y = 0.02;
   antenna.add(antennaBase);
 
+  // ---- 安全帽：一个扁圆的黄色安全帽，带一圈深色帽檐 + 顶部一条加强筋 ---------
+  const hat = new THREE.Group();
+  hat.position.set(0, 0.50, 0.03);
+  head.add(hat);
+  const hatMat = new THREE.MeshStandardMaterial({ color: 0xf0c33c, roughness: 0.42, metalness: 0.15 });
+  const hatDome = mesh(new THREE.SphereGeometry(0.30, 26, 14, 0, Math.PI * 2, 0, Math.PI / 2), hatMat);
+  hatDome.scale.set(1, 0.62, 1);
+  hat.add(hatDome);
+  const hatBrim = mesh(new THREE.TorusGeometry(0.32, 0.030, 8, 36), M.metalDark);
+  hatBrim.rotation.x = Math.PI / 2;
+  hatBrim.position.y = 0.02;
+  hat.add(hatBrim);
+  const hatRidge = mesh(new THREE.BoxGeometry(0.05, 0.06, 0.58), M.metalDark);
+  hatRidge.position.y = 0.17;
+  hat.add(hatRidge);
+
+  // 头部装饰：无 / 天线 / 安全帽。一次只显示一个。
+  let decoration = '无';
+  function setDecoration(name) {
+    decoration = name;
+    antenna.visible = name === '天线';
+    hat.visible = name === '安全帽';
+  }
+  setDecoration('无');
+  window.addEventListener('bao:decoration', (e) => {
+    const name = e.detail && e.detail.decoration;
+    if (['无', '天线', '安全帽'].includes(name)) setDecoration(name);
+  });
+
   // The iris ring and the brow both carry expression, and both are shared
   // materials: two lenses, one colour, one update per frame.
   const eyeGlowMat = new THREE.MeshStandardMaterial({

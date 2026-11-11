@@ -42,6 +42,8 @@ const DEFAULTS = {
   // 广告牌颜色（描边/图标/辉光）与形状（圆角/胶囊/方正）。
   signColor: '#ffd54a',
   signShape: '圆角',
+  // 头部装饰：无 / 天线 / 安全帽。
+  decoration: '无',
   soundVolume: 0.22,
   sessionTtlMs: 6 * 60 * 60 * 1000,
   // A green session nobody has touched in this long is treated as gone.

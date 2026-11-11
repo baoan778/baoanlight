@@ -477,6 +477,10 @@
         <span>头形状</span>
         <select id="m-headtype"></select>
       </div>
+      <div class="row">
+        <span>头部装饰</span>
+        <select id="m-decoration"></select>
+      </div>
       <button id="m-reset-look">重置外观</button>
       <button id="m-random-look">随机换装</button>
     </details>
@@ -1612,13 +1616,26 @@
     if (inElectron) bridge.saveConfig({ armtype: e.target.value });
   });
 
-  // 头形状（双筒/单眼）。
+  // 头形状（双筒/单眼/三眼）。
   const HEADTYPE_NAMES = ['双筒', '单眼', '三眼'];
   const headtypeSel = document.getElementById('m-headtype');
   for (const n of HEADTYPE_NAMES) {
     const o = document.createElement('option');
     o.value = n; o.textContent = n; headtypeSel.appendChild(o);
   }
+
+  // 头部装饰（无/天线/安全帽）。
+  const DECORATION_NAMES = ['无', '天线', '安全帽'];
+  const decorationSel = document.getElementById('m-decoration');
+  for (const n of DECORATION_NAMES) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; decorationSel.appendChild(o);
+  }
+  decorationSel.value = '无';
+  decorationSel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:decoration', { detail: { decoration: e.target.value } }));
+    if (inElectron) bridge.saveConfig({ decoration: e.target.value });
+  });
   headtypeSel.addEventListener('change', (e) => {
     window.dispatchEvent(new CustomEvent('bao:headtype', { detail: { headtype: e.target.value } }));
     if (inElectron) bridge.saveConfig({ headtype: e.target.value });
@@ -1833,7 +1850,7 @@
       skin: skinSel, eyestyle: eyestyleSel, eyeshape: eyeshapeSel, trackstyle: trackstyleSel,
       tracktype: tracktypeSel, armskin: armskinSel, claw: clawSel, armtype: armtypeSel,
       headtype: headtypeSel, scene: sceneSel, motion: motionSel, halo: haloSel, body: bodySel,
-      baseEffect: effectSel,
+      baseEffect: effectSel, decoration: decorationSel,
     };
     for (const [k, sel] of Object.entries(sets)) {
       if (look[k] != null && [...sel.options].some((o) => o.value === String(look[k]))) {
@@ -1864,6 +1881,7 @@
       armskin: pick(ARMSKIN_NAMES), claw: pick(CLAW_NAMES), armtype: pick(ARMTYPE_NAMES),
       headtype: pick(HEADTYPE_NAMES), scene: pick(SCENE_NAMES), motion: pick(MOTION_NAMES),
       halo: pick(HALO_NAMES), body: pick(BODY_NAMES), baseEffect: pick(EFFECT_NAMES),
+      decoration: pick(DECORATION_NAMES),
     });
   };
 
@@ -1871,7 +1889,7 @@
   const presetList = document.getElementById('m-preset-list');
   const presetName = document.getElementById('m-preset-name');
   const LOOK_KEYS = ['skin', 'eyestyle', 'eyeshape', 'trackstyle', 'tracktype', 'armskin',
-    'claw', 'armtype', 'headtype', 'scene', 'motion', 'halo', 'body', 'baseEffect', 'brightness'];
+    'claw', 'armtype', 'headtype', 'scene', 'motion', 'halo', 'body', 'baseEffect', 'brightness', 'decoration'];
   function currentLook() {
     const poses = {};
     for (const st of POSE_STATE_KEYS) poses[st] = poseSels[st].value;
@@ -1881,7 +1899,7 @@
       skin: skinSel, eyestyle: eyestyleSel, eyeshape: eyeshapeSel, trackstyle: trackstyleSel,
       tracktype: tracktypeSel, armskin: armskinSel, claw: clawSel, armtype: armtypeSel,
       headtype: headtypeSel, scene: sceneSel, motion: motionSel, halo: haloSel, body: bodySel,
-      baseEffect: effectSel,
+      baseEffect: effectSel, decoration: decorationSel,
     };
     for (const k of LOOK_KEYS) if (dom[k]) look[k] = dom[k].value;
     return look;
@@ -1943,7 +1961,7 @@
     'tracktype', 'armskin', 'claw', 'armtype', 'headtype', 'eyeshape', 'scene', 'motion',
     'idleActions', 'idleFreq', 'halo', 'agentOrder', 'poses', 'nameplate', 'sound', 'soundStyle',
     'soundVolume', 'voice', 'clickThrough', 'showLabels', 'showOffline', 'showModel', 'maxRows',
-    'presets', 'signMode', 'signPos', 'signColor', 'signShape'];
+    'presets', 'signMode', 'signPos', 'signColor', 'signShape', 'decoration'];
   document.getElementById('m-export').onclick = () => {
     const data = {};
     for (const k of EXPORT_KEYS) if (cfg[k] !== undefined) data[k] = cfg[k];
@@ -2113,6 +2131,9 @@
       const ht = HEADTYPE_NAMES.includes(cfg.headtype) ? cfg.headtype : '双筒';
       headtypeSel.value = ht;
       window.dispatchEvent(new CustomEvent('bao:headtype', { detail: { headtype: ht } }));
+      const dc = DECORATION_NAMES.includes(cfg.decoration) ? cfg.decoration : '无';
+      decorationSel.value = dc;
+      window.dispatchEvent(new CustomEvent('bao:decoration', { detail: { decoration: dc } }));
       const esh = EYESHAPE_NAMES.includes(cfg.eyeshape) ? cfg.eyeshape : '圆';
       eyeshapeSel.value = esh;
       window.dispatchEvent(new CustomEvent('bao:eyeshape', { detail: { eyeshape: esh } }));
