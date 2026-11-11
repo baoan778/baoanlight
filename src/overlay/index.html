@@ -1464,6 +1464,7 @@
   const SCENE_COLORS = {
     '无': '#4a5058', '雪地': '#d8e2ec', '草原': '#6a8a4a', '沙漠': '#c9a562',
     '星空': '#14162a', '岩浆': '#1a0e0a', '樱花': '#f0dcd8', '海洋': '#1a4a6a', '森林': '#2c4a24',
+    '雨夜': '#1c2530',
   };
   // 瞳色 / 履带 / 配件 的代表色（与 robot3d.js 的 EYE_STYLES / TRACK_SKINS / ARM_SKINS 对应）。
   const EYE_COLORS = {
@@ -1623,8 +1624,8 @@
     if (inElectron) bridge.saveConfig({ headtype: e.target.value });
   });
 
-  // 眼睛形状（圆/方/六边形）。
-  const EYESHAPE_NAMES = ['圆', '方', '六边形'];
+  // 眼睛形状（圆/方/六边形/三角）。
+  const EYESHAPE_NAMES = ['圆', '方', '六边形', '三角'];
   const eyeshapeSel = document.getElementById('m-eyeshape');
   for (const n of EYESHAPE_NAMES) {
     const o = document.createElement('option');
@@ -1635,8 +1636,8 @@
     if (inElectron) bridge.saveConfig({ eyeshape: e.target.value });
   });
 
-  // 场景（无/雪地/草原/沙漠/星空）。
-  const SCENE_NAMES = ['无', '雪地', '草原', '沙漠', '星空', '岩浆', '樱花', '海洋', '森林'];
+  // 场景。
+  const SCENE_NAMES = ['无', '雪地', '草原', '沙漠', '星空', '岩浆', '樱花', '海洋', '森林', '雨夜'];
   const sceneSel = document.getElementById('m-scene');
   for (const n of SCENE_NAMES) {
     const o = document.createElement('option');

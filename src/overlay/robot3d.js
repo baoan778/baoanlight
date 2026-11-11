@@ -118,7 +118,7 @@ function canvasTexture(w, h, draw) {
 
 // 场景地表纹理：程序化生成的噪声/颗粒/波纹，让地面读作真实地表而不是纯色。
 function sceneTexture(type) {
-  const seedMap = { 雪地: 11, 草原: 22, 沙漠: 33, 星空: 44, 岩浆: 55, 樱花: 66, 海洋: 77, 森林: 88 };
+  const seedMap = { 雪地: 11, 草原: 22, 沙漠: 33, 星空: 44, 岩浆: 55, 樱花: 66, 海洋: 77, 森林: 88, 雨夜: 99 };
   return canvasTexture(512, 512, (g, w, h) => {
     const r = rng(seedMap[type] || 1);
     const blob = (x, y, rad, rgb, a) => {
@@ -162,6 +162,11 @@ function sceneTexture(type) {
       g.fillStyle = '#2c4a24'; g.fillRect(0, 0, w, h);
       for (let i = 0; i < 90; i++) blob(r() * w, r() * h, 10 + r() * 36, '40,70,30', 0.3 + r() * 0.4);
       for (let i = 0; i < 240; i++) { g.fillStyle = `rgba(${22 + r() * 16},${50 + r() * 22},${20 + r() * 10},${0.3 + r() * 0.4})`; g.fillRect(r() * w, r() * h, 2, 3 + r() * 5); }
+    } else if (type === '雨夜') {
+      // 湿漉漉的深色路面：蓝灰底 + 反光水渍，雨夜里地面会映出周围的亮光。
+      g.fillStyle = '#1c2530'; g.fillRect(0, 0, w, h);
+      for (let i = 0; i < 90; i++) blob(r() * w, r() * h, 10 + r() * 36, '30,44,60', 0.3 + r() * 0.4);
+      speck('150,180,210', () => 0.15 + r() * 0.3, 120, 2.5);
     }
   });
 }
@@ -474,6 +479,7 @@ const SCENES = {
   '樱花': { texture: '樱花', props: '樱花树', particle: 'petal', fog: 0xf0dcd8 },
   '海洋': { texture: '海洋', props: '珊瑚', particle: 'bubble', fog: 0x1a4a6a },
   '森林': { texture: '森林', props: '树', particle: 'firefly', fog: 0x2c4a24 },
+  '雨夜': { texture: '雨夜', props: '水洼', particle: 'rain', fog: 0x1c2530 },
 };
 let sceneType = '无';
 
@@ -493,8 +499,8 @@ const HEAD_TYPES = {
 };
 let headType = '双筒';
 
-// ---- 眼睛形状：镜筒截面（圆 / 方 / 六边形），切换时重建眼睛 ----------------
-const EYE_SHAPES = { '圆': 'round', '方': 'square', '六边形': 'hex' };
+// ---- 眼睛形状：镜筒截面（圆 / 方 / 六边形 / 三角），切换时重建眼睛 ----------
+const EYE_SHAPES = { '圆': 'round', '方': 'square', '六边形': 'hex', '三角': 'tri' };
 let eyeShape = '圆';
 
 // ---- 动效强度：省电 / 标准 / 华丽，缩放动作幅度与粒子强度 ------------------
@@ -850,6 +856,19 @@ if (host && renderer) {
           g.add(b);
         }
         place(g, x, z, 0.9 + r() * 0.7);
+      } else if (type === '水洼') {
+        // 雨夜的水洼：扁平的深色水面，边缘一圈反光，倒映出周围的冷光。
+        const g = new THREE.Group();
+        const pond = new THREE.Mesh(new THREE.CylinderGeometry(0.30, 0.34, 0.02, 18),
+          new THREE.MeshStandardMaterial({ color: 0x24303f, roughness: 0.18, metalness: 0.5 }));
+        pond.position.y = 0.012;
+        g.add(pond);
+        const rim = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.008, 6, 24),
+          new THREE.MeshStandardMaterial({ color: 0x4a6a88, roughness: 0.2, metalness: 0.6 }));
+        rim.rotation.x = Math.PI / 2;
+        rim.position.y = 0.02;
+        g.add(rim);
+        place(g, x, z, 0.7 + r() * 0.6);
       }
     }
   }
@@ -881,6 +900,7 @@ if (host && renderer) {
     else if (s.particle === 'bubble') { particleMat.color.set(0xcfefff); particleMat.opacity = 0.7 * motionScale; particleMat.size = 0.06; }
     else if (s.particle === 'leaf') { particleMat.color.set(0x4a8a3a); particleMat.opacity = 0.8 * motionScale; particleMat.size = 0.07; }
     else if (s.particle === 'firefly') { particleMat.color.set(0xd9ff6a); particleMat.opacity = 0.85 * motionScale; particleMat.size = 0.045; }
+    else if (s.particle === 'rain') { particleMat.color.set(0xa8c4e0); particleMat.opacity = 0.7 * motionScale; particleMat.size = 0.03; }
     else particleMat.opacity = 0;
     // 场景氛围不再改全局天光——那会让机器人本体的皮肤色跟着偏色（雪地发冷、沙漠发暖），
     // 破坏「皮肤颜色一致性」。氛围完全由地面纹理、点缀、粒子承载，机器人永远保持本色。
@@ -1559,7 +1579,9 @@ if (host && renderer) {
       ? mesh(new THREE.BoxGeometry(0.40, 0.40, 0.40), M.eyeBody)
       : eyeShape === '六边形'
         ? mesh(new THREE.CylinderGeometry(0.255, 0.243, 0.40, 6), M.eyeBody)
-        : mesh(new THREE.CylinderGeometry(0.255, 0.243, 0.40, 36), M.eyeBody);
+        : eyeShape === '三角'
+          ? mesh(new THREE.CylinderGeometry(0.255, 0.243, 0.40, 3), M.eyeBody)
+          : mesh(new THREE.CylinderGeometry(0.255, 0.243, 0.40, 36), M.eyeBody);
     shell.rotation.x = Math.PI / 2;
     eye.add(shell);
 
@@ -1578,7 +1600,7 @@ if (host && renderer) {
       // 镜筒是长度 0.40 的柱体，前盖正好在 z=0.20——所以 bezel 必须站到盖子
       // 前面才有意义，否则它一直埋在壳体里，等于一块没人看见的零件。
       bezel.position.z = 0.207;
-      glass = mesh(new THREE.CircleGeometry(0.226, eyeShape === '六边形' ? 6 : 44), M.lens, { cast: false });
+      glass = mesh(new THREE.CircleGeometry(0.226, eyeShape === '六边形' ? 6 : eyeShape === '三角' ? 3 : 44), M.lens, { cast: false });
       glass.position.z = 0.212;
     }
     eye.add(bezel);
@@ -3135,13 +3157,16 @@ if (host && renderer) {
             pos[i * 3] = (Math.random() - 0.5) * 7; pos[i * 3 + 2] = (Math.random() - 0.5) * 7;
           }
         }
-      } else if (partKind === 'snow' || partKind === 'leaf' || partKind === 'bubble' || partKind === 'ember' || partKind === 'firefly') {
+      } else if (partKind === 'snow' || partKind === 'leaf' || partKind === 'bubble' || partKind === 'ember' || partKind === 'firefly' || partKind === 'rain') {
         for (let i = 0; i < visibleCount; i++) {
-          // 火星/萤火虫上升（萤火虫更慢更轻），其余下落；横向都有轻微摆动
+          // 火星/萤火虫上升（萤火虫更慢更轻），其余下落；雨下落最快、几乎不横飘
           const rise = partKind === 'ember' || partKind === 'firefly';
-          pos[i * 3 + 1] += (rise ? 1 : -1) * particleVel[i] * dt * (partKind === 'firefly' ? 0.45 : 1);
-          pos[i * 3] += Math.sin(t * 0.8 + i) * dt * (partKind === 'firefly' ? 0.7 : 0.4);
-          const lo = rise ? 4.5 : 0;
+          const speed = partKind === 'rain' ? 5 : (partKind === 'firefly' ? 0.45 : 1);
+          pos[i * 3 + 1] += (rise ? 1 : -1) * particleVel[i] * dt * speed;
+          pos[i * 3] += Math.sin(t * 0.8 + i) * dt * (partKind === 'rain' ? 0.05 : (partKind === 'firefly' ? 0.7 : 0.4));
+          // 下落的重置回顶部、上升的重置回底部。之前写反了：雪落到底却弹回地面，
+          // 火星升到顶却钉在顶上，结果雪/火星都只在底部/顶部一格里闪。
+          const lo = rise ? 0 : 4.5;
           if (rise ? pos[i * 3 + 1] > 5 : pos[i * 3 + 1] < 0) {
             pos[i * 3 + 1] = lo + Math.random();
             pos[i * 3] = (Math.random() - 0.5) * 7; pos[i * 3 + 2] = (Math.random() - 0.5) * 7;
