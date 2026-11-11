@@ -341,6 +341,12 @@
   #m-recent .recent b { font-weight: 600; color: #e9edf2; }
   #m-recent .recent span { opacity: .7; }
   #m-recent .recent em { opacity: .45; font-style: normal; white-space: nowrap; }
+  /* 今日战绩：每个软件今天干了多久 + 完成/出错几次。复用 recent 的网格样式。 */
+  #m-score { display: flex; flex-direction: column; gap: 2px; margin: 1px 0 6px; }
+  #m-score .recent { display: grid; grid-template-columns: auto 1fr auto; gap: 6px; align-items: baseline; font-size: 10px; color: #cfd5dc; }
+  #m-score .recent b { font-weight: 600; color: #e9edf2; }
+  #m-score .recent span { opacity: .8; }
+  #m-score .recent em { opacity: .6; font-style: normal; white-space: nowrap; }
   #menu select { flex: 1; min-width: 0; height: 20px; background: rgba(255,255,255,.08); color: #e9edf2;
     border: 0; border-radius: 6px; font: inherit; font-size: 10.5px; cursor: pointer; }
   #menu select option { background: #1a1d22; color: #e9edf2; }
@@ -568,6 +574,8 @@
       <div class="hint">快捷键：Ctrl/⌘+Shift+= 放大，- 缩小，0 重置。</div>
       <button id="m-quit" class="danger">退出</button>
     </details>
+    <div class="title">今日战绩</div>
+    <div id="m-score"></div>
     <div class="title">最近动态</div>
     <div id="m-recent"></div>
     <div class="hint">右键机器人调出尺寸条，双击打招呼。</div>
@@ -983,8 +991,44 @@
       box.appendChild(row);
     }
   }
+  // 今日战绩：每个软件今天忙了多久 + 完成/出错几次（数据来自 server 累计，重启不丢）。
+  function fmtDur(ms) {
+    const min = Math.round(ms / 60000);
+    if (min < 60) return `${min} 分钟`;
+    return `${Math.floor(min / 60)} 时 ${min % 60} 分`;
+  }
+  function renderScore(snap) {
+    const box = document.getElementById('m-score');
+    if (!box) return;
+    const byAgent = snap?.stats?.byAgent || {};
+    const events = snap?.stats?.events || {};
+    const names = [...new Set([...Object.keys(byAgent), ...Object.keys(events)])]
+      .filter((a) => (byAgent[a] || 0) > 30000 || (events[a] && (events[a].done || events[a].error)));
+    box.innerHTML = '';
+    if (!names.length) {
+      const row = document.createElement('div');
+      row.className = 'recent';
+      row.innerHTML = '<span>今天还没有干活记录</span>';
+      box.appendChild(row);
+      return;
+    }
+    const sorted = names.sort((a, b) => (byAgent[b] || 0) - (byAgent[a] || 0));
+    for (const agent of sorted) {
+      const ev = events[agent] || {};
+      const bits = [];
+      if (ev.done) bits.push(`完成 ${ev.done}`);
+      if (ev.error) bits.push(`出错 ${ev.error}`);
+      const row = document.createElement('div');
+      row.className = 'recent';
+      const dur = (byAgent[agent] || 0) > 30000 ? fmtDur(byAgent[agent]) : '—';
+      row.innerHTML = `<b>${displayName(agent)}</b><span>${dur}</span><em>${bits.join(' · ')}</em>`;
+      box.appendChild(row);
+    }
+  }
   // 「X 秒前/分前」要会走，不能只在有新事件时才刷新一次。
   setInterval(renderRecent, 30000);
+  // 「已运行 X 分钟」也要会走：busy 且长时间无上报时，靠这个定时器推进分钟数。
+  setInterval(() => { if (lastSnap) render(lastSnap); }, 30000);
   function announceDone(sessions) {
     for (const s of sessions) {
       const prev = lastByAgent.get(s.agent);
@@ -1005,6 +1049,30 @@
         window.dispatchEvent(new CustomEvent('bao:done', { detail: { agent: s.agent } }));
       }
     }
+  }
+
+  // 卡住检测：busy 会话 5 分钟没有任何上报，多半是死循环/卡死。每个会话只提醒
+  // 一次；它一旦恢复上报（不再 quiet）就重置，下次再卡住仍会提醒。
+  const stuckNotified = new Set();
+  function checkStuck(sessions) {
+    for (const s of sessions) {
+      if (s.state === 'busy' && s.quiet && s.quietFor > 5 * 60 * 1000) {
+        if (!stuckNotified.has(s.session)) {
+          stuckNotified.add(s.session);
+          if (inElectron && bridge.notify) {
+            bridge.notify(`${displayName(s.agent)} 好像卡住了`, '已经 5 分钟没有任何动静了，去看看');
+          }
+        }
+      } else if (stuckNotified.has(s.session)) {
+        stuckNotified.delete(s.session);
+      }
+    }
+  }
+
+  // busy 的「已运行多久」：since 是它进入 busy 的时刻。
+  function runningMin(s) {
+    if (s.state !== 'busy' || !s.since) return 0;
+    return Math.round((Date.now() - s.since) / 60000);
   }
 
   // 点击聚焦：点某软件通道 = 聚焦它（主灯切到它）；再点同一个 = 取消聚焦回聚合。
@@ -1115,6 +1183,7 @@
 
     renderSlots(slots);
     announceDone(sessions);
+    checkStuck(sessions);
     announceCC(snap);
     // 每个软件的今日时长（用短名）传给 3D 广告牌。
     const stats = {};
@@ -1132,6 +1201,7 @@
       errorTotal += events[agent] && events[agent].error || 0;
     }
     document.body.dataset.events = JSON.stringify({ done: doneTotal, error: errorTotal });
+    renderScore(snap);
 
     // 里程碑：合计时长跨过整点小时庆祝一次（跨天自动清零）。
     const totalBusyMs = Object.values(snap.stats?.byAgent || {}).reduce((a, b) => a + b, 0);
@@ -1225,7 +1295,8 @@
         el.querySelector('i').dataset.color = COLOR[s.state] || 'grey';
         el.querySelector('b').textContent = displayName(s.agent);
         const cc = offline || cfg.showModel === false ? null : ccSwitchLabel(snap.ccSwitch && snap.ccSwitch[s.agent]);
-        const detail = s.detail || VERB[s.state] || '';
+        const runMin = runningMin(s);
+        const detail = runMin >= 1 ? `已运行 ${runMin} 分钟` : (s.detail || VERB[s.state] || '');
         el.querySelector('span').textContent = cc
           ? (detail ? `用 ${cc} · ${detail}` : `用 ${cc}`)
           : detail;

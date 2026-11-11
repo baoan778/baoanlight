@@ -75,6 +75,19 @@ bao wrap -- aider --model sonnet
 
 输出在流动 = 黄；停在确认提示上 = 红；停下来但没提示 = 绿。**这是很好的猜测，不是事实。**
 
+### 长尾 agent 速查
+
+| Agent | 推荐接法 | 说明 |
+|---|---|---|
+| Cursor（CLI 版） | `bao wrap -- cursor-agent` | 桌面版不写 `~/.cursor` 结构化日志，用包装器最省事 |
+| Gemini CLI | `bao wrap -- gemini` | 官方 CLI，无 hook，包装器读屏幕 |
+| Aider | `bao wrap -- aider` 或 `bao hook` | Aider 有 `--message` 非交互模式，可脚本化上报 |
+| Windsurf / opencode | `bao hook`（能执行命令）或 `bao wrap` | 有 hook/命令能力就用 `bao hook`，精度更高 |
+| Copilot CLI | `bao wrap -- copilot` | 无公开 hook |
+| 自研 / 任意脚本 | `bao mcp` 或 `bao hook` | 推荐 `bao mcp` 暴露 `report_status`，任何 MCP 客户端都能调 |
+
+**选型原则**：有生命周期钩子 → 精确五态；有结构化日志 → `bao watch`；只能跑命令 → `bao hook`；啥都没有只有终端 → `bao wrap`。优先顺序：钩子 > 日志 > 命令 hook > 伪终端。
+
 ## 6. 通用兜底
 
 能执行命令 → 让它把事件打到 stdin：
