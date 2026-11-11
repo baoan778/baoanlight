@@ -326,6 +326,15 @@
   #menu details.group > summary { cursor: pointer; padding: 5px 2px; font-size: 11.5px; color: #aeb6c0;
     list-style: none; user-select: none; border-radius: 6px; }
   #menu details.group > summary::-webkit-details-marker { display: none; }
+  /* 分组标题前的小三角：展开时旋转 90°，给菜单一点「可展开」的机械感。 */
+  #menu details.group > summary::before {
+    content: '▸'; display: inline-block; width: 12px; margin-right: 3px; opacity: .5;
+    transition: transform .15s ease, opacity .15s ease;
+  }
+  #menu details.group[open] > summary::before { transform: rotate(90deg); opacity: .85; }
+  #menu details.group[open] > summary { color: #e9edf2; }
+  /* 分组之间的细分隔线，让长菜单有结构感。 */
+  #menu details.group + details.group { border-top: 1px solid rgba(255,255,255,.06); margin-top: 2px; }
   #menu details.group > summary::before { content: '▸ '; color: #6b7480; }
   #menu details.group[open] > summary::before { content: '▾ '; }
   #menu details.group > summary:hover { color: #e9edf2; background: rgba(255,255,255,.05); }
@@ -347,6 +356,11 @@
   #m-score .recent b { font-weight: 600; color: #e9edf2; }
   #m-score .recent span { opacity: .8; }
   #m-score .recent em { opacity: .6; font-style: normal; white-space: nowrap; }
+  /* 今日战绩条形：行背景按「本软件时长/今日最长」铺一条淡蓝进度条，数据可视化。 */
+  #m-score .score-row {
+    padding: 3px 5px; margin: 0 -5px; border-radius: 6px;
+    background-image: linear-gradient(90deg, rgba(120,190,255,.20) var(--pct, 0%), rgba(120,190,255,0) var(--pct, 0%));
+  }
   #menu select { flex: 1; min-width: 0; height: 20px; background: rgba(255,255,255,.08); color: #e9edf2;
     border: 0; border-radius: 6px; font: inherit; font-size: 10.5px; cursor: pointer; }
   #menu select option { background: #1a1d22; color: #e9edf2; }
@@ -1013,14 +1027,17 @@
       return;
     }
     const sorted = names.sort((a, b) => (byAgent[b] || 0) - (byAgent[a] || 0));
+    const maxMs = Math.max(1, ...names.map((a) => byAgent[a] || 0));
     for (const agent of sorted) {
       const ev = events[agent] || {};
       const bits = [];
       if (ev.done) bits.push(`完成 ${ev.done}`);
       if (ev.error) bits.push(`出错 ${ev.error}`);
       const row = document.createElement('div');
-      row.className = 'recent';
+      row.className = 'recent score-row';
       const dur = (byAgent[agent] || 0) > 30000 ? fmtDur(byAgent[agent]) : '—';
+      // 时长条形：行背景按「本软件时长 / 今日最长」比例铺一条淡色进度条，数据可视化。
+      row.style.setProperty('--pct', Math.max(2, Math.round(((byAgent[agent] || 0) / maxMs) * 100)) + '%');
       row.innerHTML = `<b>${displayName(agent)}</b><span>${dur}</span><em>${bits.join(' · ')}</em>`;
       box.appendChild(row);
     }

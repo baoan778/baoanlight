@@ -3202,7 +3202,8 @@ if (host && renderer) {
     }
 
     // ---- lamp, glow, bubble
-    let lamp = off ? 0.02 : idle ? 0.75 : unknown ? 0.5 : 2.7;
+    // 空闲时灯光缓慢「呼吸」（1.1Hz），像在安静地待命，而不是死板的常亮。
+    let lamp = off ? 0.02 : idle ? 0.66 + Math.sin(t * 1.1) * 0.16 : unknown ? 0.5 : 2.7;
     if (busy) lamp = 2.9 + Math.sin(t * 3.4) * 0.75;
     if (waiting) lamp = 1.6 + Math.sin(t * 6.4) * 1.5;
     if (error) lamp = 0.9 + (Math.sin(t * 19) > 0 ? 3.4 : 0.3);
