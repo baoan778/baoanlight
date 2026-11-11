@@ -2565,12 +2565,6 @@ if (host && renderer) {
       pointer.seen = true;
     });
   }
-  // 自主漫游：窗口在桌面上移动时，主进程推来开关，履带跟着转。
-  if (window.bao && window.bao.onRoam) {
-    window.bao.onRoam((r) => {
-      window.dispatchEvent(new CustomEvent('bao:roam', { detail: { on: !!(r && r.on) } }));
-    });
-  }
   window.addEventListener('pointermove', (e) => {
     if (pointer.fromIpc) return;
     pointer.x = e.clientX;
@@ -2656,8 +2650,6 @@ if (host && renderer) {
   // 灯光亮度：只缩放发光件的强度，机器人本体材质不变，状态颜色与节奏仍可读。
   let brightness = 1;
   let wheelSpin = 0;
-  let roaming = false;   // 自主漫游：窗口在桌面上移动时，履带转动 + 车身颠簸
-  window.addEventListener('bao:roam', (e) => { roaming = !!(e.detail && e.detail.on); });
   let hotMeasured = -1;
   let pokeAt = -99;
   let greetAt = -99;
@@ -2777,19 +2769,17 @@ if (host && renderer) {
     // ---- body
     const bobTarget = reduceMotion ? 0
       : busy ? Math.sin(t * 3.9) * 0.013
-        : roaming ? Math.sin(t * 6.5) * 0.022
-          : waiting ? Math.abs(Math.sin(t * 5.2)) * 0.030
-            : error ? Math.sin(t * 26) * 0.006
-              : idle ? Math.sin(t * 1.37) * 0.012
-                : 0;
+        : waiting ? Math.abs(Math.sin(t * 5.2)) * 0.030
+          : error ? Math.sin(t * 26) * 0.006
+            : idle ? Math.sin(t * 1.37) * 0.012
+              : 0;
     pose.bob = damp(pose.bob, bobTarget, 12, dt);
 
     const rollTarget = reduceMotion ? 0
       : error ? Math.sin(t * 24) * 0.012
         : busy ? Math.sin(t * 1.9) * 0.006
-          : roaming ? Math.sin(t * 3.3) * 0.014
-            : unknown ? Math.sin(t * 0.5) * 0.02
-              : 0;
+          : unknown ? Math.sin(t * 0.5) * 0.02
+            : 0;
     pose.roll = damp(pose.roll, rollTarget, 14, dt);
 
     // ---- pointer: where is the human?
@@ -3173,7 +3163,7 @@ if (host && renderer) {
 
     // ---- motion cues: treads and sprockets
     const crazyRun = crazy >= 0 && crazy < 2.2;
-    const speed = crazyRun ? 5 : busy ? 1.55 : roaming ? 1.15 : waiting ? 0 : error ? 0 : 0.12;
+    const speed = crazyRun ? 5 : busy ? 1.55 : waiting ? 0 : error ? 0 : 0.12;
     // Forward drives every belt the same way; a turn drives the two belts
     // opposite ways (one runs forward, the other back), which is what a tracked
     // machine does when it steers. The steer term is folded in here so forward

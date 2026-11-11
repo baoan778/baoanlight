@@ -524,7 +524,6 @@
         <select id="m-soundstyle"></select>
       </div>
       <label class="row"><input id="m-voice" type="checkbox" /> 语音播报</label>
-      <label class="row"><input id="m-roam" type="checkbox" checked /> 空闲时漫游</label>
       <label class="row"><input id="m-click" type="checkbox" checked /> 点击穿透</label>
       <label class="row"><input id="m-labels" type="checkbox" checked /> 软件列表</label>
       <label class="row"><input id="m-offline" type="checkbox" checked /> 显示未运行软件</label>
@@ -1887,11 +1886,7 @@
     if (inElectron) bridge.saveConfig({ voice: cfg.voice });
     if (cfg.voice) announce('waiting');
   });
-  document.getElementById('m-roam').addEventListener('change', (e) => {
-    cfg.roam = e.target.checked;
-    if (inElectron) bridge.saveConfig({ roam: cfg.roam });
-    if (inElectron && bridge.setRoamAllowed) bridge.setRoamAllowed(cfg.roam);
-  });
+
 
   // 提示音风格（清脆叮咚 / 低沉机械 / 电子脉冲）。
   const soundstyleSel = document.getElementById('m-soundstyle');
@@ -2065,7 +2060,7 @@
   const EXPORT_KEYS = ['scale', 'brightness', 'baseEffect', 'body', 'theme', 'skin', 'eyestyle', 'trackstyle',
     'tracktype', 'armskin', 'claw', 'armtype', 'headtype', 'eyeshape', 'scene', 'motion',
     'idleActions', 'idleFreq', 'halo', 'agentOrder', 'poses', 'nameplate', 'sound', 'soundStyle',
-    'soundVolume', 'voice', 'roam', 'clickThrough', 'showLabels', 'showOffline', 'showModel', 'maxRows',
+    'soundVolume', 'voice', 'clickThrough', 'showLabels', 'showOffline', 'showModel', 'maxRows',
     'presets', 'signMode', 'signPos', 'signColor', 'signShape', 'decoration'];
   document.getElementById('m-export').onclick = () => {
     const data = {};
@@ -2190,7 +2185,6 @@
       setCollapsed(!!cfg.collapsed);
       document.getElementById('m-sound').checked = !!cfg.sound;
       document.getElementById('m-voice').checked = !!cfg.voice;
-      document.getElementById('m-roam').checked = cfg.roam !== false;
       if (SOUND_STYLES[cfg.soundStyle]) soundstyleSel.value = cfg.soundStyle;
       document.getElementById('m-click').checked = cfg.clickThrough !== false;
       document.getElementById('m-labels').checked = cfg.showLabels !== false;
