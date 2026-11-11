@@ -87,12 +87,14 @@ function createWindow() {
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   clickThroughEnabled = cfg.clickThrough !== false;
   if (clickThroughEnabled) win.setIgnoreMouseEvents(true, { forward: true });
+  roamAllowed = cfg.roam !== false;
 
   win.loadURL(URL_BASE + '/');
   win.once('ready-to-show', () => win.showInactive());
 
   // Keep the window where the user dragged it.
   const remember = () => {
+    if (roamMoving) return;   // 漫游时的移动不算「用户摆放」，不落盘、不覆盖位置
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       if (!win || win.isDestroyed()) return;
@@ -154,8 +156,10 @@ function createTray() {
 const TRAY_STATE_LABEL = { busy: '运行中', waiting: '需要你', error: '出错', done: '完成', idle: '空闲', unknown: '未知', offline: '未连接' };
 let trayState = 'offline';
 ipcMain.on('tray:status', (_e, s) => {
-  if (!tray) return;
   const st = (s && s.overall) || 'offline';
+  // 自主漫游：空闲/离线才逛，忙/等/错就停下（不受托盘是否存在影响）。
+  setRoam(st === 'idle' || st === 'offline');
+  if (!tray) return;
   const label = TRAY_STATE_LABEL[st] || '未连接';
   const extra = s && s.count ? ` · ${s.count} 个会话` : '';
   tray.setToolTip(`baoanlight — ${label}${extra}`);
@@ -163,6 +167,68 @@ ipcMain.on('tray:status', (_e, s) => {
     trayState = st;
     try { tray.setImage(nativeImage.createFromDataURL(TRAY_ICONS[st])); } catch { /* 忽略 */ }
   }
+});
+
+// ---------- 自主漫游 ----------
+// 空闲/离线时，机器人在桌面上自己逛：窗口平滑移动到随机目标，配合履带转动就是
+// 「在走」。忙碌/等待/出错停下；被拖动时暂停；到达后歇几秒再走。
+let roamEnabled = false;
+let roamMoving = false;
+let roamTimer = null;
+let roamTarget = null;
+let roamAllowed = true;   // 用户可关闭（设置 → 漫游）
+let roamStateOn = false;  // 状态驱动（空闲/离线才 true）
+const ROAM_SPEED = 42;   // px/s
+
+function stopRoamMove() {
+  roamMoving = false;
+  if (roamTimer) { clearInterval(roamTimer); roamTimer = null; }
+  if (win && !win.isDestroyed()) { try { win.webContents.send('roam', { on: false }); } catch {} }
+}
+
+function startRoamMove() {
+  if (!roamEnabled || roamMoving || dragOrigin || !win || win.isDestroyed()) return;
+  const { workArea } = screen.getPrimaryDisplay();
+  const [w, h] = win.getSize();
+  roamTarget = {
+    x: workArea.x + Math.random() * Math.max(0, workArea.width - w),
+    y: workArea.y + Math.random() * Math.max(0, workArea.height - h),
+  };
+  roamMoving = true;
+  const stepMs = 50;
+  const stepPx = ROAM_SPEED * stepMs / 1000;
+  roamTimer = setInterval(() => {
+    if (!win || win.isDestroyed() || !roamMoving || dragOrigin) { stopRoamMove(); return; }
+    const [cx, cy] = win.getPosition();
+    const dx = roamTarget.x - cx;
+    const dy = roamTarget.y - cy;
+    const dist = Math.hypot(dx, dy);
+    if (dist < stepPx) {
+      win.setPosition(Math.round(roamTarget.x), Math.round(roamTarget.y));
+      try { win.webContents.send('roam', { on: false }); } catch {}
+      clearInterval(roamTimer);
+      roamTimer = null;
+      roamMoving = false;
+      // 到站：歇几秒再走下一段。
+      roamTimer = setTimeout(() => { if (roamEnabled && !dragOrigin) startRoamMove(); }, 1800 + Math.random() * 3200);
+      return;
+    }
+    win.setPosition(Math.round(cx + dx / dist * stepPx), Math.round(cy + dy / dist * stepPx));
+    try { win.webContents.send('roam', { on: true }); } catch {}
+  }, stepMs);
+}
+
+function setRoam(on) {
+  roamStateOn = on;
+  roamEnabled = roamStateOn && roamAllowed;
+  if (roamEnabled) startRoamMove();
+  else stopRoamMove();
+}
+
+ipcMain.on('roam:set', (_e, on) => {
+  roamAllowed = !!on;
+  config.save({ roam: roamAllowed });
+  setRoam(roamStateOn);
 });
 
 // ---------- renderer bridge ----------
@@ -256,6 +322,7 @@ let dragOrigin = null;
 
 ipcMain.on('window:drag-start', () => {
   if (!win || win.isDestroyed()) return;
+  stopRoamMove();   // 用户要拖了，先别自己走
   clearInterval(dragTimer);
   const p = screen.getCursorScreenPoint();
   const [x, y] = win.getPosition();
@@ -271,6 +338,7 @@ ipcMain.on('window:drag-end', () => {
   clearInterval(dragTimer);
   dragTimer = null;
   dragOrigin = null;
+  startRoamMove();   // 松手后，若仍空闲就接着逛
 });
 
 ipcMain.on('app:quit', () => app.quit());
