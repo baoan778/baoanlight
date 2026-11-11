@@ -135,10 +135,11 @@ ${c.b('OPTIONS')}
 async function cmdServer(flags, { detached = false } = {}) {
   const { start } = require('./server');
   const port = Number(flags.port) || config.port();
+  const host = flags.host || '127.0.0.1';
 
   let bound;
   try {
-    ({ port: bound } = await start({ port }));
+    ({ port: bound } = await start({ port, host }));
   } catch (err) {
     if (err && err.code === 'EADDRINUSE') {
       console.error(`${c.red('●')} port ${port} is already in use.`);
@@ -148,7 +149,13 @@ async function cmdServer(flags, { detached = false } = {}) {
     }
     throw err;
   }
-  if (!detached) console.log(`${c.grn('●')} server listening on http://127.0.0.1:${bound}`);
+  if (!detached) {
+    console.log(`${c.grn('●')} server listening on http://${host}:${bound}`);
+    if (host !== '127.0.0.1' && host !== 'localhost') {
+      console.log(`${c.yel('!')} 局域网可访问 — 手机打开 http://<本机IP>:${bound}/mini 可看只读状态`);
+      console.log(c.dim('  这会暴露状态给同一网络的人；只读页不暴露写接口，但仍请只在可信网络开启。'));
+    }
+  }
   return bound;
 }
 
@@ -195,6 +202,7 @@ async function cmdStartDetached(flags) {
   }
 
   const args = [path.join(ROOT, 'src', 'cli.js'), 'start', '--foreground', '--port', String(port)];
+  if (flags.host) args.push('--host', flags.host);
   if (flags['no-overlay']) args.push('--no-overlay');
   if (flags.browser) args.push('--browser');
 
@@ -294,7 +302,7 @@ async function cmdStart(flags) {
   if (running) {
     console.log(`${c.dim('server already running on port ' + running.port)}`);
   } else {
-    await cmdServer({ port });
+    await cmdServer({ port, host: flags.host });
   }
 
   // Same reason as the overlay's cwd: this process outlives the command that

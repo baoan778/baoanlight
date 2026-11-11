@@ -26,7 +26,7 @@ function readBody(req, limit = 64 * 1024) {
   });
 }
 
-function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtlMs } = {}) {
+function start({ port = config.port(), host = '127.0.0.1', ttlMs, idleTtlMs, quietAfterMs, unusedTtlMs } = {}) {
   const cfg = config.load();
   const store = new Store({
     ttlMs: ttlMs ?? cfg.sessionTtlMs,
@@ -84,6 +84,13 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
       if (p === '/state' && req.method === 'GET') return send(res, 200, frame());
 
       if (p === '/selfcheck') return send(res, 200, selfcheckResult);
+
+      // 手机只读状态页：轻量、无 3D，离开电脑时扫一眼。和 /mini.html 同页。
+      if (p === '/mini') {
+        const absMini = path.join(OVERLAY_DIR, 'mini.html');
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        return fs.createReadStream(absMini).pipe(res);
+      }
 
       if (p === '/state' && req.method === 'POST') {
         const raw = await readBody(req);
@@ -187,7 +194,7 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
 
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => {
+    server.listen(port, host, () => {
       config.ensureDir();
       try { fs.writeFileSync(config.PORT_FILE, String(port)); } catch {}
       presence.claudeRunning().catch(() => {});
