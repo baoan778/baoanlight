@@ -44,6 +44,8 @@ const DEFAULTS = {
   signShape: '圆角',
   // 头部装饰：无 / 天线 / 安全帽。
   decoration: '无',
+  // 人格种子：首次启动随机固定一个（活泼/沉稳/话痨/害羞），决定动作频率与语气。
+  personality: null,
   soundVolume: 0.22,
   sessionTtlMs: 6 * 60 * 60 * 1000,
   // A green session nobody has touched in this long is treated as gone.

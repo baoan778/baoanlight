@@ -95,8 +95,10 @@ class Store extends EventEmitter {
     // and has no way to learn that it is being sent something it cannot read.
     this.lastUnknown = null;
     // 今日各 agent 忙碌时长（累计完成的部分，实时部分在 snapshot 里现算），
-    // 以及各 agent 完成/出错次数（今日战绩）。
-    this.stats = { day: dayKey(), byAgent: {}, events: {} };
+    // 以及各 agent 完成/出错次数（今日战绩）。history 是最近 7 天的存档，供周报。
+    this.stats = { day: dayKey(), byAgent: {}, events: {}, history: {} };
+    // 每个 agent 最近几次任务的耗时（内存学习，重启重学），用于完成预估。
+    this.taskTimes = {};
     this._sweeper = setInterval(() => this.sweep(), 5_000);
     if (this._sweeper.unref) this._sweeper.unref();
   }
@@ -108,19 +110,34 @@ class Store extends EventEmitter {
       day: stats.day,
       byAgent: { ...stats.byAgent },
       events: { ...(stats.events || {}) },
+      history: { ...(stats.history || {}) },
     };
   }
 
-  accumulateBusy(agent, ms) {
+  // 跨天归档：把昨天的战绩存进 history（保留最近 7 天），今日清零。
+  // snapshot 每次都调用，所以跨天后的第一帧就会归档，不丢数据。
+  checkDay() {
     const today = dayKey();
-    if (this.stats.day !== today) this.stats = { day: today, byAgent: {}, events: {} };
+    if (this.stats.day === today) return;
+    this.stats.history[this.stats.day] = {
+      byAgent: this.stats.byAgent,
+      events: this.stats.events,
+    };
+    const keys = Object.keys(this.stats.history).sort();
+    while (keys.length > 7) delete this.stats.history[keys.shift()];
+    this.stats.day = today;
+    this.stats.byAgent = {};
+    this.stats.events = {};
+  }
+
+  accumulateBusy(agent, ms) {
+    this.checkDay();
     if (!(ms > 0)) return;
     this.stats.byAgent[agent] = (this.stats.byAgent[agent] || 0) + ms;
   }
 
   accumulateEvent(agent, kind) {
-    const today = dayKey();
-    if (this.stats.day !== today) this.stats = { day: today, byAgent: {}, events: {} };
+    this.checkDay();
     const e = this.stats.events[agent] || (this.stats.events[agent] = { done: 0, error: 0 });
     e[kind] = (e[kind] || 0) + 1;
   }
@@ -159,6 +176,15 @@ class Store extends EventEmitter {
     if (prev && prev.state !== next) {
       if (next === 'done') this.accumulateEvent(prev.agent, 'done');
       else if (next === 'error') this.accumulateEvent(prev.agent, 'error');
+    }
+    // 完成预估：记下每个 agent 最近几次任务的耗时（正常收尾才算，异常中断不算）。
+    if (prev && prev.state === 'busy' && (next === 'done' || next === 'idle')) {
+      const dur = now - prev.since;
+      if (dur > 5000 && dur < 4 * 3600 * 1000) {
+        const arr = this.taskTimes[prev.agent] || (this.taskTimes[prev.agent] = []);
+        arr.push(dur);
+        if (arr.length > 5) arr.shift();
+      }
     }
     if (next === 'offline') {
       this.sessions.delete(session);
@@ -256,6 +282,7 @@ class Store extends EventEmitter {
   // trust, and the user would see it flicker between two identical priorities.
   snapshot() {
     const now = Date.now();
+    this.checkDay();
     // An agent that reported once and then went quiet is not the same as one
     // that just told us it finished, but they look identical on a lamp. Mark
     // the difference so the display can show it, rather than presenting a
@@ -301,11 +328,19 @@ class Store extends EventEmitter {
       if (!fuel || s.fuel.remaining < fuel.remaining) fuel = { ...s.fuel, agent: s.agent };
     }
 
+    // 完成预估：每个 agent 最近几次任务的平均耗时（学不到就不给，不硬猜）。
+    const pace = {};
+    for (const [agent, arr] of Object.entries(this.taskTimes)) {
+      if (arr.length) pace[agent] = Math.round(arr.reduce((a, b) => a + b, 0) / arr.length);
+    }
+
     // 今日各 agent 忙碌时长：已累计 + 仍在忙的实时部分（不重复计）。
+    // history 是最近 7 天的存档，供周报汇总。
     const stats = {
       day: this.stats.day,
       byAgent: { ...this.stats.byAgent },
       events: { ...this.stats.events },
+      history: { ...this.stats.history },
     };
     for (const s of sessions) {
       if (s.state === 'busy') stats.byAgent[s.agent] = (stats.byAgent[s.agent] || 0) + (now - s.since);
@@ -314,6 +349,7 @@ class Store extends EventEmitter {
     return {
       overall,
       fuel,
+      pace,
       sessions,
       slots,
       stats,

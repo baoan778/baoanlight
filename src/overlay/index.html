@@ -1024,6 +1024,25 @@
       row.innerHTML = `<b>${displayName(agent)}</b><span>${dur}</span><em>${bits.join(' · ')}</em>`;
       box.appendChild(row);
     }
+    // 本周合计：今天 + 最近 7 天存档（server 每天自动归档）。
+    const week = { ms: 0, done: 0, error: 0 };
+    for (const h of Object.values(snap?.stats?.history || {})) {
+      for (const ms of Object.values(h.byAgent || {})) week.ms += ms || 0;
+      for (const ev of Object.values(h.events || {})) { week.done += ev.done || 0; week.error += ev.error || 0; }
+    }
+    for (const ms of Object.values(byAgent)) week.ms += ms || 0;
+    for (const ev of Object.values(events)) { week.done += ev.done || 0; week.error += ev.error || 0; }
+    if (week.ms > 60000 || week.done || week.error) {
+      const row = document.createElement('div');
+      row.className = 'recent';
+      row.style.borderTop = '1px solid rgba(255,255,255,.12)';
+      row.style.paddingTop = '4px';
+      const bits = [];
+      if (week.done) bits.push(`完成 ${week.done}`);
+      if (week.error) bits.push(`出错 ${week.error}`);
+      row.innerHTML = `<b>本周合计</b><span>${fmtDur(week.ms)}</span><em>${bits.join(' · ')}</em>`;
+      box.appendChild(row);
+    }
   }
   // 「X 秒前/分前」要会走，不能只在有新事件时才刷新一次。
   setInterval(renderRecent, 30000);
@@ -1051,9 +1070,10 @@
     }
   }
 
-  // 卡住检测：busy 会话 5 分钟没有任何上报，多半是死循环/卡死。每个会话只提醒
-  // 一次；它一旦恢复上报（不再 quiet）就重置，下次再卡住仍会提醒。
+  // 卡住检测（分级）：busy 会话 5 分钟无上报 → 提醒；15 分钟仍无上报 → 升级提醒。
+  // 每个会话每级只提醒一次；恢复上报就重置，下次再卡仍会提醒。
   const stuckNotified = new Set();
+  const stuckEscalated = new Set();
   function checkStuck(sessions) {
     for (const s of sessions) {
       if (s.state === 'busy' && s.quiet && s.quietFor > 5 * 60 * 1000) {
@@ -1063,16 +1083,17 @@
             bridge.notify(`${displayName(s.agent)} 好像卡住了`, '已经 5 分钟没有任何动静了，去看看');
           }
         }
-      } else if (stuckNotified.has(s.session)) {
+        if (s.quietFor > 15 * 60 * 1000 && !stuckEscalated.has(s.session)) {
+          stuckEscalated.add(s.session);
+          if (inElectron && bridge.notify) {
+            bridge.notify(`${displayName(s.agent)} 大概率卡死了`, '15 分钟完全没动静，建议去终端看看');
+          }
+        }
+      } else {
         stuckNotified.delete(s.session);
+        stuckEscalated.delete(s.session);
       }
     }
-  }
-
-  // busy 的「已运行多久」：since 是它进入 busy 的时刻。
-  function runningMin(s) {
-    if (s.state !== 'busy' || !s.since) return 0;
-    return Math.round((Date.now() - s.since) / 60000);
   }
 
   // 点击聚焦：点某软件通道 = 聚焦它（主灯切到它）；再点同一个 = 取消聚焦回聚合。
@@ -1295,8 +1316,15 @@
         el.querySelector('i').dataset.color = COLOR[s.state] || 'grey';
         el.querySelector('b').textContent = displayName(s.agent);
         const cc = offline || cfg.showModel === false ? null : ccSwitchLabel(snap.ccSwitch && snap.ccSwitch[s.agent]);
-        const runMin = runningMin(s);
-        const detail = runMin >= 1 ? `已运行 ${runMin} 分钟` : (s.detail || VERB[s.state] || '');
+        // busy 的时长/预估：有历史节奏就估「预计还需」，超了就说「比平时慢」。
+        const elapsed = s.state === 'busy' && s.since ? Date.now() - s.since : 0;
+        const paceMs = snap.pace && snap.pace[s.agent];
+        let detail = s.detail || VERB[s.state] || '';
+        if (s.state === 'busy' && elapsed >= 60000) {
+          if (paceMs && elapsed < paceMs) detail = `预计还需 ${Math.max(1, Math.round((paceMs - elapsed) / 60000))} 分钟`;
+          else if (paceMs) detail = `比平时慢 · 已运行 ${Math.round(elapsed / 60000)} 分钟`;
+          else detail = `已运行 ${Math.round(elapsed / 60000)} 分钟`;
+        }
         el.querySelector('span').textContent = cc
           ? (detail ? `用 ${cc} · ${detail}` : `用 ${cc}`)
           : detail;
@@ -1539,7 +1567,7 @@
   const SCENE_COLORS = {
     '无': '#4a5058', '雪地': '#d8e2ec', '草原': '#6a8a4a', '沙漠': '#c9a562',
     '星空': '#14162a', '岩浆': '#1a0e0a', '樱花': '#f0dcd8', '海洋': '#1a4a6a', '森林': '#2c4a24',
-    '雨夜': '#1c2530',
+    '雨夜': '#1c2530', '工厂': '#2e3238',
   };
   // 瞳色 / 履带 / 配件 的代表色（与 robot3d.js 的 EYE_STYLES / TRACK_SKINS / ARM_SKINS 对应）。
   const EYE_COLORS = {
@@ -1695,8 +1723,8 @@
     o.value = n; o.textContent = n; headtypeSel.appendChild(o);
   }
 
-  // 头部装饰（无/天线/安全帽/皇冠/眼镜）。
-  const DECORATION_NAMES = ['无', '天线', '安全帽', '皇冠', '眼镜'];
+  // 头部装饰（无/天线/安全帽/皇冠/眼镜/墨镜/围巾/背包）。
+  const DECORATION_NAMES = ['无', '天线', '安全帽', '皇冠', '眼镜', '墨镜', '围巾', '背包'];
   const decorationSel = document.getElementById('m-decoration');
   for (const n of DECORATION_NAMES) {
     const o = document.createElement('option');
@@ -1725,7 +1753,7 @@
   });
 
   // 场景。
-  const SCENE_NAMES = ['无', '雪地', '草原', '沙漠', '星空', '岩浆', '樱花', '海洋', '森林', '雨夜'];
+  const SCENE_NAMES = ['无', '雪地', '草原', '沙漠', '星空', '岩浆', '樱花', '海洋', '森林', '雨夜', '工厂'];
   const sceneSel = document.getElementById('m-scene');
   for (const n of SCENE_NAMES) {
     const o = document.createElement('option');
@@ -2145,6 +2173,13 @@
         cfg.firstRun = new Date().toISOString().slice(0, 10);
         bridge.saveConfig({ firstRun: cfg.firstRun });
       }
+      // 人格种子：首次随机固定一个，之后不再变——它「天生」是这脾气。
+      if (!cfg.personality) {
+        const PERSONALITIES = ['活泼', '沉稳', '话痨', '害羞'];
+        cfg.personality = PERSONALITIES[Math.floor(Math.random() * PERSONALITIES.length)];
+        bridge.saveConfig({ personality: cfg.personality });
+      }
+      document.body.dataset.personality = cfg.personality;
       document.body.dataset.theme = cfg.theme === 'mini' ? 'mini' : 'full';
       setCollapsed(!!cfg.collapsed);
       document.getElementById('m-sound').checked = !!cfg.sound;

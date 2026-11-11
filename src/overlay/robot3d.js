@@ -118,7 +118,7 @@ function canvasTexture(w, h, draw) {
 
 // 场景地表纹理：程序化生成的噪声/颗粒/波纹，让地面读作真实地表而不是纯色。
 function sceneTexture(type) {
-  const seedMap = { 雪地: 11, 草原: 22, 沙漠: 33, 星空: 44, 岩浆: 55, 樱花: 66, 海洋: 77, 森林: 88, 雨夜: 99 };
+  const seedMap = { 雪地: 11, 草原: 22, 沙漠: 33, 星空: 44, 岩浆: 55, 樱花: 66, 海洋: 77, 森林: 88, 雨夜: 99, 工厂: 111 };
   return canvasTexture(512, 512, (g, w, h) => {
     const r = rng(seedMap[type] || 1);
     const blob = (x, y, rad, rgb, a) => {
@@ -167,6 +167,14 @@ function sceneTexture(type) {
       g.fillStyle = '#1c2530'; g.fillRect(0, 0, w, h);
       for (let i = 0; i < 90; i++) blob(r() * w, r() * h, 10 + r() * 36, '30,44,60', 0.3 + r() * 0.4);
       speck('150,180,210', () => 0.15 + r() * 0.3, 120, 2.5);
+    } else if (type === '工厂') {
+      // 车间钢板地面：深灰底 + 钢板拼缝 + 铆钉点，像真正的车间地坪。
+      g.fillStyle = '#2e3238'; g.fillRect(0, 0, w, h);
+      for (let i = 0; i < 70; i++) blob(r() * w, r() * h, 10 + r() * 34, '38,42,48', 0.3 + r() * 0.4);
+      g.strokeStyle = 'rgba(20,22,26,.8)'; g.lineWidth = 3;
+      for (let i = 0; i < 6; i++) { g.beginPath(); g.moveTo(0, (i / 6) * h); g.lineTo(w, (i / 6) * h); g.stroke(); }
+      for (let i = 0; i < 8; i++) { g.beginPath(); g.moveTo((i / 8) * w, 0); g.lineTo((i / 8) * w, h); g.stroke(); }
+      speck('90,96,104', () => 0.4 + r() * 0.4, 240, 2.2);
     }
   });
 }
@@ -480,6 +488,7 @@ const SCENES = {
   '海洋': { texture: '海洋', props: '珊瑚', particle: 'bubble', fog: 0x1a4a6a },
   '森林': { texture: '森林', props: '树', particle: 'firefly', fog: 0x2c4a24 },
   '雨夜': { texture: '雨夜', props: '水洼', particle: 'rain', fog: 0x1c2530 },
+  '工厂': { texture: '工厂', props: '货箱', particle: 'ember', fog: 0x2a2e34 },
 };
 let sceneType = '无';
 
@@ -869,6 +878,26 @@ if (host && renderer) {
         rim.position.y = 0.02;
         g.add(rim);
         place(g, x, z, 0.7 + r() * 0.6);
+      } else if (type === '货箱') {
+        // 车间角落：木货箱 + 一只铁皮桶，像流水线边堆的物料。
+        const g = new THREE.Group();
+        const crateMat = new THREE.MeshStandardMaterial({ color: 0x8a6a3a, roughness: 0.85 });
+        const crate = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.26, 0.26), crateMat);
+        crate.position.y = 0.13;
+        crate.rotation.y = r() * 0.6;
+        g.add(crate);
+        const barrelMat = new THREE.MeshStandardMaterial({ color: 0x4a6a52, roughness: 0.5, metalness: 0.4 });
+        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.24, 14), barrelMat);
+        barrel.position.set(0.22, 0.12, -0.14);
+        g.add(barrel);
+        const hoopMat = new THREE.MeshStandardMaterial({ color: 0x30343a, roughness: 0.4, metalness: 0.6 });
+        for (const hy of [0.06, 0.18]) {
+          const hoop = new THREE.Mesh(new THREE.TorusGeometry(0.092, 0.008, 6, 18), hoopMat);
+          hoop.rotation.x = Math.PI / 2;
+          hoop.position.set(0.22, hy, -0.14);
+          g.add(hoop);
+        }
+        place(g, x, z, 0.75 + r() * 0.55);
       }
     }
   }
@@ -1620,8 +1649,54 @@ if (host && renderer) {
     glasses.add(leg);
   }
 
-  // 头部装饰：无 / 天线 / 安全帽 / 皇冠 / 眼镜。一次只显示一个。
-  const DECORATIONS = ['无', '天线', '安全帽', '皇冠', '眼镜'];
+  // ---- 墨镜：实心深色镜片（区别于眼镜的空框），戴了副酷墨镜 --------------------
+  const sunglasses = new THREE.Group();
+  sunglasses.position.set(0, 0.13, 0.235);
+  head.add(sunglasses);
+  const shadeMat = new THREE.MeshStandardMaterial({ color: 0x101318, roughness: 0.25, metalness: 0.4 });
+  for (const sx of [-1, 1]) {
+    const lens = mesh(new THREE.CircleGeometry(0.235, 36), shadeMat, { cast: false });
+    lens.position.set(sx * 0.285, 0, 0);
+    sunglasses.add(lens);
+    const frame = mesh(new THREE.TorusGeometry(0.30, 0.020, 10, 36), M.metalDark);
+    frame.position.set(sx * 0.285, 0, 0);
+    sunglasses.add(frame);
+  }
+  const shadeBridge = mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.10, 8), M.metalDark);
+  shadeBridge.rotation.z = Math.PI / 2;
+  shadeBridge.position.set(0, 0.02, 0);
+  sunglasses.add(shadeBridge);
+
+  // ---- 围巾：脖子上绕一圈红围巾，尾巴垂在胸前 --------------------------------
+  const scarf = new THREE.Group();
+  scarf.position.set(0, 2.52, 0.05);
+  neck.add(scarf);
+  const scarfMat = new THREE.MeshStandardMaterial({ color: 0xc0392b, roughness: 0.85 });
+  const scarfRing = mesh(new THREE.TorusGeometry(0.29, 0.055, 10, 28), scarfMat);
+  scarfRing.rotation.x = Math.PI / 2;
+  scarf.add(scarfRing);
+  const scarfTail = mesh(new THREE.BoxGeometry(0.13, 0.30, 0.05), scarfMat);
+  scarfTail.position.set(0.20, -0.18, 0.08);
+  scarfTail.rotation.z = -0.25;
+  scarf.add(scarfTail);
+
+  // ---- 背包：背后一个双肩包 -------------------------------------------------
+  const backpack = new THREE.Group();
+  backpack.position.set(0, 1.55, -0.42);
+  bodyGroup.add(backpack);
+  const packMat = new THREE.MeshStandardMaterial({ color: 0x3a4a5a, roughness: 0.7 });
+  const pack = mesh(new THREE.BoxGeometry(0.50, 0.60, 0.24), packMat);
+  backpack.add(pack);
+  const packFlap = mesh(new THREE.BoxGeometry(0.50, 0.22, 0.25), M.metalDark);
+  packFlap.position.y = 0.23;
+  backpack.add(packFlap);
+  const packStrap = mesh(new THREE.TorusGeometry(0.30, 0.028, 8, 20, Math.PI), M.black);
+  packStrap.rotation.x = Math.PI / 2;
+  packStrap.position.y = 0.34;
+  backpack.add(packStrap);
+
+  // 装饰：无 / 天线 / 安全帽 / 皇冠 / 眼镜 / 墨镜 / 围巾 / 背包。一次只显示一个。
+  const DECORATIONS = ['无', '天线', '安全帽', '皇冠', '眼镜', '墨镜', '围巾', '背包'];
   let decoration = '无';
   function setDecoration(name) {
     decoration = name;
@@ -1629,6 +1704,9 @@ if (host && renderer) {
     hat.visible = name === '安全帽';
     crown.visible = name === '皇冠';
     glasses.visible = name === '眼镜';
+    sunglasses.visible = name === '墨镜';
+    scarf.visible = name === '围巾';
+    backpack.visible = name === '背包';
   }
   setDecoration('无');
   window.addEventListener('bao:decoration', (e) => {
@@ -2587,6 +2665,12 @@ if (host && renderer) {
   let idlePlaying = 0;        // 上一帧正在演的自主动作（给降帧用：演的时候要流畅）
   let idleActionsOn = true;   // 待机小动作开关
   let idleFreq = 1.0;         // 待机动作频率倍率（慢 0.5 / 标准 1 / 快 2）
+  // 人格：活泼 / 沉稳 / 话痨 / 害羞。首次随机固定，影响动作频率与情绪阈值。
+  let personality = '活泼';
+  const FREQ_BOOST = { 活泼: 1.4, 沉稳: 0.65, 话痨: 1.0, 害羞: 0.9 };
+  let personalitySeeded = false;
+  let shyLookAt = -99;   // 被盯着看久了 → 害羞地别开视线
+  let boredBubbleAt = -99;   // 无聊冒泡的防抖
   let nameCycle = 0;
   let nameShown = '';
   let nameplateText = '';   // 用户自定义铭牌文字，空则显示主灯代表的软件名
@@ -2653,6 +2737,29 @@ if (host && renderer) {
     const comfort = t - comfortAt;
     const comfortOn = !reduceMotion && comfort >= 0 && comfort < 2.2;
     const comfortShake = comfortOn ? Math.sin(comfort * 20) * 0.015 * (1 - comfort / 2.2) : 0;
+
+    // ---- 人格 + 害羞 + 无聊
+    if (!personalitySeeded) {
+      personalitySeeded = true;
+      personality = body.dataset.personality || '活泼';
+    }
+    // 害羞：被盯着看久了就不好意思地别开视线（害羞人格更早躲）。
+    const shyThreshold = personality === '害羞' ? 2.5 : 4.5;
+    if (pointer.over && !busy && !waiting && !error) {
+      if (shyLookAt < 0) shyLookAt = t;
+    } else {
+      shyLookAt = -1;
+    }
+    const shyOn = shyLookAt >= 0 && (t - shyLookAt) > shyThreshold && !reduceMotion;
+    // 无聊：空闲太久（30 分钟）偶尔蔫一下，并冒个泡。
+    const boredOn = !dead && (idle || off) && (t - activeAt > 1800);
+    const boredPhase = boredOn ? ((t - activeAt - 1800) % 240) : -1;
+    const bored = boredOn && boredPhase < 3.0 ? Math.sin(Math.min(1, boredPhase / 3.0) * Math.PI) : 0;
+    if (boredOn && boredPhase < 0.1 && (t - boredBubbleAt) > 200) {
+      boredBubbleAt = t;
+      noticeText = '有点无聊';
+      noticeAt = t;
+    }
 
     // ---- colour: one transition, same duration as the DOM's .3s fade
     want.set(cssColor(state));
@@ -2800,8 +2907,8 @@ if (host && renderer) {
       }
       if (idleAction > 0 && t - idleActionAt > (IDLE_DURATION[idleAction] || 3)) {
         idleAction = 0;
-        // 频率倍率：快 = 间隔减半，慢 = 间隔翻倍
-        idleNextAt = t + (3.2 + Math.random() * 5.5) / (idleFreq || 1);
+        // 频率倍率：快 = 间隔减半，慢 = 间隔翻倍；人格再叠一层（活泼更勤、沉稳更懒）。
+        idleNextAt = t + (3.2 + Math.random() * 5.5) / ((idleFreq || 1) * (FREQ_BOOST[personality] || 1));
       }
     } else {
       idleAction = 0;
@@ -2864,8 +2971,8 @@ if (host && renderer) {
           : error ? -0.10
             : finished ? Math.sin(t * 2.2) * 0.06
               : idle ? Math.sin(t * 0.5) * 0.045 : 0;
-    pose.headYaw = damp(pose.headYaw, headYaw + glanceYaw, 6, dt);
-    pose.headPitch = damp(pose.headPitch, headPitch + doneNod + idleNod - idleLookHand * 0.22 - anxiety * 0.12 - yawn * 0.18, 6, dt);
+    pose.headYaw = damp(pose.headYaw, headYaw + glanceYaw + (shyOn ? 0.55 : 0), 6, dt);
+    pose.headPitch = damp(pose.headPitch, headPitch + doneNod + idleNod - idleLookHand * 0.22 - anxiety * 0.12 - yawn * 0.18 - bored * 0.12, 6, dt);
     head.rotation.y = pose.headYaw;
     head.rotation.x = pose.headPitch;
     head.rotation.z = damp(head.rotation.z, (off ? 0.10 : unknown ? 0.12 : error ? -0.05 : 0) + thinkTilt, 6, dt);
