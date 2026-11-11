@@ -1548,6 +1548,26 @@ if (host && renderer) {
   bridge.position.y = -0.01;
   head.add(bridge);
 
+  // ---- 头顶天线：一根细杆 + 会随状态发光的顶端小球，像「活物的触角」--------
+  // 平时轻微摆动，忙碌时抖得快，出错时乱颤；小球颜色跟着状态灯走。
+  const antenna = new THREE.Group();
+  antenna.position.set(-0.17, 0.46, -0.06);
+  head.add(antenna);
+  const antennaRod = mesh(new THREE.CylinderGeometry(0.011, 0.014, 0.52, 8), M.metalDark);
+  antennaRod.position.y = 0.24;
+  antenna.add(antennaRod);
+  const antennaTipMat = new THREE.MeshStandardMaterial({
+    color: 0x0a0d10, emissive: 0x34c759, emissiveIntensity: 1.3, metalness: 0.2, roughness: 0.3,
+  });
+  const antennaTip = mesh(new THREE.SphereGeometry(0.034, 14, 12), antennaTipMat, { cast: false });
+  antennaTip.position.y = 0.52;
+  antenna.add(antennaTip);
+  // 天线根部的固定环，让它看起来是「装上去」的，而不是插在脑袋上的。
+  const antennaBase = mesh(new THREE.TorusGeometry(0.035, 0.009, 8, 18), M.rust);
+  antennaBase.rotation.x = Math.PI / 2;
+  antennaBase.position.y = 0.02;
+  antenna.add(antennaBase);
+
   // The iris ring and the brow both carry expression, and both are shared
   // materials: two lenses, one colour, one update per frame.
   const eyeGlowMat = new THREE.MeshStandardMaterial({
@@ -2781,6 +2801,14 @@ if (host && renderer) {
     head.rotation.y = pose.headYaw;
     head.rotation.x = pose.headPitch;
     head.rotation.z = damp(head.rotation.z, (off ? 0.10 : unknown ? 0.12 : error ? -0.05 : 0) + thinkTilt, 6, dt);
+
+    // ---- 天线：忙碌抖得快、空闲慢摇、出错乱颤，顶端小球跟着状态灯变色
+    antennaTipMat.emissive.copy(tint);
+    const antennaFreq = off ? 1.2 : error ? 16 : busy ? 6.5 : waiting ? 4.5 : 2.6;
+    const antennaAmp = off ? 0.008 : error ? 0.09 : busy ? 0.055 : idle || unknown ? 0.032 : 0.02;
+    antenna.rotation.z = Math.sin(t * antennaFreq) * antennaAmp;
+    antenna.rotation.x = -0.16 + Math.sin(t * 2.2) * 0.035;
+    antennaTipMat.emissiveIntensity = off ? 0.25 : (error ? 1.9 : 1.1 + Math.sin(t * antennaFreq) * 0.4);
 
     // ---- eyes: a blink is a squint, which is what these eyes can do
     let eye = 1;
