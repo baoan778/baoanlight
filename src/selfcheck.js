@@ -1,0 +1,95 @@
+'use strict';
+// 启动自检：每次 `bao start`（server 启动）都跑一遍，检查这台机器接线对不对。
+//
+// 和 `bao doctor` 共用同一批判断，但这里：
+//   * 全同步、只读文件系统，跑得快、绝不会卡住启动
+//   * 不打印、不联网、不退出进程 —— 只是把结果挂到快照里，让机器人窗口能显示
+//   * 只报「硬错误」当 fail，缺可选项一律 warn（不吓人）
+//
+// 结果进 `/state` 的 selfcheck 字段 + `/selfcheck` 端点，机器人窗口据此在
+// 底部提示「自检发现问题」，CLI 也在启动后打印摘要。
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const config = require('./config');
+const install = require('./adapters/install');
+const agents = require('./adapters/agents');
+
+const ROOT = path.resolve(__dirname, '..');
+
+function exists(p) {
+  try { return !!p && fs.existsSync(p); } catch { return false; }
+}
+
+function run() {
+  const checks = [];
+  const check = (name, status, detail = '', fix = '') => checks.push({ name, status, detail, fix });
+
+  // ---- 运行时
+  const major = Number(process.versions.node.split('.')[0]);
+  check('Node 版本', major >= 20 ? 'pass' : 'fail', `node ${process.version}`, '安装 Node 20 或更新');
+
+  // ---- 状态目录可写（stats.json / hook-events.log 都写这里）
+  try {
+    config.ensureDir();
+    const probe = path.join(config.DIR, '.probe');
+    fs.writeFileSync(probe, 'x');
+    fs.unlinkSync(probe);
+    check('状态目录可写', 'pass', config.DIR);
+  } catch (e) {
+    check('状态目录可写', 'fail', `${config.DIR}: ${e.message}`, '检查用户主目录权限');
+  }
+
+  // ---- 机器人窗口运行时
+  let electronPath = null;
+  try {
+    const p = require('electron');
+    electronPath = typeof p === 'string' && exists(p) ? p : null;
+  } catch { /* 未安装 */ }
+  check('机器人窗口（Electron）', electronPath ? 'pass' : 'warn',
+    electronPath || '未安装 — 桌面机器人不可用', 'npm run setup');
+
+  // ---- Claude Code 钩子（跨机器最常见失败：钩子指向的脚本/node 不存在）
+  const cfg = config.load();
+  const claudeFile = install.claudeSettingsPath('user');
+  if (!exists(claudeFile)) {
+    check('Claude Code 钩子', 'warn', '未安装', 'bao connect claude');
+  } else {
+    let settings = {};
+    try {
+      settings = JSON.parse(fs.readFileSync(claudeFile, 'utf8'));
+    } catch {
+      check('Claude Code 钩子', 'fail', `${claudeFile} 不是合法 JSON`, '修复或从 baoanlight-backup-* 恢复');
+    }
+    const ours = Object.entries(settings.hooks || {})
+      .flatMap(([evt, groups]) => (groups || []).flatMap((g) => (g.hooks || []).map((h) => ({ evt, cmd: h.command || '' }))))
+      .filter((h) => /hooks[\\/]claude\.js/.test(h.cmd));
+    if (ours.length) {
+      const quoted = (ours[0].cmd.match(/"([^"]+)"/g) || []).map((q) => q.slice(1, -1));
+      const [bin, script] = quoted;
+      if (!exists(bin) || !exists(script)) {
+        check('Claude Code 钩子路径失效', 'fail',
+          `${script || '(未解析)'} 不存在`, 'bao connect claude（为本机重写路径）');
+      } else {
+        check('Claude Code 钩子', 'pass', `${ours.length} 个事件已接`);
+      }
+    } else {
+      check('Claude Code 钩子', 'warn', '未安装', 'bao connect claude');
+    }
+  }
+
+  // ---- 日志类代理的日志目录
+  for (const name of ['codex', 'deepseek', 'workbuddy']) {
+    const entry = agents.find(name);
+    const dir = agents.logDir(name, { config: cfg });
+    if (dir && exists(dir)) check(`${entry.label} 日志`, 'pass', dir);
+    else check(`${entry.label} 日志`, 'warn', '未找到', `bao watch ${name} --dir <路径>`);
+  }
+
+  const fails = checks.filter((c) => c.status === 'fail').length;
+  const warns = checks.filter((c) => c.status === 'warn').length;
+  return { at: Date.now(), checks, fails, warns };
+}
+
+module.exports = { run };

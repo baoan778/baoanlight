@@ -1,0 +1,2161 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>baoanlight</title>
+<style>
+  :root {
+    /* The three colours are the product. Green means "alive and working",
+       yellow means "stopped, and it is your turn", red means "it broke".
+       They are never used for anything else — the fuel gauge has its own
+       neutral scale for exactly this reason. */
+    --red: #ff3b30;
+    --amber: #ffcc00;
+    --green: #34c759;
+    --done: #b06bff;
+    --grey: #ccd3dc;
+
+    /* Materials, not state colours: the body stays yellow in every state, so
+       "yellow robot" never has to mean "waiting". */
+    --bot-yellow: #f5c518;
+    --bot-yellow-hi: #ffe066;
+    --bot-yellow-lo: #c99a05;
+    --bot-metal: #b9c2cd;
+    --bot-dark: #23262b;
+    --fuel-fill: #cfd5dc;
+
+    /* The window is sized to the stage. A fixed width keeps the robot on the
+       same screen pixel no matter how long a status line gets; the padding is
+       symmetric headroom for the glow, which paints outside the body. */
+    --stage-w: 340px;
+    --glow-pad: 76px;
+    --scale: 1;
+
+    --state: #4a5058;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-user-select: none; user-select: none; }
+  html, body {
+    width: 100%; height: 100%;
+    background: transparent;
+    overflow: hidden;
+    font: 500 12px/1.3 -apple-system, "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+    color: #e9edf2;
+    cursor: default;
+  }
+  body.browser { background: #101216; display: grid; place-items: center; }
+
+  body[data-state="busy"]    { --state: var(--green); }
+  body[data-state="waiting"] { --state: var(--amber); }
+  body[data-state="error"]   { --state: var(--red); }
+  body[data-state="done"]    { --state: var(--done); }
+  /* idle and unknown may not borrow the three state colours: green means
+     "working", and a green robot that is not working is the exact lie this
+     tool exists to prevent. idle is neutral white at 35% — alive, unlit. */
+  body[data-state="idle"]    { --state: #dfe5ec; }
+  body[data-state="unknown"] { --state: var(--grey); }
+  body[data-state="offline"] { --state: #4a5058; }
+
+  #stage {
+    position: absolute; top: 0; left: 0;
+    width: var(--stage-w);
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+    gap: 10px;
+    padding: var(--glow-pad) 0;
+    transform: scale(var(--scale));
+    transform-origin: top left;
+  }
+  body.browser #stage { position: static; }
+
+  /* ---------- the robot ----------
+     The robot is a real 3D scene (see robot3d.js), not a drawing: it has depth,
+     it is lit by its own state lamp, and its shadow falls on the desktop. The
+     box keeps the drawing's exact 340×330 frame and 300px width, so the window
+     size, the fuel gauge and every saved window position still mean the same.
+
+     Nothing here animates the robot any more. The scene owns its own motion,
+     which is the only way a 3D object can move without looking like a sticker
+     being pushed around a page. */
+  #robot {
+    position: relative;
+    width: 100%;
+    display: flex; justify-content: center;
+    cursor: grab;
+  }
+  #robot:active { cursor: grabbing; }
+  #bot {
+    position: relative;
+    display: block;
+    width: 300px;
+    aspect-ratio: 340 / 330;
+    /* the scene casts a real shadow; this is the soft silhouette falloff that
+       keeps the robot from looking pasted onto the desktop */
+    filter: drop-shadow(0 14px 15px rgba(0, 0, 0, .40));
+    transition: width .22s ease, opacity .25s ease, filter .4s ease;
+  }
+  #bot canvas { display: block; width: 100%; height: 100%; }
+
+  /* The 3D panel is pixels, so the same state is also kept as markup: this is
+     what a screen reader can describe and what the UI tests can assert, and it
+     is painted from the same --state variable that tints the scene. One table,
+     one truth — the robot cannot disagree with its own panel. */
+  #mirror {
+    position: absolute; left: 0; bottom: 0;
+    width: 1px; height: 1px;
+    overflow: hidden; clip-path: inset(50%);
+  }
+  #bot #status-led { fill: var(--state); filter: drop-shadow(0 0 7px var(--state)); transition: fill .3s ease; }
+  body[data-state="idle"] #bot #status-led { opacity: .35; }
+  #bot #status-led:not(.on) { fill: #2a2d33; filter: none; opacity: 1; }
+  #bot .slot { fill: #2a2d33; }
+
+  /* No GL context: the window must still say something true, so it degrades to
+     a lit lens in the state colour rather than a blank rectangle. */
+  #fallback { display: none; position: absolute; inset: 0; place-items: center; }
+  body.no-webgl #bot canvas { display: none; }
+  body.no-webgl #fallback { display: grid; }
+  #fallback b {
+    width: 52px; height: 52px; border-radius: 50%;
+    background: var(--state);
+    box-shadow: 0 0 28px 6px var(--state);
+    opacity: .9;
+  }
+  body[data-state="idle"] #fallback b { opacity: .35; }
+
+
+  /* Poses, blinks, tread motion and the state glow all live in the scene now —
+     they are transforms of real parts, not keyframes on a picture. The one
+     thing CSS still owns is "powered down", because a desaturated silhouette
+     is a filter on the whole object and the scene cannot desaturate itself. */
+  body[data-state="offline"] #bot { filter: saturate(.25) brightness(.62) drop-shadow(0 12px 16px rgba(0, 0, 0, .45)); }
+
+  /* ---------- shapes ---------- */
+  body.collapsed #bot { width: 150px; }
+  body[data-theme="mini"] #bot { width: 210px; }
+  body.collapsed #fuel,
+  body[data-theme="mini"] #fuel { display: none; }
+
+  /* ---------- fuel gauge ---------- */
+  #fuel {
+    /* On the right flank of the 3D body: the fuel cell is part of the machine,
+       so it is parked where the machine is, and it never moves the robot. */
+    position: absolute; left: 61%; top: 58.5%;
+    width: 1.9%; height: 10.5%;
+    border-radius: 999px;
+    /* Opaque channel in the robot's own material: the window floats over an
+       unknown desktop, and a translucent track leaves a bar of unknown length. */
+    background: linear-gradient(160deg, #4b525b, #33383f);
+    box-shadow:
+      inset 0 0 0 1px rgba(0,0,0,.5),
+      inset 0 1px 0 rgba(255,255,255,.07),
+      0 2px 8px -4px rgba(0,0,0,.8);
+    overflow: hidden;
+    opacity: 0; transform: scaleY(.9);
+    transition: opacity .3s ease, transform .3s ease;
+    -webkit-app-region: no-drag;
+  }
+  #fuel.on { opacity: 1; transform: scaleY(1); }
+  #fuel b {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    border-radius: 999px;
+    height: 0%;
+    background: var(--fuel-fill);
+    box-shadow: 0 0 8px 0 rgba(207, 213, 220, .30);
+    transition: height .6s cubic-bezier(.4,0,.2,1), background .4s ease, box-shadow .4s ease;
+  }
+  #fuel[data-level="mid"] b { background: var(--amber); box-shadow: 0 0 10px 0 rgba(255, 204, 0, .5); }
+  #fuel[data-level="low"] b {
+    background: var(--red); box-shadow: 0 0 10px 0 rgba(255, 59, 48, .55);
+    animation: fuelWarn 1.6s ease-in-out infinite;
+  }
+  @keyframes fuelWarn { 0%,100% { opacity: 1 } 50% { opacity: .55 } }
+
+  /* ---------- agent dock ----------
+     A row per agent instead of one pill: with four harnesses open, one lamp
+     cannot show four states, so every agent keeps its own light, name, verb
+     and a thin fuel bar — all visible at once. */
+  #labels { display: flex; flex-direction: column; gap: 3px; align-items: center; width: 100%; }
+  .pill {
+    display: grid;
+    grid-template-columns: 8px minmax(52px, 76px) 1fr 30px;
+    align-items: center;
+    gap: 7px;
+    width: calc(100% - 24px);
+    max-width: 304px;
+    padding: 4px 9px;
+    border-radius: 9px;
+    background: rgba(14,16,20,.86);
+    box-shadow: 0 0 0 1px rgba(255,255,255,.07), 0 8px 18px -10px #000;
+    font-size: 10.5px; letter-spacing: .01em; white-space: nowrap;
+    overflow: hidden;
+    backdrop-filter: blur(10px);
+    cursor: pointer;
+  }
+  .pill:hover { box-shadow: 0 0 0 1px rgba(255,255,255,.18), 0 8px 18px -10px #000; }
+  .pill i { width: 7px; height: 7px; border-radius: 50%; flex: none; justify-self: center; }
+  .pill i[data-color="red"]   { background: var(--red);   box-shadow: 0 0 7px var(--red); }
+  .pill i[data-color="amber"] { background: var(--amber); box-shadow: 0 0 7px var(--amber); }
+  .pill i[data-color="green"] { background: var(--green); box-shadow: 0 0 7px var(--green); }
+  .pill i[data-color="done"]  { background: var(--done);  box-shadow: 0 0 7px rgba(176,107,255,.55); }
+  .pill i[data-color="grey"]  { background: var(--grey);  box-shadow: 0 0 7px rgba(204,211,220,.5); }
+  .pill i[data-color="white"] { background: #dfe5ec; box-shadow: 0 0 6px rgba(223,229,236,.5); }
+  .pill[data-state="idle"] i[data-color="white"] { opacity: .55; box-shadow: none; }
+  .pill b { font-weight: 650; overflow: hidden; text-overflow: ellipsis; }
+  .pill span { opacity: .62; font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
+  .pill em { height: 3px; border-radius: 2px; background: #2a2f36; overflow: hidden; }
+  .pill em u { display: block; height: 100%; width: 0; background: var(--fuel-fill); transition: width .4s ease; }
+  /* A session that has gone silent must not look as confident as one that just
+     reported. Same information, visibly less certain. */
+  .pill.quiet { opacity: .45; }
+  .pill.quiet i { box-shadow: none; }
+  /* A software that is not running keeps its row so positions never move, but
+     it must read as dark — not as "ready". Only the light goes out. */
+  .pill.offline { opacity: .38; }
+  .pill.offline i { box-shadow: none; }
+  /* The software that owns the main lamp gets a glowing ring in the lamp colour,
+     so "which one is the lamp about" is answered in the list too. */
+  .pill.worst { box-shadow: 0 0 0 1px rgba(255,255,255,.32), 0 0 14px -2px var(--state), 0 8px 18px -10px #000; }
+  /* 聚焦选中态：蓝色选中框，区分于「最坏者」的状态色发光。 */
+  .pill.focused { box-shadow: 0 0 0 1.5px #6aa5ff, 0 0 12px -2px rgba(106,165,255,.6), 0 8px 18px -10px #000; }
+  .pill.focused b { color: #cfe0ff; }
+  .pill.more { display: block; text-align: center; opacity: .55; font-size: 10px; padding: 3px; }
+
+  /* ---------- quick size bar ----------
+     Right-click means "I want you bigger", so it opens the one control that
+     does that and nothing else. It scales the whole stage — robot, gauge and
+     labels — and the window resizes around its bottom centre (see
+     window:size in main.js), so the machine grows upward instead of walking
+     off the edge of the desk. */
+  #sizer {
+    position: absolute; left: 50%; bottom: 26px;
+    transform: translateX(-50%) translateY(4px);
+    display: flex; align-items: center; gap: 6px;
+    width: 252px; padding: 6px 9px;
+    border-radius: 999px;
+    background: rgba(16,18,22,.96);
+    box-shadow: 0 0 0 1px rgba(255,255,255,.10), 0 12px 26px -12px #000;
+    opacity: 0; pointer-events: none;
+    transition: opacity .15s ease, transform .15s ease;
+    z-index: 22;
+    -webkit-app-region: no-drag;
+  }
+  #sizer.on { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+  #sizer[hidden] { display: none; }
+  #sizer button {
+    width: 20px; height: 20px; flex: none; border: 0; border-radius: 50%;
+    background: rgba(255,255,255,.08); color: #dfe6ef;
+    font-size: 11px; line-height: 1; cursor: pointer;
+    display: grid; place-items: center;
+  }
+  #sizer button:hover { background: rgba(255,255,255,.18); color: #fff; }
+  /* The slider is the one flex item that must be allowed to shrink: without
+     min-width:0 Chromium gives <input type=range> a ~129px content minimum, so
+     the thumb and the track spill past the pill and out of the window. */
+  #sizer input[type="range"] { flex: 1; min-width: 0; height: 18px; accent-color: var(--state); cursor: ew-resize; }
+  #sizer output {
+    flex: none; width: 36px; text-align: right;
+    font-size: 10.5px; font-variant-numeric: tabular-nums; opacity: .85;
+  }
+
+  /* 状态速览：和尺寸条一起在右键时出现，一排彩色状态按钮。
+     必须给显式宽度：绝对定位 + left:50% 的收缩适配被右半屏卡死，六个按钮
+     会被挤到文字换行、整块糊到软件列表上——这正是尺寸条「看起来坏了」的原因。 */
+  #preview {
+    position: absolute; left: 50%; bottom: 64px;
+    transform: translateX(-50%) translateY(4px);
+    display: flex; gap: 4px; width: 252px;
+    opacity: 0; pointer-events: none;
+    transition: opacity .15s ease, transform .15s ease;
+    z-index: 22;
+    -webkit-app-region: no-drag;
+  }
+  #preview.on { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+  #preview[hidden] { display: none; }
+  #preview button {
+    flex: 1; padding: 4px 0; border: 0; border-radius: 999px;
+    background: rgba(255,255,255,.08); color: #dfe6ef;
+    font: inherit; font-size: 10.5px; cursor: pointer; white-space: nowrap;
+  }
+  #preview button:hover { background: rgba(255,255,255,.2); }
+  #preview button[data-st="busy"] { color: #7ae0a0; }
+  #preview button[data-st="waiting"] { color: #ffd54a; }
+  #preview button[data-st="error"] { color: #ff6b61; }
+  #preview button[data-st="done"] { color: #9ae0b4; }
+
+  /* ---------- hover toolbar ---------- */
+  #bar {
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 2px; padding: 3px;
+    border-radius: 999px;
+    background: rgba(20,22,27,.94);
+    box-shadow: 0 0 0 1px rgba(255,255,255,.10), 0 8px 20px -8px #000;
+    opacity: 0; pointer-events: none; transition: opacity .15s ease;
+    -webkit-app-region: no-drag;
+    z-index: 8;
+  }
+  #stage:hover #bar, #bar.menu-open { opacity: 1; pointer-events: auto; }
+  #bar button {
+    width: 20px; height: 20px; border: 0; border-radius: 50%;
+    background: transparent; color: #cfd6df; font-size: 11px; line-height: 1;
+    cursor: pointer; display: grid; place-items: center;
+  }
+  #bar button:hover { background: rgba(255,255,255,.13); color: #fff; }
+  #bar button.danger:hover { background: #d0342c; color: #fff; }
+
+  /* ---------- size / settings menu ---------- */
+  /* 菜单浮在机器人右侧的空白区，而不是压在它身上：打开时窗口向右变宽，
+     机器人留在原处不动。 */
+  #menu {
+    position: absolute; top: 8px; left: calc(100% + 10px); right: auto; width: 220px;
+    padding: 10px 11px 9px;
+    border-radius: 12px;
+    background: rgba(16,18,22,.97);
+    box-shadow: 0 0 0 1px rgba(255,255,255,.10), 0 18px 40px -16px #000;
+    font-size: 11px; z-index: 20;
+    -webkit-app-region: no-drag;
+    /* The settings pane has grown past one screen; cap it and scroll inside
+       rather than letting the window grow taller than the desk. */
+    max-height: min(78vh, 560px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  #menu[hidden] { display: none; }
+  /* 浏览器模式是一个宽页面，机器人居中，菜单贴页面右边就不会压到它。 */
+  body.browser #menu { left: auto; right: 8px; }
+  #menu .title { font-weight: 650; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; opacity: .55; margin-bottom: 8px; }
+  #menu details.group { margin: 3px 0; }
+  #menu details.group > summary { cursor: pointer; padding: 5px 2px; font-size: 11.5px; color: #aeb6c0;
+    list-style: none; user-select: none; border-radius: 6px; }
+  #menu details.group > summary::-webkit-details-marker { display: none; }
+  #menu details.group > summary::before { content: '▸ '; color: #6b7480; }
+  #menu details.group[open] > summary::before { content: '▾ '; }
+  #menu details.group > summary:hover { color: #e9edf2; background: rgba(255,255,255,.05); }
+  #menu .row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+  #menu .row > span { flex: none; width: 46px; opacity: .72; }
+  #menu input[type="range"] { flex: 1; min-width: 0; height: 16px; accent-color: var(--state); cursor: pointer; }
+  /* 皮肤/场景旁的小色块：下拉里放不了图，用一块颜色让挑选更直观。 */
+  #menu .swatch { flex: none; width: 12px; height: 12px; border-radius: 3px; background: #4a5058;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.22); }
+  /* 最近动态：一条条状态变化，谁、干了什么、多久前。 */
+  #m-recent { display: flex; flex-direction: column; gap: 2px; margin: 1px 0 6px; }
+  #m-recent .recent { display: grid; grid-template-columns: auto 1fr auto; gap: 6px; align-items: baseline; font-size: 10px; color: #cfd5dc; }
+  #m-recent .recent b { font-weight: 600; color: #e9edf2; }
+  #m-recent .recent span { opacity: .7; }
+  #m-recent .recent em { opacity: .45; font-style: normal; white-space: nowrap; }
+  #menu select { flex: 1; min-width: 0; height: 20px; background: rgba(255,255,255,.08); color: #e9edf2;
+    border: 0; border-radius: 6px; font: inherit; font-size: 10.5px; cursor: pointer; }
+  #menu select option { background: #1a1d22; color: #e9edf2; }
+  #menu input[type="text"] { flex: 1; min-width: 0; height: 20px; padding: 0 7px; background: rgba(255,255,255,.08);
+    color: #e9edf2; border: 0; border-radius: 6px; font: inherit; font-size: 10.5px; }
+  #menu output { flex: none; width: 34px; text-align: right; font-variant-numeric: tabular-nums; opacity: .8; }
+  #m-order button { flex: none; width: 22px; height: 20px; padding: 0; background: rgba(255,255,255,.1);
+    color: #e9edf2; border: 0; border-radius: 5px; font: inherit; font-size: 11px; cursor: pointer; }
+  #m-order button:disabled { opacity: .3; cursor: default; }
+  #m-order button:not(:disabled):hover { background: rgba(255,255,255,.22); }
+  #m-order .row { justify-content: flex-start; }
+  #m-order .row > span { flex: 1; }
+  #m-export, #m-import { flex: 1; height: 22px; padding: 0; background: rgba(255,255,255,.1);
+    color: #e9edf2; border: 0; border-radius: 6px; font: inherit; font-size: 11px; cursor: pointer; }
+  #m-export:hover, #m-import:hover { background: rgba(255,255,255,.22); }
+  #menu label.row { cursor: pointer; }
+  #menu input[type="checkbox"] { accent-color: var(--state); cursor: pointer; }
+  #menu .hint { opacity: .45; font-size: 10px; line-height: 1.35; margin: 2px 0 4px; }
+  #menu button {
+    width: 100%; margin-top: 6px; padding: 5px 0;
+    border: 0; border-radius: 7px; cursor: pointer;
+    background: rgba(255,255,255,.08); color: #e9edf2; font: inherit;
+  }
+  #menu button:hover { background: rgba(255,255,255,.16); color: #fff; }
+  #menu button.danger:hover { background: #d0342c; }
+
+  /* Disconnected is not a state the agent is in — it is us not knowing. */
+  body.disconnected #bot { filter: grayscale(1) brightness(.5) drop-shadow(0 12px 16px rgba(0,0,0,.4)); }
+  body.disconnected #bot #status-led { fill: #2a2d33; filter: none; opacity: 1; }
+  body.disconnected #fuel { opacity: .15; }
+  body.disconnected .pill { opacity: .3; }
+
+  #disconnected,
+  #note {
+    position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%);
+    font-size: 10px; font-weight: 600; letter-spacing: .01em;
+    white-space: nowrap; max-width: 100%;
+    overflow: hidden; text-overflow: ellipsis;
+    color: #ff9f0a; opacity: 0; transition: opacity .2s;
+  }
+  body.disconnected #disconnected { opacity: 1; }
+  #note { bottom: 20px; color: #9aa6b4; opacity: 0; }
+  #note.on { opacity: 1; }
+  #note[hidden] { display: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #bot, #bot * { animation: none !important; }
+  }
+</style>
+</head>
+<body data-state="offline" data-theme="full">
+
+<div id="stage">
+  <div id="bar">
+    <button id="btn-menu" title="尺寸与设置">&#9881;</button>
+    <button id="btn-theme" title="切换尺寸">&#9704;</button>
+    <button id="btn-collapse" title="收起机器人（隐藏列表）">&#8211;</button>
+    <button id="btn-quit" class="danger" title="退出">&#10005;</button>
+  </div>
+
+  <div id="menu" hidden>
+    <div class="title">机器人</div>
+    <details class="group" open>
+      <summary>基础</summary>
+      <div class="row">
+        <span>体型</span>
+        <select id="m-body"></select>
+      </div>
+      <div class="row">
+        <span>尺寸</span>
+        <input id="m-size" type="range" min="70" max="170" step="5" value="100" />
+        <output id="m-size-val">100%</output>
+      </div>
+      <div class="row">
+        <span>灯光亮度</span>
+        <input id="m-brightness" type="range" min="50" max="100" step="5" value="100" />
+        <output id="m-brightness-val">100%</output>
+      </div>
+    </details>
+    <details class="group">
+      <summary>灯光</summary>
+      <div class="row">
+        <span>底座灯效</span>
+        <select id="m-effect"></select>
+      </div>
+      <div class="row">
+        <span>光环样式</span>
+        <select id="m-halo"></select>
+      </div>
+    </details>
+    <details class="group">
+      <summary>外观</summary>
+      <div class="row">
+        <span>配色主题</span>
+        <select id="m-theme"></select>
+      </div>
+      <div class="row">
+        <span>皮肤</span>
+        <select id="m-skin"></select>
+        <i class="swatch" id="skin-swatch"></i>
+      </div>
+      <div class="row">
+        <span>眼睛配色</span>
+        <select id="m-eyestyle"></select>
+        <i class="swatch" id="eye-swatch"></i>
+      </div>
+      <div class="row">
+        <span>眼睛形状</span>
+        <select id="m-eyeshape"></select>
+      </div>
+      <div class="row">
+        <span>履带配色</span>
+        <select id="m-trackstyle"></select>
+        <i class="swatch" id="track-swatch"></i>
+      </div>
+      <div class="row">
+        <span>履带形状</span>
+        <select id="m-tracktype"></select>
+      </div>
+      <div class="row">
+        <span>配件配色</span>
+        <select id="m-armskin"></select>
+        <i class="swatch" id="arm-swatch"></i>
+      </div>
+      <div class="row">
+        <span>手爪形状</span>
+        <select id="m-claw"></select>
+      </div>
+      <div class="row">
+        <span>胳膊形状</span>
+        <select id="m-armtype"></select>
+      </div>
+      <div class="row">
+        <span>头形状</span>
+        <select id="m-headtype"></select>
+      </div>
+      <button id="m-reset-look">重置外观</button>
+      <button id="m-random-look">随机换装</button>
+    </details>
+    <details class="group">
+      <summary>动作</summary>
+      <div class="title">状态手势</div>
+      <div class="row"><span>出错</span><select id="m-pose-error"></select></div>
+      <div class="row"><span>等待</span><select id="m-pose-waiting"></select></div>
+      <div class="row"><span>运行</span><select id="m-pose-busy"></select></div>
+      <div class="row"><span>完成</span><select id="m-pose-done"></select></div>
+      <div class="row"><span>空闲</span><select id="m-pose-idle"></select></div>
+      <label class="row"><input id="m-idle" type="checkbox" checked /> 待机动作</label>
+      <div class="row">
+        <span>待机频率</span>
+        <select id="m-idlefreq"></select>
+      </div>
+      <div class="row">
+        <span>动效强度</span>
+        <select id="m-motion"></select>
+      </div>
+    </details>
+    <details class="group">
+      <summary>场景</summary>
+      <div class="row">
+        <span>场景</span>
+        <select id="m-scene"></select>
+        <i class="swatch" id="scene-swatch"></i>
+      </div>
+    </details>
+    <details class="group">
+      <summary>系统</summary>
+      <label class="row"><input id="m-sound" type="checkbox" /> 提示音</label>
+      <div class="row">
+        <span>提示音风格</span>
+        <select id="m-soundstyle"></select>
+      </div>
+      <label class="row"><input id="m-voice" type="checkbox" /> 语音播报</label>
+      <label class="row"><input id="m-click" type="checkbox" checked /> 点击穿透</label>
+      <label class="row"><input id="m-labels" type="checkbox" checked /> 软件列表</label>
+      <label class="row"><input id="m-offline" type="checkbox" checked /> 显示未运行软件</label>
+      <label class="row"><input id="m-model" type="checkbox" checked /> 显示模型/供应商</label>
+      <div class="row">
+        <span>列表行数</span>
+        <select id="m-maxrows"></select>
+      </div>
+      <div class="title">今日时长广告牌</div>
+      <div class="row">
+        <span>显示内容</span>
+        <select id="m-sign"></select>
+      </div>
+      <div class="row">
+        <span>位置</span>
+        <select id="m-sign-pos"></select>
+      </div>
+      <div class="row">
+        <span>颜色</span>
+        <select id="m-sign-color"></select>
+      </div>
+      <div class="row">
+        <span>形状</span>
+        <select id="m-sign-shape"></select>
+      </div>
+      <div class="row">
+        <span>铭牌文字</span>
+        <input id="m-nameplate" type="text" maxlength="16" placeholder="留空显示软件名" />
+      </div>
+      <div class="title">软件顺序</div>
+      <div id="m-order"></div>
+      <div class="hint">点 ↑/↓ 调整软件在灯环与列表里的前后顺序。</div>
+      <div class="row">
+        <button id="m-export">导出配置</button>
+        <button id="m-import">导入配置</button>
+      </div>
+      <input id="m-import-file" type="file" accept=".json" hidden />
+      <div class="title">外观方案</div>
+      <div class="row">
+        <input id="m-preset-name" type="text" maxlength="12" placeholder="方案名" />
+        <button id="m-preset-save">保存</button>
+      </div>
+      <div class="row">
+        <select id="m-preset-list"></select>
+        <button id="m-preset-apply">应用</button>
+        <button id="m-preset-del">删除</button>
+      </div>
+      <div class="hint">快捷键：Ctrl/⌘+Shift+= 放大，- 缩小，0 重置。</div>
+      <button id="m-quit" class="danger">退出</button>
+    </details>
+    <div class="title">最近动态</div>
+    <div id="m-recent"></div>
+    <div class="hint">右键机器人调出尺寸条，双击打招呼。</div>
+  </div>
+
+  <!-- Right-click opens this: the whole machine, scaled, remembered. -->
+  <div id="sizer" hidden>
+    <button id="s-down" title="缩小">&minus;</button>
+    <input id="s-range" type="range" min="70" max="170" step="5" value="100" aria-label="机器人尺寸" />
+    <button id="s-up" title="放大">+</button>
+    <output id="s-val" title="点击重置">100%</output>
+    <button id="s-reset" title="重置为 100%">&#8635;</button>
+    <button id="s-gear" title="全部设置">&#9881;</button>
+  </div>
+
+  <!-- 状态速览：右键时和尺寸条一起出现，点一下预览 3 秒再恢复。 -->
+  <div id="preview" hidden>
+    <button data-st="busy">运行</button>
+    <button data-st="waiting">等待</button>
+    <button data-st="error">出错</button>
+    <button data-st="done">完成</button>
+    <button data-st="idle">空闲</button>
+    <button data-st="offline">离线</button>
+  </div>
+
+  <div id="robot">
+    <div id="bot" role="img" aria-label="桌面状态机器人">
+      <!-- The 3D viewport. robot3d.js appends the canvas; every part of the
+           robot is drawn there, in a real scene with real lights and a real
+           shadow, so the state colour is light rather than paint. -->
+
+      <!-- And the same state as markup, 1px of it: a screen reader can read
+           this, the UI tests assert on it, and the scene takes its colours
+           from these values. It is a mirror, never a second opinion. -->
+      <svg id="mirror" aria-hidden="true" viewBox="0 0 8 8">
+        <circle id="status-led" cx="4" cy="4" r="3.6" />
+        <rect class="slot" id="slot0" x="0" width="1" height="1" />
+        <rect class="slot" id="slot1" x="1" width="1" height="1" />
+        <rect class="slot" id="slot2" x="2" width="1" height="1" />
+        <rect class="slot" id="slot3" x="3" width="1" height="1" />
+        <rect class="slot" id="slot4" x="4" width="1" height="1" />
+        <rect class="slot" id="slot5" x="5" width="1" height="1" />
+        <rect class="slot" id="slot6" x="6" width="1" height="1" />
+        <rect class="slot" id="slot7" x="7" width="1" height="1" />
+      </svg>
+
+      <!-- No GL context: a lit lens in the state colour, never a blank box. -->
+      <div id="fallback"><b></b></div>
+    </div>
+
+    <div id="fuel" title=""><b></b></div>
+  </div>
+
+  <div id="labels"></div>
+  <div id="disconnected">连接已断开 &mdash; 状态未知</div>
+  <div id="note" hidden></div>
+</div>
+
+<!-- Vendored, not imported from node_modules: the overlay must render from a
+     plain HTTP copy of src/, with no install step and no network. -->
+<script type="module" src="./robot3d.js"></script>
+
+<script>
+(() => {
+  const bridge = window.bao || null;           // present only inside Electron
+  const inElectron = !!bridge;
+  if (!inElectron) document.body.classList.add('browser');
+
+  // One table, used by the lamp, the panel, the pills and the text. The order
+  // of the keys is the priority order: red beats yellow beats green.
+  const COLOR = {
+    error: 'red',
+    waiting: 'amber',
+    busy: 'green',
+    done: 'done',
+    idle: 'white',
+    unknown: 'grey',
+    offline: null,
+  };
+  const HEX = {
+    red: '#ff3b30', amber: '#ffcc00', green: '#34c759', done: '#b06bff',
+    white: '#dfe5ec', grey: '#ccd3dc',
+  };
+  const VERB = {
+    error: '运行失败',
+    waiting: '需要你',
+    busy: '运行中',
+    done: '已完成',
+    idle: '就绪',
+    unknown: '未知',
+    offline: '未运行',
+  };
+
+  // 正式产品名，不是内部标识：列表与铭牌显示「Claude Code」，而不是「claude」。
+  const LABEL = {
+    claude: 'Claude Code',
+    codex: 'Codex',
+    workbuddy: 'WorkBuddy',
+    deepseek: 'DeepSeek Harness',
+  };
+  const displayName = (agent) => LABEL[agent] || String(agent || '');
+
+  // cc-switch 接管某个软件后，它的名字会撒谎：Claude Code 可能实际跑在 DeepSeek
+  // 上。这一行把「实际在用什么模型/供应商」说清楚；没被接管时返回 null，不显示。
+  const ccSwitchLabel = (cc) => {
+    if (!cc) return null;
+    const model = cc.model ? String(cc.model).trim() : '';
+    const provider = cc.provider ? String(cc.provider).trim() : '';
+    // cc-switch 用 "default" 表示「没切到第三方供应商」，不携带信息。
+    const realProvider = provider && provider.toLowerCase() !== 'default' ? provider : '';
+    if (!model && !realProvider) return null;
+    // 模型名通常已含供应商（如 deepseek-v4.1-flash），有模型就用模型；
+    // 供应商只在没有模型名时兜底。
+    return model || realProvider;
+  };
+
+  const stage   = document.getElementById('stage');
+  const robot   = document.getElementById('robot');
+  const bar     = document.getElementById('bar');
+  const menu    = document.getElementById('menu');
+  const sizer   = document.getElementById('sizer');
+  const sRange  = document.getElementById('s-range');
+  const sVal    = document.getElementById('s-val');
+  const labels  = document.getElementById('labels');
+  const fuel    = document.getElementById('fuel');
+  const fuelFill = fuel.querySelector('b');
+  const led     = document.getElementById('status-led');
+  const note    = document.getElementById('note');
+  const slotEls = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => document.getElementById('slot' + i));
+
+  let cfg = { showLabels: true, theme: 'full', collapsed: false, scale: 1, clickThrough: true, sound: false };
+  let collapsed = false;
+  let scale = 1;
+  let menuOpen = false;
+  let sizerOpen = false;
+  let sizerTimer = 0;
+  let lastSnap = null;
+  // 点击聚焦：null = 自动聚合（主灯显示最坏者）；非 null = 聚焦到某个软件，
+  // 主灯临时显示该软件的状态，但四个通道始终各自可见。
+  let focusedAgent = null;
+  // Which state's alert has been silenced by a poke. Cleared when the lamp
+  // moves, so the next incident is allowed to speak again.
+  let mutedFor = null;
+
+  // ---------------------------------------------------------------- layout
+  // Every size the window has to agree with the page on: the visible stage
+  // (scaled), and the rectangle that may receive clicks. The menu is part of
+  // that rectangle, or its slider would be click-through.
+  function fit(anchor = 'top') {
+    if (!inElectron) return;
+    requestAnimationFrame(() => {
+      const r = stage.getBoundingClientRect();
+      // 菜单在机器人右侧：窗口必须同时装下两者，否则菜单会被窗口裁掉。
+      let w = r.width;
+      let h = r.height;
+      if (!menu.hidden) {
+        const mr = menu.getBoundingClientRect();
+        w = Math.max(w, mr.right - r.left + 4);
+        h = Math.max(h, mr.bottom - r.top + 4);
+      }
+      bridge.contentSize({ w: Math.ceil(w), h: Math.ceil(h), scale, anchor });
+
+      const boxes = [robot.getBoundingClientRect(), bar.getBoundingClientRect()];
+      // The per-software list is interactive (click to focus), so it must be
+      // inside the click-through hot rect too — otherwise clicks fall through
+      // to whatever window is behind the robot.
+      if (labels && labels.children.length) boxes.push(labels.getBoundingClientRect());
+      if (!menu.hidden) boxes.push(menu.getBoundingClientRect());
+      if (!sizer.hidden) boxes.push(sizer.getBoundingClientRect());
+      // 状态速览面板也要进热区：不然它在点击穿透区里，六个按钮全点不了。
+      const pv = document.getElementById('preview');
+      if (pv && !pv.hidden) boxes.push(pv.getBoundingClientRect());
+      const pad = 5;
+      const left = Math.min(...boxes.map((b) => b.left)) - pad;
+      const top = Math.min(...boxes.map((b) => b.top)) - pad;
+      const right = Math.max(...boxes.map((b) => b.right)) + pad;
+      const bottom = Math.max(...boxes.map((b) => b.bottom)) + pad;
+      bridge.hotRect({ x: left, y: top, w: right - left, h: bottom - top });
+    });
+  }
+
+  function applyScale(next, { persist = false, anchor = 'bottom' } = {}) {
+    // 拉尺寸条 = 用户要控制大小。若正处在「收起」态（150px 底座），先展开再缩放，
+    // 否则拉到 170% 也只有 150×1.7=255px，比默认 300px 还小——这是「拉满还是很小」的根因。
+    if (collapsed) {
+      setCollapsed(false);
+      if (inElectron) bridge.saveConfig({ collapsed: false });
+    }
+    // 70% is still a recognisable robot; 170% is about as tall as a 1080p work
+    // area allows once the window is pinned above the taskbar. Both numbers are
+    // the whole stage: the robot, the gauge and the agent list move together,
+    // because a bigger lamp on a small robot is a bigger lamp, not a bigger
+    // robot.
+    scale = Math.max(0.7, Math.min(1.7, Number(next) || 1));
+    document.documentElement.style.setProperty('--scale', String(scale));
+    // The scene redraws its backing store at the new size, so a scaled-up robot
+    // stays sharp instead of being a stretched 300px canvas.
+    window.dispatchEvent(new CustomEvent('bao:scale', { detail: { scale } }));
+    const pct = Math.round(scale * 100);
+    const input = document.getElementById('m-size');
+    const out = document.getElementById('m-size-val');
+    if (input) input.value = String(pct);
+    if (out) out.textContent = pct + '%';
+    if (sRange) sRange.value = String(pct);
+    if (sVal) sVal.textContent = pct + '%';
+    fit(anchor);
+    if (persist && inElectron) bridge.saveConfig({ scale });
+  }
+
+  // ---------------------------------------------------------------- sound
+  // Generated, not shipped: an oscillator pair is a few lines and keeps the
+  // package free of binary assets. Only two states are worth a noise — the
+  // ones where the user has to move — and only when they asked for it.
+  let actx = null;
+  let lastCue = 0;
+  // 提示音音色：不同波形 + 音高，让「叮咚」和「机械警报」可区分。
+  const SOUND_STYLES = {
+    '清脆叮咚': { type: 'sine', mul: 1.0 },
+    '低沉机械': { type: 'square', mul: 0.62 },
+    '电子脉冲': { type: 'triangle', mul: 1.35 },
+  };
+  // 每个状态一套音高：出错下降、等待上升、起步上扬、完成三连上扬；idle/offline 静默。
+  const TONES = {
+    error: [[520, 0], [360, 0.17]],
+    waiting: [[600, 0], [860, 0.14]],
+    busy: [[440, 0], [520, 0.09]],
+    done: [[660, 0], [990, 0.12], [1320, 0.24]],
+  };
+  function cue(kind) {
+    if (!cfg.sound) return;
+    if (mutedFor === kind) return;
+    const now = Date.now();
+    if (now - lastCue < 2500) return;      // one cue per incident, not per event
+    lastCue = now;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      actx = actx || new AC();
+      if (actx.state === 'suspended') actx.resume();
+      if (!TONES[kind]) return;   // idle / offline 静默：安静是刻意的
+      const style = SOUND_STYLES[cfg.soundStyle] || SOUND_STYLES['清脆叮咚'];
+      const tones = TONES[kind];
+      const peak = Number(cfg.soundVolume) || 0.22;
+      for (const [freq, at] of tones) {
+        const t0 = actx.currentTime + at;
+        const osc = actx.createOscillator();
+        const gain = actx.createGain();
+        osc.type = style.type;
+        osc.frequency.setValueAtTime(freq * style.mul, t0);
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(peak, t0 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.16);
+        osc.connect(gain).connect(actx.destination);
+        osc.start(t0);
+        osc.stop(t0 + 0.2);
+      }
+    } catch { /* a silent robot is a bug, not an outage */ }
+  }
+
+  // A poke is also "I have seen it": it silences the tone for this incident
+  // without touching the lamp. The state stays on screen — going quiet is about
+  // the noise, never about the truth.
+  window.addEventListener('bao:poke', () => {
+    const s = document.body.dataset.state;
+    if (s !== 'waiting' && s !== 'error') return;
+    mutedFor = s;
+    note.textContent = '已静音提示';
+    note.hidden = false;
+    note.classList.add('on');
+    setTimeout(() => { if (lastSnap) render(lastSnap); }, 1600);
+  });
+
+  // ---------------------------------------------------------------- fuel
+  function renderFuel(f) {
+    if (!f || typeof f.remaining !== 'number') {
+      fuel.classList.remove('on');
+      fuelFill.style.height = '0%';
+      delete document.body.dataset.fuel;
+      return;
+    }
+    const pct = Math.max(0, Math.min(100, f.remaining));
+    // 暴露给 3D 场景：机器人读这个值做「低电量焦虑」动作。
+    document.body.dataset.fuel = String(pct);
+    fuel.classList.add('on');
+    // Narrow warning bands: colour means "act soon", not "you are at 60%".
+    fuel.dataset.level = pct <= 10 ? 'low' : pct <= 25 ? 'mid' : 'ok';
+    fuelFill.style.height = pct + '%';
+    fuel.title = `${f.label || '剩余'}: ${Math.round(pct)}%` + (f.agent ? ` (${f.agent})` : '');
+  }
+
+  // ---------------------------------------------------------------- slots
+  // One cell per registered software, in the server's fixed order. A slot with
+  // no session is drawn dark rather than hidden: "codex is not running" is
+  // information, and a cell that appears and disappears makes the strip
+  // unreadable at a glance.
+  function renderSlots(slots) {
+    slotEls.forEach((el, i) => {
+      const s = slots[i];
+      const live = s && s.count > 0;
+      const colour = live ? COLOR[s.state] : null;
+      const hex = colour ? HEX[colour] : null;
+      el.style.fill = hex || '';
+      el.style.filter = hex ? `drop-shadow(0 0 3px ${hex})` : 'none';
+      el.style.opacity = !hex ? '1' : (s.state === 'idle' ? '.5' : '1');
+      el.dataset.agent = s ? s.agent : '';
+      el.dataset.state = live ? s.state : 'offline';
+      el.dataset.count = live ? String(s.count) : '0';
+    });
+  }
+
+  // ---------------------------------------------------------------- 3D scene
+  // The robot is drawn in WebGL, so it cannot be asked "what colour are you".
+  // It is told, from the one table above, in the same breath as the markup —
+  // which is why the lamp on the panel can never disagree with the lamp in the
+  // DOM mirror. Dispatched every render; the scene is idle-cheap.
+  // Priority, in the same order the server uses: red beats yellow beats green,
+  // and a tie goes to the fixed order (DeepSeek Harness first), never recency —
+  // a lamp that picks a different winner on each event is one you cannot trust.
+  const PRIO = { error: 6, waiting: 5, busy: 4, done: 3, unknown: 2, idle: 1, offline: 0 };
+
+  // The tie-break order, user-adjustable. On equal severity the first name here
+  // wins the main lamp, so the first software is the canonical "main" agent on a
+  // tie. The order also drives the ring, the dashboard bars and the pills.
+  const DEFAULT_ORDER = ['deepseek', 'claude', 'codex', 'workbuddy'];
+  let AGENT_RANK = Object.fromEntries(DEFAULT_ORDER.map((a, i) => [a, i]));
+  let agentOrder = [...DEFAULT_ORDER];
+  const FRESH_MS = 3000;
+
+  // Active software, in the FIXED order (DeepSeek Harness → Claude Code → Codex
+  // → WorkBuddy). The ring, the dashboard bars and the pills all read this same
+  // list, so a software always sits in the same position — the user learns the
+  // layout once and never has to re-map "third light = ?" when a state changes.
+  // `fresh` brightens a channel for the 3s after it changes; `worst` marks the
+  // one that owns the main lamp (highest priority), so it can be ringed/highlit.
+  function activeAgents(snap, slots, worstAgent) {
+    const last = new Map();
+    const now = Date.now();
+    for (const s of snap.sessions || []) {
+      const at = Number(s.updatedAt) || 0;
+      if (!last.has(s.agent) || last.get(s.agent) < at) last.set(s.agent, at);
+    }
+    return slots
+      .filter((s) => s && s.count > 0 && HEX[COLOR[s.state]])
+      .map((s) => {
+        const at = last.get(s.agent) || 0;
+        return {
+          agent: s.agent,
+          label: displayName(s.agent),
+          state: s.state,
+          hex: HEX[COLOR[s.state]],
+          dim: s.state === 'idle',
+          count: s.count,
+          at,
+          fresh: now - at < FRESH_MS,
+          worst: s.agent === worstAgent,
+        };
+      })
+      .sort((a, b) => (AGENT_RANK[a.agent] ?? 99) - (AGENT_RANK[b.agent] ?? 99));
+  }
+
+  function publish(state, colour, slots, agent, liveColour, agents) {
+    const detail = {
+      state,
+      color: colour ? HEX[colour] : null,
+      // The strip follows the software that spoke last, not the aggregate: the
+      // aggregate is already the big lamp, and a second copy of it says nothing.
+      live: liveColour || null,
+      dim: state === 'idle',
+      dead: state === 'offline',
+      agent: agent || '',
+      slots: slots.map((s) => {
+        const c = s && s.count > 0 ? COLOR[s.state] : null;
+        return c ? { hex: HEX[c], dim: s.state === 'idle', state: s.state, agent: s.agent } : null;
+      }),
+      // Per-software attribution for the base ring and the nameplate.
+      agents: agents || [],
+    };
+    window.dispatchEvent(new CustomEvent('bao:render', { detail }));
+  }
+
+  // "Done" is not a state the server has: a run finishing is busy → idle, and
+  // the machine answers it with two nods, not a colour change. Green means
+  // "working", so a green flash on an idle robot is exactly the lie this tool
+  // exists to prevent — the acknowledgement is motion, not light.
+  // cc-switch 切换提示：模型/供应商变了，机器人冒个气泡说一句。
+  const lastCC = new Map();
+  function announceCC(snap) {
+    const cc = snap.ccSwitch || {};
+    for (const agent of Object.keys(cc)) {
+      const label = ccSwitchLabel(cc[agent]) || '';
+      const prev = lastCC.get(agent);
+      lastCC.set(agent, label);
+      if (label && prev !== undefined && prev !== label) {
+        window.dispatchEvent(new CustomEvent('bao:ccswitch', { detail: { agent, model: label } }));
+      }
+    }
+  }
+
+  const lastByAgent = new Map();
+  // 最近动态：本次运行期间每个软件的状态变化时间线，菜单里一眼可看。
+  const recent = [];
+  const RECENT_VERB = { busy: '开始运行', waiting: '需要你', error: '出错了', done: '完成了', idle: '就绪', unknown: '状态未知', offline: '离线' };
+  function renderRecent() {
+    const box = document.getElementById('m-recent');
+    if (!box) return;
+    box.innerHTML = '';
+    for (const r of recent) {
+      const ago = Math.round((Date.now() - r.at) / 1000);
+      const agoText = ago < 60 ? `${ago} 秒前` : ago < 3600 ? `${Math.round(ago / 60)} 分前` : `${Math.round(ago / 3600)} 时前`;
+      const row = document.createElement('div');
+      row.className = 'recent';
+      row.innerHTML = `<b>${displayName(r.agent)}</b><span>${RECENT_VERB[r.state] || r.state}</span><em>${agoText}</em>`;
+      box.appendChild(row);
+    }
+  }
+  // 「X 秒前/分前」要会走，不能只在有新事件时才刷新一次。
+  setInterval(renderRecent, 30000);
+  function announceDone(sessions) {
+    for (const s of sessions) {
+      const prev = lastByAgent.get(s.agent);
+      lastByAgent.set(s.agent, s.state);
+      // 记录状态变化到「最近动态」（首次出现不算变化，避免初始加载刷屏）。
+      // 连续两条同 agent 同状态（SSE 连发两帧）只记一条，不刷屏。
+      if (prev && prev !== s.state
+        && !(recent[0] && recent[0].agent === s.agent && recent[0].state === s.state)) {
+        recent.unshift({ at: Date.now(), agent: s.agent, state: s.state });
+        if (recent.length > 8) recent.pop();
+        renderRecent();
+      }
+      // A run finishing is busy → done (or busy → idle for agents that do not
+      // report a "done" state). Either way the machine answers with two nods,
+      // not a colour change.
+      if (prev && prev !== 'idle' && prev !== 'done' && prev !== 'offline' && prev !== 'unknown'
+        && (s.state === 'idle' || s.state === 'done')) {
+        window.dispatchEvent(new CustomEvent('bao:done', { detail: { agent: s.agent } }));
+      }
+    }
+  }
+
+  // 点击聚焦：点某软件通道 = 聚焦它（主灯切到它）；再点同一个 = 取消聚焦回聚合。
+  function toggleFocus(agent) {
+    focusedAgent = focusedAgent === agent ? null : agent;
+    if (lastSnap) render(lastSnap);
+  }
+
+  // ---------------------------------------------------------------- render
+  // 语音播报：只在状态真正变化且开启时说一句。
+  let lastAnnounced = '';
+  // 里程碑庆祝：合计工作时长跨过 1/2/3/4/6/8/12 小时时，让机器人庆祝一次。
+  const MILESTONES = [1, 2, 3, 4, 6, 8, 12];
+  let lastMilestone = 0;
+  let lastMilestoneDay = '';
+  const dayDiff = (a, b) => {
+    const da = new Date(a + 'T00:00:00').getTime();
+    const db = new Date(b + 'T00:00:00').getTime();
+    if (!Number.isFinite(da) || !Number.isFinite(db)) return 0;
+    return Math.max(0, Math.round((db - da) / 86400000));
+  };
+  function announce(state) {
+    if (!cfg.voice) return;
+    if (state === lastAnnounced) return;
+    lastAnnounced = state;
+    const msg = state === 'waiting' ? '需要你处理'
+      : state === 'error' ? '出错了'
+        : state === 'done' ? '完成了' : '';
+    if (!msg) return;
+    try {
+      if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
+      const u = new SpeechSynthesisUtterance(msg);
+      u.lang = 'zh-CN';
+      u.rate = 1.05;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(u);
+    } catch { /* 没有语音引擎就静默 */ }
+  }
+
+  // 原生系统通知：等待/出错/完成时弹一次。同一状态 6 秒内只弹一次（防抖动），
+  // 但换成别的状态要能立刻弹。
+  let lastNotifiedState = '';
+  let lastNotifiedAt = 0;
+  function notifyState(state, agentLabel) {
+    if (!inElectron || !bridge.notify) return;
+    if (!(state === 'waiting' || state === 'error' || state === 'done')) return;
+    const now = Date.now();
+    if (state === lastNotifiedState && now - lastNotifiedAt < 6000) return;
+    lastNotifiedState = state;
+    lastNotifiedAt = now;
+    const text = state === 'waiting' ? '需要你处理' : state === 'error' ? '出错了' : '完成了';
+    bridge.notify(agentLabel ? `${agentLabel} ${text}` : text, '');
+  }
+
+  // 额度见底提醒：剩余额度从 >5% 掉到 ≤5% 时弹一次。
+  let lastFuelLow = false;
+  function notifyFuel(f) {
+    if (!inElectron || !bridge.notify) return;
+    const low = !!(f && typeof f.remaining === 'number' && f.remaining <= 5);
+    if (low && !lastFuelLow) {
+      bridge.notify('额度快用完了', `${f.agent ? displayName(f.agent) + ' ' : ''}只剩 ${Math.round(f.remaining)}%`);
+    }
+    lastFuelLow = low;
+  }
+
+  function render(snap) {
+    lastSnap = snap;
+    let overall = snap.overall || 'offline';
+    announce(overall);
+    const sessions = snap.sessions || [];
+    // 托盘 tooltip 跟着整体状态走（hover 托盘图标能看到现在在干什么）。
+    if (inElectron && bridge.trayStatus) bridge.trayStatus({ overall, count: sessions.length });
+
+    // "Nothing is running" and "Claude is running but not reporting" look
+    // identical from here, and only one of them is a bug the user can fix.
+    // We only ever upgrade to the second when a process was actually seen.
+    const stalled = overall === 'offline' && snap.presence === true;
+    if (stalled) overall = 'unknown';
+
+    const slots = snap.slots || [];
+
+    // 点击聚焦：聚焦某软件时主灯临时显示它的状态（否则显示聚合最坏者）；
+    // 聚焦的软件下线则自动回到聚合。
+    let displayState = overall;
+    if (focusedAgent) {
+      const f = slots.find((s) => s.agent === focusedAgent && s.count > 0);
+      if (f) displayState = f.state;
+      else focusedAgent = null;
+    }
+
+    const previous = document.body.dataset.state;
+    document.body.dataset.state = displayState;
+    // 主灯代表的软件（状态最要紧的那个）：机器人待机时会瞄一眼它的槽位。
+    const mainPriority = { error: 6, waiting: 5, busy: 4, done: 3, unknown: 2, idle: 1, offline: 0 };
+    let mainSlotIdx = 0;
+    for (let i = 0; i < slots.length; i++) {
+      if ((mainPriority[slots[i].state] || 0) > (mainPriority[slots[mainSlotIdx].state] || 0)) mainSlotIdx = i;
+    }
+    document.body.dataset.mainSlot = String(mainSlotIdx);
+    // A new incident earns its chime back: poking silenced this one, not the
+    // next one.
+    if (previous !== displayState) mutedFor = null;
+    if (previous !== displayState) cue(displayState);
+
+    const color = COLOR[displayState] || null;
+    led.dataset.color = color || 'red';
+    led.classList.toggle('on', !!color);
+
+    renderSlots(slots);
+    announceDone(sessions);
+    announceCC(snap);
+    // 每个软件的今日时长（用短名）传给 3D 广告牌。
+    const stats = {};
+    for (const [agent, ms] of Object.entries(snap.stats?.byAgent || {})) {
+      const min = Math.floor(ms / 60000);
+      if (min >= 1) stats[displayName(agent).split(' ')[0]] = min;
+    }
+    document.body.dataset.stats = JSON.stringify(stats);
+    // 今日战绩：完成 / 出错总次数，交给 3D 广告牌展示。
+    const events = snap.stats?.events || {};
+    let doneTotal = 0;
+    let errorTotal = 0;
+    for (const agent of Object.keys(events)) {
+      doneTotal += events[agent] && events[agent].done || 0;
+      errorTotal += events[agent] && events[agent].error || 0;
+    }
+    document.body.dataset.events = JSON.stringify({ done: doneTotal, error: errorTotal });
+
+    // 里程碑：合计时长跨过整点小时庆祝一次（跨天自动清零）。
+    const totalBusyMs = Object.values(snap.stats?.byAgent || {}).reduce((a, b) => a + b, 0);
+    const statsDay = snap.stats?.day || '';
+    if (statsDay !== lastMilestoneDay) {
+      lastMilestoneDay = statsDay;
+      lastMilestone = 0;
+      // 陪伴天数：跨天时问候一次「陪你第 N 天啦」。
+      const days = dayDiff(cfg.firstRun || statsDay, statsDay);
+      if (days >= 1) window.dispatchEvent(new CustomEvent('bao:companion', { detail: { days } }));
+    }
+    const crossed = MILESTONES.find((m) => totalBusyMs >= m * 3600000 && m > lastMilestone);
+    if (crossed) {
+      lastMilestone = crossed;
+      window.dispatchEvent(new CustomEvent('bao:milestone', { detail: { hours: crossed } }));
+    }
+
+    // Whose panel is this? Focused software when focused, otherwise the worst.
+    const top = focusedAgent
+      ? slots.find((s) => s.agent === focusedAgent && s.count > 0)
+      : slots.find((s) => s.state === overall && s.count > 0);
+    const agentLabel = top ? displayName(top.agent) : '';
+    const worstKey = top ? top.agent : '';
+
+    if (previous !== displayState) notifyState(displayState, agentLabel);
+    renderFuel(snap.fuel);
+    notifyFuel(snap.fuel);
+    // sessions arrive newest-first, so [0] is the software that spoke last
+    const liveTop = sessions[0];
+    publish(displayState, color, slots, agentLabel,
+      liveTop ? HEX[COLOR[liveTop.state]] : null,
+      activeAgents(snap, slots, worstKey));
+
+    // 按软件聚合：同一软件多个会话只占一行（取最坏状态），否则一个多会话的软件
+    // 会把别的软件挤出前几行——workbuddy 同时有「idle」和「error」两个会话时，
+    // 会显示两行 workbuddy，而 claude 被挤掉。
+    const seen = new Map();
+    for (const s of sessions) {
+      if (s.state === 'offline') continue;
+      const cur = seen.get(s.agent);
+      if (!cur || PRIO[s.state] > PRIO[cur.state]) seen.set(s.agent, s);
+    }
+    // 每个注册软件始终各占一行：offline 也是暗行，位置固定——和胸口槽位、灯环一致。
+    // 软件不会因为没在跑就凭空消失，眼睛也不用重新学「第几行是谁」。顺序直接取
+    // 服务端的固定槽位表（它已经把离线软件排在固定位置）。
+    // 顺序由「软件顺序」决定：slots 说明「有哪些软件」，agentOrder 说明「排第几」。
+    // 只按 server 的固定槽位排，会让设置里的 ↑/↓ 只影响主灯、不影响这份列表。
+    const slotAgents = slots.map((x) => x.agent);
+    const rowOrder = slotAgents.length
+      ? [...agentOrder.filter((a) => slotAgents.includes(a)),
+        ...slotAgents.filter((a) => !agentOrder.includes(a))]
+      : agentOrder;
+    // showOffline=false 时退回旧行为：只显示真正有会话的软件。默认每个注册软件
+    // 都占一行（离线是暗行），位置固定。
+    const offlineRows = cfg.showOffline !== false;
+    const list = rowOrder
+      .map((agent) => seen.get(agent) || (offlineRows
+        ? { agent, state: 'offline', detail: '', count: 0, quiet: false }
+        : null))
+      .filter(Boolean);
+    const maxRows = Math.max(2, Math.min(8, Number(cfg.maxRows) || 4));
+    const showPills = cfg.showLabels && !collapsed && list.length > 0;
+    labels.innerHTML = '';
+    if (showPills) {
+      // Four rows fit comfortably; the rest collapse into a count rather than
+      // pushing the robot off the bottom of the desk.
+      for (const s of list.slice(0, maxRows)) {
+        const offline = s.state === 'offline';
+        const el = document.createElement('div');
+        el.className = 'pill';
+        el.dataset.state = s.state;
+        el.dataset.agent = s.agent;
+        el.innerHTML = '<i></i><b></b><span></span><em><u></u></em>';
+        el.classList.toggle('quiet', !!s.quiet);
+        el.classList.toggle('offline', offline);
+        // The row that owns the main lamp is ringed, so "which software is the
+        // lamp about" is answered here too, not only on the chest plate.
+        el.classList.toggle('worst', s.agent === worstKey && !focusedAgent && !offline);
+        // The focused row is highlighted with a selection ring; clicking again
+        // clears it and returns the lamp to the automatic aggregate.
+        el.classList.toggle('focused', s.agent === focusedAgent);
+        // 离线的行只是占位，点了也没有可聚焦的状态。
+        if (!offline) el.onclick = () => toggleFocus(s.agent);
+        // 右键：在它的工作目录里起一个终端，回到「事故现场」去审批/排查。
+        el.addEventListener('contextmenu', (e) => {
+          if (!s.cwd) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (inElectron && bridge.openTerminal) bridge.openTerminal(s.cwd);
+        });
+        el.querySelector('i').dataset.color = COLOR[s.state] || 'grey';
+        el.querySelector('b').textContent = displayName(s.agent);
+        const cc = offline || cfg.showModel === false ? null : ccSwitchLabel(snap.ccSwitch && snap.ccSwitch[s.agent]);
+        const detail = s.detail || VERB[s.state] || '';
+        el.querySelector('span').textContent = cc
+          ? (detail ? `用 ${cc} · ${detail}` : `用 ${cc}`)
+          : detail;
+        if (!offline && s.fuel && typeof s.fuel.remaining === 'number') {
+          el.querySelector('em u').style.width = Math.max(0, Math.min(100, s.fuel.remaining)) + '%';
+        } else {
+          el.querySelector('em').style.visibility = 'hidden';
+        }
+        const quietFor = s.quiet ? ` — 已静默 ${Math.round(s.quietFor / 60000)} 分钟` : '';
+        el.title = offline
+          ? `${displayName(s.agent)} — 未运行`
+          : (cc ? `用 ${cc} — ` : '') + (s.cwd ? s.cwd + ' — ' : '') + detail + quietFor
+            + (s.cwd ? ' — 右键在终端打开' : '')
+            + (s.agent === focusedAgent ? ' — 点击取消聚焦' : ' — 点击聚焦');
+        labels.appendChild(el);
+      }
+      if (list.length > maxRows) {
+        const more = document.createElement('div');
+        more.className = 'pill more';
+        more.textContent = `还有 ${list.length - maxRows} 个`;
+        labels.appendChild(more);
+      }
+    }
+
+    // Say the awkward thing out loud instead of showing a blank robot.
+    let text = '';
+    if (snap.slotsOverflow > 0) {
+      text = `还有 ${snap.slotsOverflow} 个软件在运行，超出面板槽位`;
+    } else if (stalled) {
+      text = '检测到 Claude Code 正在运行，但未上报状态 — 请执行：bao connect claude';
+    } else if (snap.unknownEvent && Date.now() - snap.unknownEvent.at < 10 * 60 * 1000) {
+      text = `无法识别的事件 "${snap.unknownEvent.event}" — 请查看 ~/.baoanlight/hook-events.log`;
+    } else {
+      // 启动自检：只在没有任何更急的事时，提醒安装层面的硬错误。
+      const sc = snap.selfcheck;
+      const fails = sc && Array.isArray(sc.checks) ? sc.checks.filter((x) => x.status === 'fail') : [];
+      if (fails.length) {
+        text = `自检发现 ${fails.length} 个问题 — ${fails[0].name}（运行 bao doctor 看详情）`;
+      }
+    }
+    note.textContent = text;
+    note.hidden = !text;
+    note.classList.toggle('on', !!text);
+
+    fit();
+  }
+
+  // ---------------------------------------------------------------- live state
+  let es;
+  function connect() {
+    const base = inElectron ? bridge.serverUrl : location.origin;
+    es = new EventSource(base + '/events');
+    es.onopen = () => document.body.classList.remove('disconnected');
+    es.onmessage = (e) => { try { render(JSON.parse(e.data)); } catch (_) {} };
+    es.onerror = () => {
+      document.body.classList.add('disconnected');
+      es.close();
+      setTimeout(connect, 1500);
+    };
+  }
+  connect();
+
+  // ---------------------------------------------------------------- collapsing
+  const collapseBtn = document.getElementById('btn-collapse');
+  const setCollapsed = (next) => {
+    collapsed = next;
+    document.body.classList.toggle('collapsed', collapsed);
+    collapseBtn.textContent = collapsed ? '+' : '–';
+    labels.innerHTML = '';
+    fit();
+    if (lastSnap) render(lastSnap);
+  };
+
+  // ---------------------------------------------------------------- menu
+  const setMenu = (open) => {
+    menuOpen = open;
+    menu.hidden = !open;
+    bar.classList.toggle('menu-open', open);
+    if (open) setSizer(false);
+    fit();
+  };
+
+  // The quick size bar. Deliberately not the settings pane: right-click is a
+  // one-gesture request, and answering it with sound, click-through and a quit
+  // button is how you get a slider nobody can hit.
+  const preview = document.getElementById('preview');
+  let previewTimer = null;
+  // 预览某状态 3 秒：直接改 body.dataset.state，CSS 颜色和 3D 机器人一起变，
+  // 结束后用最后一份快照还原真实状态。
+  function previewState(state) {
+    document.body.dataset.state = state;
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => {
+      if (lastSnap) render(lastSnap);
+    }, 3000);
+  }
+  preview.querySelectorAll('button').forEach((b) => {
+    b.addEventListener('click', () => previewState(b.dataset.st));
+  });
+
+  const setSizer = (open) => {
+    if (open === sizerOpen && open) return;
+    sizerOpen = open;
+    clearTimeout(sizerTimer);
+    if (open) {
+      sizer.hidden = false;
+      preview.hidden = false;
+      if (menuOpen) {
+        menuOpen = false;
+        menu.hidden = true;
+        bar.classList.remove('menu-open');
+      }
+      requestAnimationFrame(() => {
+        if (sizerOpen) { sizer.classList.add('on'); preview.classList.add('on'); }
+      });
+    } else {
+      sizer.classList.remove('on');
+      preview.classList.remove('on');
+      sizerTimer = setTimeout(() => {
+        if (!sizerOpen) { sizer.hidden = true; preview.hidden = true; fit(); }
+      }, 160);
+    }
+    fit();
+  };
+
+  document.getElementById('btn-menu').onclick = (e) => {
+    e.stopPropagation();
+    setMenu(!menuOpen);
+  };
+  // Right-click on the robot is the size bar. Everything else lives behind the
+  // gear, which is on the bar and on the size panel — never behind another
+  // right-click.
+  robot.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSizer(!sizerOpen);
+  });
+  document.addEventListener('pointerdown', (e) => {
+    if (menuOpen && !menu.contains(e.target) && !e.target.closest('#btn-menu')) setMenu(false);
+    if (sizerOpen && !sizer.contains(e.target) && !preview.contains(e.target)) setSizer(false);
+  });
+
+  document.getElementById('m-size').addEventListener('input', (e) => {
+    applyScale(Number(e.target.value) / 100, { persist: false });
+  });
+  document.getElementById('m-size').addEventListener('change', () => {
+    if (inElectron) bridge.saveConfig({ scale });
+  });
+
+  // 灯光亮度：只调发光件的亮度，不碰机器人本体材质，所以状态颜色与节奏不变、
+  // 仍可读。实时预览，松开时写入配置。
+  document.getElementById('m-brightness').addEventListener('input', (e) => {
+    const b = Math.max(0.5, Math.min(1, Number(e.target.value) / 100));
+    document.getElementById('m-brightness-val').textContent = Math.round(b * 100) + '%';
+    window.dispatchEvent(new CustomEvent('bao:brightness', { detail: { brightness: b } }));
+  });
+  document.getElementById('m-brightness').addEventListener('change', (e) => {
+    const b = Math.max(0.5, Math.min(1, Number(e.target.value) / 100));
+    if (inElectron) bridge.saveConfig({ brightness: b });
+  });
+
+  // 今日时长广告牌：显示哪个软件、放哪一侧、什么颜色、什么形状。
+  const SIGN_MODES = { '最多': 'top', '合计': 'total', '轮播': 'cycle', '关闭': 'off' };
+  const SIGN_POS = { '右侧': 'right', '左侧': 'left' };
+  const SIGN_COLORS = { '金色': '#ffd54a', '白色': '#e9edf2', '青色': '#4ad5ff', '粉色': '#ff8ac2', '紫色': '#b48aff', '绿色': '#34c759', '红色': '#ff3b30', '蓝色': '#4a9dff' };
+  const SIGN_SHAPES = { '圆角': '圆角', '胶囊': '胶囊', '方正': '方正' };
+  const signSel = document.getElementById('m-sign');
+  const signPosSel = document.getElementById('m-sign-pos');
+  const signColorSel = document.getElementById('m-sign-color');
+  const signShapeSel = document.getElementById('m-sign-shape');
+  const fillSignOpts = (sel, labels) => {
+    for (const l of labels) {
+      const o = document.createElement('option');
+      o.value = l;
+      o.textContent = l;
+      sel.appendChild(o);
+    }
+  };
+  fillSignOpts(signSel, Object.keys(SIGN_MODES));
+  fillSignOpts(signPosSel, Object.keys(SIGN_POS));
+  fillSignOpts(signColorSel, Object.keys(SIGN_COLORS));
+  fillSignOpts(signShapeSel, Object.keys(SIGN_SHAPES));
+  signSel.value = '最多';
+  signPosSel.value = '右侧';
+  signColorSel.value = '金色';
+  signShapeSel.value = '圆角';
+  function applySign() {
+    const mode = SIGN_MODES[signSel.value] || 'top';
+    const pos = SIGN_POS[signPosSel.value] || 'right';
+    const color = SIGN_COLORS[signColorSel.value] || '#ffd54a';
+    const shape = SIGN_SHAPES[signShapeSel.value] || '圆角';
+    window.dispatchEvent(new CustomEvent('bao:sign', { detail: { mode, pos, color, shape } }));
+    if (inElectron) bridge.saveConfig({ signMode: mode, signPos: pos, signColor: color, signShape: shape });
+  }
+  signSel.addEventListener('change', applySign);
+  signPosSel.addEventListener('change', applySign);
+  signColorSel.addEventListener('change', applySign);
+  signShapeSel.addEventListener('change', applySign);
+
+
+
+  // 体型（Q版/标准/修长）。
+  const BODY_NAMES = ['Q版', '标准', '修长'];
+  const bodySel = document.getElementById('m-body');
+  for (const n of BODY_NAMES) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; bodySel.appendChild(o);
+  }
+  bodySel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:body', { detail: { body: e.target.value } }));
+    if (inElectron) bridge.saveConfig({ body: e.target.value });
+  });
+
+  // 底座灯效列表（与 robot3d.js 的 BASE_EFFECTS 对应）。「状态色」是默认：四软件
+  // 状态色 + 彩虹流光；其余是纯氛围灯效（五颜六色流动）。
+  const EFFECT_NAMES = ['状态色', '彩虹', '彩虹波浪', '双旋转彩虹', '跑马灯', '彗星', '呼吸',
+    '警灯扫描', '波浪', '螺旋', '随机跑马灯', '交替', '频闪', '气泡', '雨滴', '锯齿蛇',
+    '绽放', '呼吸圆环', '色彩轮盘', '交叉光束', '填充', '闪电', '运动光点', '移动窗格',
+    '径向彩虹', '随机旋转', '旋转光束', '旋转彩虹', '序列', '平滑闪烁', '光谱循环',
+    '堆叠', '星夜', '漩涡圆环', '光束扫视', '渐变波浪'];
+  const effectSel = document.getElementById('m-effect');
+  for (const n of EFFECT_NAMES) {
+    const o = document.createElement('option');
+    o.value = n;
+    o.textContent = n;
+    effectSel.appendChild(o);
+  }
+  effectSel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:effect', { detail: { effect: e.target.value } }));
+    if (inElectron) bridge.saveConfig({ baseEffect: e.target.value });
+  });
+
+  // 皮肤/场景色块预览用的颜色表（与 robot3d.js 保持一致）。
+  const SKIN_COLORS = {
+    '做旧黄': '#c9a238', '军绿': '#7d8a4a', '铁锈橙': '#c2773e',
+    '深海蓝': '#5a7d9a', '岩灰': '#9a968c', '暗红': '#a05048',
+    '金属银': '#b9c2cd', '碳纤黑': '#3a3d42', '森林绿': '#4a6a3a',
+    '日落橙': '#d8823a', '樱花粉': '#d98aa8',
+  };
+  const SCENE_COLORS = {
+    '无': '#4a5058', '雪地': '#d8e2ec', '草原': '#6a8a4a', '沙漠': '#c9a562',
+    '星空': '#14162a', '岩浆': '#1a0e0a', '樱花': '#f0dcd8', '海洋': '#1a4a6a', '森林': '#2c4a24',
+  };
+  // 瞳色 / 履带 / 配件 的代表色（与 robot3d.js 的 EYE_STYLES / TRACK_SKINS / ARM_SKINS 对应）。
+  const EYE_COLORS = {
+    '默认黑': '#1b242c', '蓝瞳': '#1e3a5f', '绿瞳': '#1e4a30', '金瞳': '#4a3a10',
+    '紫瞳': '#3a1a5f', '红瞳': '#5f1a1a', '橙瞳': '#5f3a1a', '青瞳': '#1a5a5a',
+  };
+  const TRACK_COLORS = {
+    '黑': '#1a1a18', '深棕': '#2a1c14', '岩灰': '#2a2a28', '军绿': '#1c2418',
+    '深蓝': '#141a24', '暗红': '#240c0c', '墨绿': '#141c14',
+  };
+  const ARM_COLORS = {
+    '枪灰': '#97958a', '银白': '#c4c1b6', '金色': '#b89a55', '暗黑': '#4a4a46',
+    '铜色': '#b0764a', '青铜': '#8a6a3a', '枪铁': '#5a5f66', '香槟金': '#c9b48a',
+  };
+  const updateSwatch = (id, color) => {
+    const el = document.getElementById(id);
+    if (el) el.style.background = color || 'transparent';
+  };
+
+  // 皮肤列表（与 robot3d.js 的 SKINS 对应）。换皮肤只改身体主色/暗色，做旧纹理保留。
+  const SKIN_NAMES = ['做旧黄', '军绿', '铁锈橙', '深海蓝', '岩灰', '暗红', '金属银', '碳纤黑', '森林绿', '日落橙', '樱花粉'];
+  const skinSel = document.getElementById('m-skin');
+  for (const n of SKIN_NAMES) {
+    const o = document.createElement('option');
+    o.value = n;
+    o.textContent = n;
+    skinSel.appendChild(o);
+  }
+  skinSel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:skin', { detail: { skin: e.target.value } }));
+    if (inElectron) bridge.saveConfig({ skin: e.target.value });
+    updateSwatch('skin-swatch', SKIN_COLORS[e.target.value]);
+    syncThemeLabel();
+  });
+
+  // 眼睛配色 / 履带配色（与 robot3d.js 的 EYE_STYLES / TRACK_SKINS 对应）。
+  const EYESTYLE_NAMES = ['默认黑', '蓝瞳', '绿瞳', '金瞳', '紫瞳', '红瞳', '橙瞳', '青瞳'];
+  const TRACKSTYLE_NAMES = ['黑', '深棕', '岩灰', '军绿', '深蓝', '暗红', '墨绿'];
+  const eyestyleSel = document.getElementById('m-eyestyle');
+  for (const n of EYESTYLE_NAMES) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; eyestyleSel.appendChild(o);
+  }
+  eyestyleSel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:eyestyle', { detail: { eyestyle: e.target.value } }));
+    if (inElectron) bridge.saveConfig({ eyestyle: e.target.value });
+    updateSwatch('eye-swatch', EYE_COLORS[e.target.value]);
+    syncThemeLabel();
+  });
+  const trackstyleSel = document.getElementById('m-trackstyle');
+  for (const n of TRACKSTYLE_NAMES) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; trackstyleSel.appendChild(o);
+  }
+  trackstyleSel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:trackstyle', { detail: { trackstyle: e.target.value } }));
+    if (inElectron) bridge.saveConfig({ trackstyle: e.target.value });
+    updateSwatch('track-swatch', TRACK_COLORS[e.target.value]);
+    syncThemeLabel();
+  });
+
+  // 履带形状（圆角矩形/三角形/梯形）。
+  const TRACKTYPE_NAMES = ['圆角矩形', '三角形', '梯形'];
+  const tracktypeSel = document.getElementById('m-tracktype');
+  for (const n of TRACKTYPE_NAMES) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; tracktypeSel.appendChild(o);
+  }
+  tracktypeSel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:tracktype', { detail: { tracktype: e.target.value } }));
+    if (inElectron) bridge.saveConfig({ tracktype: e.target.value });
+  });
+
+  // 配件配色（手臂/手爪/镜筒）与手爪形状。
+  const ARMSKIN_NAMES = ['枪灰', '银白', '金色', '暗黑', '铜色', '青铜', '枪铁', '香槟金'];
+  const CLAW_NAMES = ['铲形', '三指', '钳形', '四指', '五指'];
+  const armskinSel = document.getElementById('m-armskin');
+  for (const n of ARMSKIN_NAMES) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; armskinSel.appendChild(o);
+  }
+  armskinSel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:armskin', { detail: { armskin: e.target.value } }));
+    if (inElectron) bridge.saveConfig({ armskin: e.target.value });
+    updateSwatch('arm-swatch', ARM_COLORS[e.target.value]);
+    syncThemeLabel();
+  });
+  const clawSel = document.getElementById('m-claw');
+  for (const n of CLAW_NAMES) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; clawSel.appendChild(o);
+  }
+  clawSel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:claw', { detail: { claw: e.target.value } }));
+    if (inElectron) bridge.saveConfig({ claw: e.target.value });
+  });
+
+  // 配色主题：一键套用整套协调配色（皮肤/眼睛/履带/配件），仍可单独微调。
+  const THEMES = {
+    '经典战损黄': { skin: '做旧黄', eye: '默认黑', track: '黑', arm: '枪灰' },
+    '纯白机甲': { skin: '岩灰', eye: '蓝瞳', track: '岩灰', arm: '银白' },
+    '赛博霓虹': { skin: '深海蓝', eye: '蓝瞳', track: '黑', arm: '暗黑' },
+    '军绿迷彩': { skin: '军绿', eye: '绿瞳', track: '军绿', arm: '铜色' },
+    '暗夜黑金': { skin: '暗红', eye: '金瞳', track: '黑', arm: '金色' },
+    '银翼猎手': { skin: '金属银', eye: '青瞳', track: '岩灰', arm: '枪铁' },
+    '森林守望': { skin: '森林绿', eye: '绿瞳', track: '军绿', arm: '青铜' },
+    '暮色玫瑰': { skin: '樱花粉', eye: '红瞳', track: '暗红', arm: '香槟金' },
+  };
+  const themeSel = document.getElementById('m-theme');
+  for (const n of [...Object.keys(THEMES), '自定义']) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; themeSel.appendChild(o);
+  }
+  // 判断当前配色是否已偏离主题；偏离则主题下拉标记为「自定义」。
+  function syncThemeLabel() {
+    for (const [name, t] of Object.entries(THEMES)) {
+      if (t.skin === skinSel.value && t.eye === eyestyleSel.value
+        && t.track === trackstyleSel.value && t.arm === armskinSel.value) {
+        themeSel.value = name;
+        return;
+      }
+    }
+    themeSel.value = '自定义';
+  }
+  themeSel.addEventListener('change', (e) => {
+    const t = THEMES[e.target.value];
+    if (!t) return;   // 「自定义」：保持当前配色，不做任何套用
+    skinSel.value = t.skin; skinSel.dispatchEvent(new Event('change'));
+    eyestyleSel.value = t.eye; eyestyleSel.dispatchEvent(new Event('change'));
+    trackstyleSel.value = t.track; trackstyleSel.dispatchEvent(new Event('change'));
+    armskinSel.value = t.arm; armskinSel.dispatchEvent(new Event('change'));
+    // 配色主题存到 palette，不能占用 theme（theme 是窗口模式 full/mini）。
+    if (inElectron) bridge.saveConfig({ palette: e.target.value, skin: t.skin, eyestyle: t.eye, trackstyle: t.track, armskin: t.arm });
+  });
+
+  // 胳膊形状（双板/圆筒/桁架）。
+  const ARMTYPE_NAMES = ['双板', '圆筒', '桁架'];
+  const armtypeSel = document.getElementById('m-armtype');
+  for (const n of ARMTYPE_NAMES) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; armtypeSel.appendChild(o);
+  }
+  armtypeSel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:armtype', { detail: { armtype: e.target.value } }));
+    if (inElectron) bridge.saveConfig({ armtype: e.target.value });
+  });
+
+  // 头形状（双筒/单眼）。
+  const HEADTYPE_NAMES = ['双筒', '单眼', '三眼'];
+  const headtypeSel = document.getElementById('m-headtype');
+  for (const n of HEADTYPE_NAMES) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; headtypeSel.appendChild(o);
+  }
+  headtypeSel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:headtype', { detail: { headtype: e.target.value } }));
+    if (inElectron) bridge.saveConfig({ headtype: e.target.value });
+  });
+
+  // 眼睛形状（圆/方/六边形）。
+  const EYESHAPE_NAMES = ['圆', '方', '六边形'];
+  const eyeshapeSel = document.getElementById('m-eyeshape');
+  for (const n of EYESHAPE_NAMES) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; eyeshapeSel.appendChild(o);
+  }
+  eyeshapeSel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:eyeshape', { detail: { eyeshape: e.target.value } }));
+    if (inElectron) bridge.saveConfig({ eyeshape: e.target.value });
+  });
+
+  // 场景（无/雪地/草原/沙漠/星空）。
+  const SCENE_NAMES = ['无', '雪地', '草原', '沙漠', '星空', '岩浆', '樱花', '海洋', '森林'];
+  const sceneSel = document.getElementById('m-scene');
+  for (const n of SCENE_NAMES) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; sceneSel.appendChild(o);
+  }
+  sceneSel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:scene', { detail: { scene: e.target.value } }));
+    if (inElectron) bridge.saveConfig({ scene: e.target.value });
+    updateSwatch('scene-swatch', SCENE_COLORS[e.target.value]);
+  });
+
+  // 动效强度（省电/标准/华丽）。
+  const MOTION_NAMES = ['省电', '标准', '华丽'];
+  const motionSel = document.getElementById('m-motion');
+  for (const n of MOTION_NAMES) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; motionSel.appendChild(o);
+  }
+  motionSel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:motion', { detail: { motion: e.target.value } }));
+    if (inElectron) bridge.saveConfig({ motion: e.target.value });
+  });
+
+  // 待机动作开关 + 频率。
+  const idleSel = document.getElementById('m-idle');
+  const idlefreqSel = document.getElementById('m-idlefreq');
+  for (const n of ['慢', '标准', '快']) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; idlefreqSel.appendChild(o);
+  }
+  const IDLE_FREQ = { 慢: 0.5, 标准: 1, 快: 2 };
+  function pushIdle() {
+    window.dispatchEvent(new CustomEvent('bao:idle', {
+      detail: { on: idleSel.checked, freq: IDLE_FREQ[idlefreqSel.value] || 1 },
+    }));
+  }
+  idleSel.addEventListener('change', (e) => {
+    pushIdle();
+    if (inElectron) bridge.saveConfig({ idleActions: e.target.checked });
+  });
+  idlefreqSel.addEventListener('change', (e) => {
+    pushIdle();
+    if (inElectron) bridge.saveConfig({ idleFreq: e.target.value });
+  });
+
+  // 光环样式（环形/圆形/星形/无）。
+  const HALO_NAMES = ['环形', '圆形', '星形', '无'];
+  const haloSel = document.getElementById('m-halo');
+  for (const n of HALO_NAMES) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; haloSel.appendChild(o);
+  }
+  haloSel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:halo', { detail: { halo: e.target.value } }));
+    if (inElectron) bridge.saveConfig({ halo: e.target.value });
+  });
+
+  // 软件顺序：动态生成排序行，↑/↓ 调整软件在灯环/列表里的前后顺序。
+  function renderOrderUI() {
+    const box = document.getElementById('m-order');
+    box.innerHTML = '';
+    agentOrder.forEach((agent, idx) => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const label = document.createElement('span');
+      label.textContent = displayName(agent);
+      row.appendChild(label);
+      const up = document.createElement('button');
+      up.textContent = '↑'; up.disabled = idx === 0; up.onclick = () => moveAgent(agent, -1);
+      row.appendChild(up);
+      const down = document.createElement('button');
+      down.textContent = '↓'; down.disabled = idx === agentOrder.length - 1; down.onclick = () => moveAgent(agent, 1);
+      row.appendChild(down);
+      box.appendChild(row);
+    });
+  }
+  function moveAgent(agent, dir) {
+    const idx = agentOrder.indexOf(agent);
+    const j = idx + dir;
+    if (j < 0 || j >= agentOrder.length) return;
+    [agentOrder[idx], agentOrder[j]] = [agentOrder[j], agentOrder[idx]];
+    AGENT_RANK = Object.fromEntries(agentOrder.map((a, i) => [a, i]));
+    if (inElectron) bridge.saveConfig({ agentOrder });
+    renderOrderUI();
+    if (lastSnap) render(lastSnap);
+  }
+
+  // 状态手势：五个状态各配一种手势（动作系统核心）。
+  const POSE_NAMES = ['环抱', '举手', '泵动', '摊开', '垂放', '叉腰', '鼓掌', '托下巴', '握拳'];
+  const POSE_STATE_KEYS = ['error', 'waiting', 'busy', 'done', 'idle'];
+  const poseSels = {};
+  for (const st of POSE_STATE_KEYS) {
+    const sel = document.getElementById('m-pose-' + st);
+    poseSels[st] = sel;
+    for (const n of POSE_NAMES) {
+      const o = document.createElement('option');
+      o.value = n; o.textContent = n; sel.appendChild(o);
+    }
+    sel.addEventListener('change', (e) => {
+      const pose = e.target.value;
+      window.dispatchEvent(new CustomEvent('bao:pose', { detail: { state: st, pose } }));
+      const patch = { poses: { ...(cfg.poses || {}) , [st]: pose } };
+      cfg.poses = patch.poses;
+      if (inElectron) bridge.saveConfig({ poses: patch.poses });
+    });
+  }
+
+  // ---- the quick size bar itself
+  sRange.addEventListener('input', (e) => {
+    applyScale(Number(e.target.value) / 100, { persist: false, anchor: 'bottom' });
+  });
+  sRange.addEventListener('change', () => {
+    if (inElectron) bridge.saveConfig({ scale });
+  });
+  document.getElementById('s-down').onclick = () => applyScale(scale - 0.05, { persist: true, anchor: 'bottom' });
+  document.getElementById('s-up').onclick = () => applyScale(scale + 0.05, { persist: true, anchor: 'bottom' });
+  document.getElementById('s-reset').onclick = () => applyScale(1, { persist: true, anchor: 'bottom' });
+  document.getElementById('s-val').onclick = () => applyScale(1, { persist: true, anchor: 'bottom' });
+  document.getElementById('s-gear').onclick = () => { setSizer(false); setMenu(true); };
+  document.getElementById('m-sound').addEventListener('change', (e) => {
+    cfg.sound = e.target.checked;
+    lastCue = 0;
+    // Written immediately, so the next start reads the same value. A setting
+    // that silently resets on restart is worse than having no setting.
+    if (inElectron) bridge.saveConfig({ sound: cfg.sound });
+    if (cfg.sound) cue('waiting');
+  });
+  document.getElementById('m-voice').addEventListener('change', (e) => {
+    cfg.voice = e.target.checked;
+    if (inElectron) bridge.saveConfig({ voice: cfg.voice });
+    if (cfg.voice) announce('waiting');
+  });
+
+  // 提示音风格（清脆叮咚 / 低沉机械 / 电子脉冲）。
+  const soundstyleSel = document.getElementById('m-soundstyle');
+  for (const n of Object.keys(SOUND_STYLES)) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; soundstyleSel.appendChild(o);
+  }
+  soundstyleSel.addEventListener('change', (e) => {
+    cfg.soundStyle = e.target.value;
+    if (inElectron) bridge.saveConfig({ soundStyle: e.target.value });
+    if (cfg.sound) cue('waiting');
+  });
+
+  document.getElementById('m-click').addEventListener('change', (e) => {
+    if (inElectron) bridge.saveConfig({ clickThrough: e.target.checked });
+  });
+  document.getElementById('m-labels').addEventListener('change', (e) => {
+    cfg.showLabels = e.target.checked;
+    if (inElectron) bridge.saveConfig({ showLabels: cfg.showLabels });
+    if (lastSnap) render(lastSnap);
+  });
+
+  // 软件列表的显示细项：未运行软件是否占一行、是否显示模型/供应商、最多几行。
+  document.getElementById('m-offline').addEventListener('change', (e) => {
+    cfg.showOffline = e.target.checked;
+    if (inElectron) bridge.saveConfig({ showOffline: cfg.showOffline });
+    if (lastSnap) render(lastSnap);
+  });
+  document.getElementById('m-model').addEventListener('change', (e) => {
+    cfg.showModel = e.target.checked;
+    if (inElectron) bridge.saveConfig({ showModel: cfg.showModel });
+    if (lastSnap) render(lastSnap);
+  });
+  const maxrowsSel = document.getElementById('m-maxrows');
+  for (let n = 2; n <= 8; n++) {
+    const o = document.createElement('option');
+    o.value = String(n);
+    o.textContent = n + ' 行';
+    maxrowsSel.appendChild(o);
+  }
+  maxrowsSel.value = '4';
+  maxrowsSel.addEventListener('change', (e) => {
+    cfg.maxRows = Number(e.target.value);
+    if (inElectron) bridge.saveConfig({ maxRows: cfg.maxRows });
+    if (lastSnap) render(lastSnap);
+  });
+
+  // 一键重置外观：只恢复外观与动作，不碰尺寸、位置、声音和系统开关。
+  const LOOK_DEFAULTS = {
+    skin: '做旧黄', eyestyle: '默认黑', eyeshape: '圆', trackstyle: '黑', tracktype: '圆角矩形',
+    armskin: '枪灰', claw: '铲形', armtype: '双板', headtype: '双筒', scene: '无',
+    motion: '标准', halo: '环形', body: '标准', baseEffect: '状态色', brightness: 1,
+    poses: { error: '环抱', waiting: '举手', busy: '泵动', done: '摊开', idle: '垂放' },
+  };
+  // 把一套外观即时套用到界面（不整页刷新）：逐个设置控件值并触发 change，
+  // 复用各控件原有的 change 监听（派发 bao:* 事件 + 保存 + 色块/主题联动）。
+  function applyLook(look) {
+    if (inElectron) bridge.saveConfig(look);
+    Object.assign(cfg, look);
+    const sets = {
+      skin: skinSel, eyestyle: eyestyleSel, eyeshape: eyeshapeSel, trackstyle: trackstyleSel,
+      tracktype: tracktypeSel, armskin: armskinSel, claw: clawSel, armtype: armtypeSel,
+      headtype: headtypeSel, scene: sceneSel, motion: motionSel, halo: haloSel, body: bodySel,
+      baseEffect: effectSel,
+    };
+    for (const [k, sel] of Object.entries(sets)) {
+      if (look[k] != null && [...sel.options].some((o) => o.value === String(look[k]))) {
+        sel.value = String(look[k]);
+        sel.dispatchEvent(new Event('change'));
+      }
+    }
+    for (const st of POSE_STATE_KEYS) {
+      const p = look.poses && look.poses[st];
+      if (p && poseSels[st]) { poseSels[st].value = p; poseSels[st].dispatchEvent(new Event('change')); }
+    }
+    if (typeof look.brightness === 'number') {
+      const v = Math.round(Math.max(0.5, Math.min(1, look.brightness)) * 100);
+      document.getElementById('m-brightness').value = String(v);
+      document.getElementById('m-brightness-val').textContent = v + '%';
+      window.dispatchEvent(new CustomEvent('bao:brightness', { detail: { brightness: v / 100 } }));
+    }
+  }
+
+  document.getElementById('m-reset-look').onclick = () => applyLook(LOOK_DEFAULTS);
+
+  // 随机换装：一键随机一套外观（含动作手势），即时生效。
+  document.getElementById('m-random-look').onclick = () => {
+    const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+    applyLook({
+      skin: pick(SKIN_NAMES), eyestyle: pick(EYESTYLE_NAMES), eyeshape: pick(EYESHAPE_NAMES),
+      trackstyle: pick(TRACKSTYLE_NAMES), tracktype: pick(TRACKTYPE_NAMES),
+      armskin: pick(ARMSKIN_NAMES), claw: pick(CLAW_NAMES), armtype: pick(ARMTYPE_NAMES),
+      headtype: pick(HEADTYPE_NAMES), scene: pick(SCENE_NAMES), motion: pick(MOTION_NAMES),
+      halo: pick(HALO_NAMES), body: pick(BODY_NAMES), baseEffect: pick(EFFECT_NAMES),
+    });
+  };
+
+  // 外观方案：把当前外观存成一套命名方案，之后一键切换。
+  const presetList = document.getElementById('m-preset-list');
+  const presetName = document.getElementById('m-preset-name');
+  const LOOK_KEYS = ['skin', 'eyestyle', 'eyeshape', 'trackstyle', 'tracktype', 'armskin',
+    'claw', 'armtype', 'headtype', 'scene', 'motion', 'halo', 'body', 'baseEffect', 'brightness'];
+  function currentLook() {
+    const poses = {};
+    for (const st of POSE_STATE_KEYS) poses[st] = poseSels[st].value;
+    const brightness = Math.max(0.5, Math.min(1, Number(document.getElementById('m-brightness').value) / 100));
+    const look = { poses, brightness };
+    const dom = {
+      skin: skinSel, eyestyle: eyestyleSel, eyeshape: eyeshapeSel, trackstyle: trackstyleSel,
+      tracktype: tracktypeSel, armskin: armskinSel, claw: clawSel, armtype: armtypeSel,
+      headtype: headtypeSel, scene: sceneSel, motion: motionSel, halo: haloSel, body: bodySel,
+      baseEffect: effectSel,
+    };
+    for (const k of LOOK_KEYS) if (dom[k]) look[k] = dom[k].value;
+    return look;
+  }
+  function renderPresetList() {
+    presetList.innerHTML = '';
+    for (const name of Object.keys(cfg.presets || {})) {
+      const o = document.createElement('option');
+      o.value = name;
+      o.textContent = name;
+      presetList.appendChild(o);
+    }
+  }
+  document.getElementById('m-preset-save').onclick = () => {
+    const name = presetName.value.trim().slice(0, 12);
+    if (!name) return;
+    cfg.presets = { ...(cfg.presets || {}), [name]: currentLook() };
+    if (inElectron) bridge.saveConfig({ presets: cfg.presets });
+    renderPresetList();
+    presetList.value = name;
+    presetName.value = '';
+  };
+  document.getElementById('m-preset-apply').onclick = () => {
+    const look = (cfg.presets || {})[presetList.value];
+    if (!look) return;
+    applyLook(look);
+  };
+  document.getElementById('m-preset-del').onclick = () => {
+    const name = presetList.value;
+    if (!name) return;
+    const presets = { ...(cfg.presets || {}) };
+    delete presets[name];
+    cfg.presets = presets;
+    if (inElectron) bridge.saveConfig({ presets });
+    renderPresetList();
+  };
+
+  // 尺寸快捷键：Ctrl/⌘+Shift + = / - / 0。
+  window.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
+    if (e.key === '=' || e.key === '+') { e.preventDefault(); applyScale(scale + 0.1, { persist: true }); }
+    else if (e.key === '-') { e.preventDefault(); applyScale(scale - 0.1, { persist: true }); }
+    else if (e.key === '0') { e.preventDefault(); applyScale(1, { persist: true }); }
+  });
+
+  // 铭牌文字：留空显示软件名，输入则显示自定义文字（实时预览，失焦保存）。
+  const nameplateInput = document.getElementById('m-nameplate');
+  nameplateInput.addEventListener('input', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:nameplate', { detail: { text: e.target.value } }));
+  });
+  nameplateInput.addEventListener('change', (e) => {
+    if (inElectron) bridge.saveConfig({ nameplate: e.target.value });
+  });
+
+  // 配置导出/导入：把当前自定义导出为 JSON 文件，导入后整页重载应用。
+  // 导出要覆盖「设置」里的每一类自定义，否则导入回来会静默丢项：
+  // 之前就漏了列表显示（是否显示未运行/模型/行数）、外观方案和语音播报。
+  const EXPORT_KEYS = ['scale', 'brightness', 'baseEffect', 'body', 'theme', 'skin', 'eyestyle', 'trackstyle',
+    'tracktype', 'armskin', 'claw', 'armtype', 'headtype', 'eyeshape', 'scene', 'motion',
+    'idleActions', 'idleFreq', 'halo', 'agentOrder', 'poses', 'nameplate', 'sound', 'soundStyle',
+    'soundVolume', 'voice', 'clickThrough', 'showLabels', 'showOffline', 'showModel', 'maxRows',
+    'presets', 'signMode', 'signPos', 'signColor', 'signShape'];
+  document.getElementById('m-export').onclick = () => {
+    const data = {};
+    for (const k of EXPORT_KEYS) if (cfg[k] !== undefined) data[k] = cfg[k];
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'bao-config.json'; a.click();
+    URL.revokeObjectURL(url);
+  };
+  document.getElementById('m-import').onclick = () => document.getElementById('m-import-file').click();
+  document.getElementById('m-import-file').addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(String(reader.result));
+        Object.assign(cfg, data);
+        if (inElectron) bridge.saveConfig(data);
+        location.reload();   // 重新加载，getConfig 会按新配置逐项应用
+      } catch { /* 坏文件：静默忽略 */ }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  });
+  document.getElementById('m-quit').onclick = () => (inElectron ? bridge.quit() : window.close());
+
+  // ---------------------------------------------------------------- drag
+  // The window is click-through except over the robot, and a CSS drag region
+  // would swallow the right-click menu. Drag by polling the cursor in main.
+  let dragging = false;
+  let pressAt = 0;
+  let pressX = 0;
+  let pressY = 0;
+  let pokeTimes = [];   // 三连击彩蛋的时间戳
+  let comfortTimer = null;   // 长按 1 秒 = 安抚
+  robot.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest('button, input, .pill')) return;
+    pressAt = Date.now();
+    pressX = e.clientX;
+    pressY = e.clientY;
+    // 长按 1 秒触发「安抚」；松手（endDrag）会清掉这个计时器。
+    clearTimeout(comfortTimer);
+    comfortTimer = setTimeout(() => {
+      comfortTimer = null;
+      window.dispatchEvent(new CustomEvent('bao:comfort'));
+    }, 1000);
+    if (!inElectron) return;
+    dragging = true;
+    bridge.dragStart();
+    window.dispatchEvent(new CustomEvent('bao:drag', { detail: { on: true } }));
+  });
+  const endDrag = (e) => {
+    clearTimeout(comfortTimer);
+    if (dragging) {
+      dragging = false;
+      if (inElectron) bridge.dragEnd();
+      window.dispatchEvent(new CustomEvent('bao:drag', { detail: { on: false } }));
+    }
+    // A press that never became a drag is a poke: he looks up and hops once.
+    // A threshold rather than a click listener, because a click never arrives
+    // once the window has been dragged across the desk.
+    if (e && e.type === 'pointerup' && pressAt &&
+        Date.now() - pressAt < 400 &&
+        Math.hypot(e.clientX - pressX, e.clientY - pressY) < 5) {
+      // 三连击彩蛋：原地抓狂（快速转圈 + 抖动）；否则就是普通戳一下。
+      const now = Date.now();
+      pokeTimes = pokeTimes.filter((x) => now - x < 900);
+      pokeTimes.push(now);
+      if (pokeTimes.length >= 3) {
+        pokeTimes = [];
+        window.dispatchEvent(new CustomEvent('bao:crazy'));
+      } else {
+        window.dispatchEvent(new CustomEvent('bao:poke'));
+      }
+    }
+    pressAt = 0;
+  };
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('blur', endDrag);
+
+  // A double click is a greeting, not a command: both arms up for two seconds.
+  // It is the only interaction here that is purely for the human, which is the
+  // difference between a status light and a desk pet — and it is free, because
+  // the arms already exist.
+  robot.addEventListener('dblclick', (e) => {
+    if (e.target.closest('button, input, .pill')) return;
+    window.dispatchEvent(new CustomEvent('bao:greet'));
+  });
+
+  // ---------------------------------------------------------------- controls
+  document.getElementById('btn-quit').onclick = () => (inElectron ? bridge.quit() : window.close());
+  collapseBtn.onclick = () => {
+    setCollapsed(!collapsed);
+    if (inElectron) bridge.saveConfig({ collapsed });
+  };
+  document.getElementById('btn-theme').onclick = () => {
+    cfg.theme = cfg.theme === 'mini' ? 'full' : 'mini';
+    document.body.dataset.theme = cfg.theme;
+    if (inElectron) bridge.saveConfig({ theme: cfg.theme });
+    fit();
+  };
+
+  if (inElectron) {
+    bridge.getConfig().then((c) => {
+      cfg = { ...cfg, ...c };
+      // 首次安装日期：记录一次，用于「陪伴天数」。
+      if (!cfg.firstRun) {
+        cfg.firstRun = new Date().toISOString().slice(0, 10);
+        bridge.saveConfig({ firstRun: cfg.firstRun });
+      }
+      document.body.dataset.theme = cfg.theme === 'mini' ? 'mini' : 'full';
+      setCollapsed(!!cfg.collapsed);
+      document.getElementById('m-sound').checked = !!cfg.sound;
+      document.getElementById('m-voice').checked = !!cfg.voice;
+      if (SOUND_STYLES[cfg.soundStyle]) soundstyleSel.value = cfg.soundStyle;
+      document.getElementById('m-click').checked = cfg.clickThrough !== false;
+      document.getElementById('m-labels').checked = cfg.showLabels !== false;
+      document.getElementById('m-offline').checked = cfg.showOffline !== false;
+      document.getElementById('m-model').checked = cfg.showModel !== false;
+      maxrowsSel.value = String(Math.max(2, Math.min(8, Number(cfg.maxRows) || 4)));
+      renderPresetList();
+      nameplateInput.value = cfg.nameplate || '';
+      if (cfg.nameplate) window.dispatchEvent(new CustomEvent('bao:nameplate', { detail: { text: cfg.nameplate } }));
+      const b = Math.max(0.5, Math.min(1, cfg.brightness ?? 1));
+      document.getElementById('m-brightness').value = String(Math.round(b * 100));
+      document.getElementById('m-brightness-val').textContent = Math.round(b * 100) + '%';
+      window.dispatchEvent(new CustomEvent('bao:brightness', { detail: { brightness: b } }));
+      const sm = ['top', 'total', 'cycle', 'off'].includes(cfg.signMode) ? cfg.signMode : 'top';
+      signSel.value = Object.keys(SIGN_MODES).find((k) => SIGN_MODES[k] === sm) || '最多';
+      const sp = cfg.signPos === 'left' ? 'left' : 'right';
+      signPosSel.value = Object.keys(SIGN_POS).find((k) => SIGN_POS[k] === sp) || '右侧';
+      const scol = cfg.signColor || '#ffd54a';
+      signColorSel.value = Object.keys(SIGN_COLORS).find((k) => SIGN_COLORS[k] === scol) || '金色';
+      const sh = ['圆角', '胶囊', '方正'].includes(cfg.signShape) ? cfg.signShape : '圆角';
+      signShapeSel.value = sh;
+      window.dispatchEvent(new CustomEvent('bao:sign', { detail: { mode: sm, pos: sp, color: scol, shape: sh } }));
+      const bd = BODY_NAMES.includes(cfg.body) ? cfg.body : '标准';
+      bodySel.value = bd;
+      window.dispatchEvent(new CustomEvent('bao:body', { detail: { body: bd } }));
+      const eff = EFFECT_NAMES.includes(cfg.baseEffect) ? cfg.baseEffect : '状态色';
+      effectSel.value = eff;
+      window.dispatchEvent(new CustomEvent('bao:effect', { detail: { effect: eff } }));
+      const sk = SKIN_NAMES.includes(cfg.skin) ? cfg.skin : '做旧黄';
+      skinSel.value = sk;
+      window.dispatchEvent(new CustomEvent('bao:skin', { detail: { skin: sk } }));
+      // 主题下拉由 syncThemeLabel 在所有配色就位后自动判定（匹配主题或「自定义」）。
+      const es = EYESTYLE_NAMES.includes(cfg.eyestyle) ? cfg.eyestyle : '默认黑';
+      eyestyleSel.value = es;
+      window.dispatchEvent(new CustomEvent('bao:eyestyle', { detail: { eyestyle: es } }));
+      const ts = TRACKSTYLE_NAMES.includes(cfg.trackstyle) ? cfg.trackstyle : '黑';
+      trackstyleSel.value = ts;
+      window.dispatchEvent(new CustomEvent('bao:trackstyle', { detail: { trackstyle: ts } }));
+      const tt = TRACKTYPE_NAMES.includes(cfg.tracktype) ? cfg.tracktype : '圆角矩形';
+      tracktypeSel.value = tt;
+      window.dispatchEvent(new CustomEvent('bao:tracktype', { detail: { tracktype: tt } }));
+      const ask = ARMSKIN_NAMES.includes(cfg.armskin) ? cfg.armskin : '枪灰';
+      armskinSel.value = ask;
+      window.dispatchEvent(new CustomEvent('bao:armskin', { detail: { armskin: ask } }));
+      const cw = CLAW_NAMES.includes(cfg.claw) ? cfg.claw : '铲形';
+      clawSel.value = cw;
+      window.dispatchEvent(new CustomEvent('bao:claw', { detail: { claw: cw } }));
+      const at = ARMTYPE_NAMES.includes(cfg.armtype) ? cfg.armtype : '双板';
+      armtypeSel.value = at;
+      window.dispatchEvent(new CustomEvent('bao:armtype', { detail: { armtype: at } }));
+      const ht = HEADTYPE_NAMES.includes(cfg.headtype) ? cfg.headtype : '双筒';
+      headtypeSel.value = ht;
+      window.dispatchEvent(new CustomEvent('bao:headtype', { detail: { headtype: ht } }));
+      const esh = EYESHAPE_NAMES.includes(cfg.eyeshape) ? cfg.eyeshape : '圆';
+      eyeshapeSel.value = esh;
+      window.dispatchEvent(new CustomEvent('bao:eyeshape', { detail: { eyeshape: esh } }));
+      const sc = SCENE_NAMES.includes(cfg.scene) ? cfg.scene : '无';
+      sceneSel.value = sc;
+      window.dispatchEvent(new CustomEvent('bao:scene', { detail: { scene: sc } }));
+      const mo = MOTION_NAMES.includes(cfg.motion) ? cfg.motion : '标准';
+      motionSel.value = mo;
+      window.dispatchEvent(new CustomEvent('bao:motion', { detail: { motion: mo } }));
+      idleSel.checked = cfg.idleActions !== false;
+      idlefreqSel.value = ['慢', '标准', '快'].includes(cfg.idleFreq) ? cfg.idleFreq : '标准';
+      pushIdle();
+      const hl = HALO_NAMES.includes(cfg.halo) ? cfg.halo : '环形';
+      haloSel.value = hl;
+      window.dispatchEvent(new CustomEvent('bao:halo', { detail: { halo: hl } }));
+      // 软件顺序：从配置读取并重建排序行。
+      if (Array.isArray(cfg.agentOrder) && cfg.agentOrder.length === DEFAULT_ORDER.length) {
+        agentOrder = [...cfg.agentOrder];
+        AGENT_RANK = Object.fromEntries(agentOrder.map((a, i) => [a, i]));
+      }
+      renderOrderUI();
+      // 状态手势：默认映射与 robot3d.js 的 statePoses 一致。
+      const DEFAULT_POSE = { error: '环抱', waiting: '举手', busy: '泵动', done: '摊开', idle: '垂放' };
+      const poses = cfg.poses || {};
+      for (const st of POSE_STATE_KEYS) {
+        const p = POSE_NAMES.includes(poses[st]) ? poses[st] : DEFAULT_POSE[st];
+        poseSels[st].value = p;
+        window.dispatchEvent(new CustomEvent('bao:pose', { detail: { state: st, pose: p } }));
+      }
+      updateSwatch('skin-swatch', SKIN_COLORS[skinSel.value]);
+      updateSwatch('scene-swatch', SCENE_COLORS[sceneSel.value]);
+      updateSwatch('eye-swatch', EYE_COLORS[eyestyleSel.value]);
+      updateSwatch('track-swatch', TRACK_COLORS[trackstyleSel.value]);
+      updateSwatch('arm-swatch', ARM_COLORS[armskinSel.value]);
+      applyScale(cfg.scale || 1, { persist: false, anchor: 'top' });
+      fit();
+    });
+    window.addEventListener('transitionend', () => fit());
+  } else {
+    document.body.dataset.theme = 'full';
+  }
+
+  render({ overall: 'offline', sessions: [] });
+})();
+</script>
+</body>
+</html>

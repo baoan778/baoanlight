@@ -1,0 +1,120 @@
+#!/usr/bin/env node
+'use strict';
+// Generic hook receiver — the escape hatch for agents that have no adapter yet.
+//
+// Give the agent one command to run at its lifecycle points, and let it pipe a
+// JSON object on stdin (or pass it as an argument):
+//
+//   bao hook --agent deepseek
+//   bao hook --agent workbuddy --state waiting --detail "approve plan?"
+//
+// Accepted payloads are deliberately forgiving, because every harness invents
+// its own vocabulary. Any of these decide the robot:
+//
+//   { "state": "busy" }                        literal state, wins
+//   { "event": "task_complete" }               mapped by log-watch.classify
+//   { "type": "approval_request" }
+//   { "hook_event_name": "Notification" }      Claude-shaped payloads too
+//
+// Like every other hook, this must never break or stall the agent it watches.
+
+const { setState } = require('../client');
+
+const STATES = ['error', 'waiting', 'busy', 'done', 'idle', 'offline'];
+
+// Claude Code's names are the most common in the wild; reusing the same table
+// here means a tool that copied Claude's hook vocabulary just works.
+const CLAUDE_STYLE = {
+  SessionStart: 'idle',
+  UserPromptSubmit: 'busy',
+  PreToolUse: 'busy',
+  PostToolUse: 'busy',
+  PreCompact: 'busy',
+  Notification: 'waiting',
+  Stop: 'idle',
+  SessionEnd: 'offline',
+};
+
+function parseArgs(argv) {
+  const out = { flags: {}, positional: [] };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith('--')) {
+      const [k, v] = a.slice(2).split('=');
+      if (v !== undefined) out.flags[k] = v;
+      else if (argv[i + 1] && !argv[i + 1].startsWith('-')) out.flags[k] = argv[++i];
+      else out.flags[k] = true;
+    } else out.positional.push(a);
+  }
+  return out;
+}
+
+async function readStdin() {
+  if (process.stdin.isTTY) return '';
+  let raw = '';
+  try {
+    for await (const chunk of process.stdin) raw += chunk;
+  } catch { /* no stdin is fine */ }
+  return raw;
+}
+
+function pickState(evt, explicit) {
+  if (explicit && STATES.includes(explicit)) return explicit;
+  const declared = evt.state || evt.status || evt.new_state;
+  if (STATES.includes(declared)) return declared;
+
+  const name = evt.hook_event_name || evt.event || evt.event_type || evt.eventType
+    || evt.type || evt.kind || evt.name;
+  if (name && CLAUDE_STYLE[name]) return CLAUDE_STYLE[name];
+
+  // Defer to the log watcher's table so a new agent only needs one vocabulary.
+  const { classify } = require('../adapters/log-watch');
+  return classify(name);
+}
+
+// Called by `bao hook` with the leftover positional args and the parsed flags.
+async function run(positional = [], flags = {}) {
+  const agent = String(flags.agent || flags.a || 'agent').toLowerCase();
+
+  const raw = positional.join(' ').trim() || await readStdin();
+  let evt = {};
+  if (raw) {
+    try { evt = JSON.parse(raw); } catch { evt = { detail: raw }; }
+  }
+  if (!evt || typeof evt !== 'object' || Array.isArray(evt)) evt = {};
+
+  const state = pickState(evt, flags.state);
+  if (!state) return;   // unknown event: leave the last good state alone
+
+  const sid = evt.session_id || evt.session || evt.sessionId || evt.thread_id
+    || evt.conversation_id || flags.session || 'default';
+
+  const detail = flags.detail
+    || evt.detail
+    || evt.message
+    || (state === 'waiting' ? 'needs you' : state === 'busy' ? 'working' : '');
+
+  const cwd = evt.cwd || process.cwd();
+
+  await setState({
+    session: `${agent}:${String(sid).slice(0, 64)}`,
+    agent,
+    state,
+    detail: String(detail).slice(0, 120),
+    cwd: cwd || '',
+  });
+}
+
+function failSafe(fn) {
+  // A wedged socket must never hold the agent hostage.
+  const bail = setTimeout(() => process.exit(0), 1500);
+  bail.unref?.();
+  fn().then(() => process.exit(0)).catch(() => process.exit(0));
+}
+
+if (require.main === module) {
+  const { flags, positional } = parseArgs(process.argv.slice(2));
+  failSafe(() => run(positional, flags));
+}
+
+module.exports = { run, pickState, parseArgs };

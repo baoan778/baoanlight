@@ -1,0 +1,71 @@
+{
+  "name": "baoanlight",
+  "version": "2.0.0",
+  "description": "A little tracked robot that floats on your desktop and shows what every AI coding agent is doing — Claude Code, Codex, DeepSeek Harness, WorkBuddy and anything else that can report.",
+  "author": "baoan778",
+  "bin": {
+    "baoanlight": "src/cli.js",
+    "bao": "src/cli.js"
+  },
+  "main": "src/overlay/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/cli.js start",
+    "overlay": "electron src/overlay/main.js",
+    "server": "node src/cli.js server",
+    "setup": "node scripts/setup.js",
+    "vendor:three": "node scripts/vendor-three.js",
+    "status": "node src/cli.js status",
+    "agents": "node src/cli.js agents",
+    "test": "node --test",
+    "doctor": "node src/cli.js doctor",
+    "watch:codex": "node src/cli.js watch codex",
+    "test:linux": "bash scripts/run-linux-tests.sh",
+    "test:ui": "playwright test",
+    "test:all": "npm test && npm run test:ui"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "optionalDependencies": {
+    "electron": "^38.0.0",
+    "node-pty": "^1.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deepak-hp/baoanlight.git"
+  },
+  "homepage": "https://deepak-hp.github.io/baoanlight",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "deepseek",
+    "workbuddy",
+    "ai-agent",
+    "overlay",
+    "desktop-robot",
+    "status",
+    "always-on-top",
+    "gemini-cli",
+    "aider",
+    "developer-tools",
+    "cli"
+  ],
+  "files": [
+    "src",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
+  "bugs": {
+    "url": "https://github.com/deepak-hp/baoanlight/issues"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "three": "^0.187.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2"
+  }
+}

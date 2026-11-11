@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=baoanlight
+Comment=A desktop robot that shows what your AI coding agents are doing
+Exec=bao start
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;Utility;
+X-GNOME-Autostart-enabled=true
