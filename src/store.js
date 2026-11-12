@@ -103,14 +103,29 @@ class Store extends EventEmitter {
     if (this._sweeper.unref) this._sweeper.unref();
   }
 
-  // Seed accumulated stats from disk; a different day means the file is stale.
+  // Seed accumulated stats from disk. If the file is from an earlier day (the
+  // app was closed overnight), archive that day into history first instead of
+  // throwing the history away — otherwise the weekly report loses days.
   mergeStats(stats) {
-    if (!stats || !stats.byAgent || stats.day !== dayKey()) return;
+    if (!stats || !stats.byAgent) return;
+    const today = dayKey();
+    const history = { ...(stats.history || {}) };
+    if (stats.day !== today) {
+      const hasData = Object.keys(stats.byAgent).length > 0
+        || Object.keys(stats.events || {}).length > 0;
+      if (stats.day && hasData) {
+        history[stats.day] = { byAgent: stats.byAgent, events: stats.events || {} };
+        const keys = Object.keys(history).sort();
+        while (keys.length > 7) delete history[keys.shift()];
+      }
+      this.stats = { day: today, byAgent: {}, events: {}, history };
+      return;
+    }
     this.stats = {
       day: stats.day,
       byAgent: { ...stats.byAgent },
       events: { ...(stats.events || {}) },
-      history: { ...(stats.history || {}) },
+      history,
     };
   }
 

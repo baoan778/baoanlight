@@ -361,6 +361,7 @@
     padding: 3px 5px; margin: 0 -5px; border-radius: 6px;
     background-image: linear-gradient(90deg, rgba(120,190,255,.20) var(--pct, 0%), rgba(120,190,255,0) var(--pct, 0%));
   }
+  #m-score .score-head { font-size: 10px; opacity: .5; letter-spacing: .02em; margin-bottom: 2px; }
   #menu select { flex: 1; min-width: 0; height: 20px; background: rgba(255,255,255,.08); color: #e9edf2;
     border: 0; border-radius: 6px; font: inherit; font-size: 10.5px; cursor: pointer; }
   #menu select option { background: #1a1d22; color: #e9edf2; }
@@ -1019,6 +1020,16 @@
     const names = [...new Set([...Object.keys(byAgent), ...Object.keys(events)])]
       .filter((a) => (byAgent[a] || 0) > 30000 || (events[a] && (events[a].done || events[a].error)));
     box.innerHTML = '';
+    // 顶部：陪你第 N 天（首次安装日期起算），给战绩一点「陪伴」的温度。
+    if (cfg.firstRun && snap?.stats?.day) {
+      const days = dayDiff(cfg.firstRun, snap.stats.day) + 1;
+      if (days >= 1) {
+        const head = document.createElement('div');
+        head.className = 'score-head';
+        head.textContent = `陪你第 ${days} 天`;
+        box.appendChild(head);
+      }
+    }
     if (!names.length) {
       const row = document.createElement('div');
       row.className = 'recent';

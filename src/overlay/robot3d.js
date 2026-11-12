@@ -911,7 +911,8 @@ if (host && renderer) {
     const oldGroundMap = sceneGround.material.map;
     if (s.texture) {
       sceneGround.material.map = sceneTexture(s.texture);
-      sceneGround.material.opacity = 1;
+      // 从近乎透明淡入：换场景时地面是「浮现」出来的，而不是硬切一下。
+      sceneGround.material.opacity = 0.001;
     } else {
       sceneGround.material.map = null;
       sceneGround.material.opacity = 0;
@@ -3403,6 +3404,10 @@ if (host && renderer) {
           p.rotation.x = Math.sin(t * 0.7 + p.userData.swayPhase * 1.3) * p.userData.swayAmp * 0.6;
         }
       }
+    }
+    // 场景地面淡入：换场景后 opacity 从 0 缓升到 1，有「浮现」的过渡感。
+    if (sceneGround.material.map) {
+      sceneGround.material.opacity = damp(sceneGround.material.opacity, 1, 6, dt);
     }
     // 海面反光：海洋场景的地面自发光强度随波浪起伏。
     if (sceneType === '海洋' && !reduceMotion) {

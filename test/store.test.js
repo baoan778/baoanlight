@@ -288,6 +288,22 @@ test('a stale stats file from another day is reset on merge', () => {
   assert.deepEqual(s.snapshot().stats.byAgent, {}, 'yesterday never leaks into today');
 });
 
+// 跨夜重启：存档文件是昨天的，但历史必须保留（昨天还要归档进 history）。
+test('a stale stats file keeps its history and archives the stale day', () => {
+  const s = new Store();
+  s.mergeStats({
+    day: '2000-01-01',
+    byAgent: { claude: 999999 },
+    events: { claude: { done: 5, error: 1 } },
+    history: { '1999-12-31': { byAgent: { codex: 1000 }, events: { codex: { done: 1 } } } },
+  });
+  const st = s.snapshot().stats;
+  assert.deepEqual(st.byAgent, {}, 'stale day never leaks into today');
+  assert.ok(st.history['1999-12-31'], 'older history survives the restart');
+  assert.ok(st.history['2000-01-01'], 'the stale day itself is archived, not lost');
+  assert.equal(st.history['2000-01-01'].events.claude.done, 5);
+});
+
 // 今日战绩：进入完成/出错各记一次，同一状态连续上报不重复。
 test('done and error transitions are counted per agent', () => {
   const s = new Store();
