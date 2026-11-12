@@ -1696,8 +1696,23 @@ if (host && renderer) {
   packStrap.position.y = 0.34;
   backpack.add(packStrap);
 
-  // 装饰：无 / 天线 / 安全帽 / 皇冠 / 眼镜 / 墨镜 / 围巾 / 背包。一次只显示一个。
-  const DECORATIONS = ['无', '天线', '安全帽', '皇冠', '眼镜', '墨镜', '围巾', '背包'];
+  // ---- 礼帽：黑色高礼帽（帽筒 + 帽檐 + 暗红帽带），戴上像位绅士 ----------------
+  const tophat = new THREE.Group();
+  tophat.position.set(0, 0.50, 0.02);
+  head.add(tophat);
+  const tophatMat = new THREE.MeshStandardMaterial({ color: 0x161a20, roughness: 0.5, metalness: 0.25 });
+  const tophatCrown = mesh(new THREE.CylinderGeometry(0.21, 0.24, 0.34, 26), tophatMat);
+  tophatCrown.position.y = 0.19;
+  tophat.add(tophatCrown);
+  const tophatBrim = mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.028, 34), tophatMat);
+  tophat.add(tophatBrim);
+  const tophatBand = mesh(new THREE.CylinderGeometry(0.222, 0.245, 0.06, 26),
+    new THREE.MeshStandardMaterial({ color: 0x8a1f1f, roughness: 0.6 }));
+  tophatBand.position.y = 0.04;
+  tophat.add(tophatBand);
+
+  // 装饰：无 / 天线 / 安全帽 / 皇冠 / 眼镜 / 墨镜 / 围巾 / 背包 / 礼帽。一次只显示一个。
+  const DECORATIONS = ['无', '天线', '安全帽', '皇冠', '眼镜', '墨镜', '围巾', '背包', '礼帽'];
   let decoration = '无';
   function setDecoration(name) {
     decoration = name;
@@ -1708,6 +1723,7 @@ if (host && renderer) {
     sunglasses.visible = name === '墨镜';
     scarf.visible = name === '围巾';
     backpack.visible = name === '背包';
+    tophat.visible = name === '礼帽';
   }
   setDecoration('无');
   window.addEventListener('bao:decoration', (e) => {
@@ -2669,7 +2685,6 @@ if (host && renderer) {
   // 人格：活泼 / 沉稳 / 话痨 / 害羞。首次随机固定，影响动作频率与情绪阈值。
   let personality = '活泼';
   const FREQ_BOOST = { 活泼: 1.4, 沉稳: 0.65, 话痨: 1.0, 害羞: 0.9 };
-  let personalitySeeded = false;
   let shyLookAt = -99;   // 被盯着看久了 → 害羞地别开视线
   let boredBubbleAt = -99;   // 无聊冒泡的防抖
   let nameCycle = 0;
@@ -2740,10 +2755,9 @@ if (host && renderer) {
     const comfortShake = comfortOn ? Math.sin(comfort * 20) * 0.015 * (1 - comfort / 2.2) : 0;
 
     // ---- 人格 + 害羞 + 无聊
-    if (!personalitySeeded) {
-      personalitySeeded = true;
-      personality = body.dataset.personality || '活泼';
-    }
+    // 每帧比对 dataset：配置是异步加载的，首帧可能还没拿到，不能只读一次。
+    const wantPersonality = body.dataset.personality;
+    if (wantPersonality && wantPersonality !== personality) personality = wantPersonality;
     // 害羞：被盯着看久了就不好意思地别开视线（害羞人格更早躲）。
     const shyThreshold = personality === '害羞' ? 2.5 : 4.5;
     if (pointer.over && !busy && !waiting && !error) {

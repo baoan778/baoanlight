@@ -214,6 +214,13 @@
   /* The software that owns the main lamp gets a glowing ring in the lamp colour,
      so "which one is the lamp about" is answered in the list too. */
   .pill.worst { box-shadow: 0 0 0 1px rgba(255,255,255,.32), 0 0 14px -2px var(--state), 0 8px 18px -10px #000; }
+  /* 「主灯」那一行的状态色光晕轻微呼吸，和机器人的灯同步，眼睛会自然落过去。 */
+  @keyframes worstPulse {
+    0%, 100% { box-shadow: 0 0 0 1px rgba(255,255,255,.30), 0 0 10px -2px var(--state), 0 8px 18px -10px #000; }
+    50% { box-shadow: 0 0 0 1px rgba(255,255,255,.46), 0 0 18px 0 var(--state), 0 8px 18px -10px #000; }
+  }
+  .pill.worst { animation: worstPulse 2.2s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .pill.worst { animation: none; } }
   /* 聚焦选中态：蓝色选中框，区分于「最坏者」的状态色发光。 */
   .pill.focused { box-shadow: 0 0 0 1.5px #6aa5ff, 0 0 12px -2px rgba(106,165,255,.6), 0 8px 18px -10px #000; }
   .pill.focused b { color: #cfe0ff; }
@@ -1751,8 +1758,8 @@
     o.value = n; o.textContent = n; headtypeSel.appendChild(o);
   }
 
-  // 头部装饰（无/天线/安全帽/皇冠/眼镜/墨镜/围巾/背包）。
-  const DECORATION_NAMES = ['无', '天线', '安全帽', '皇冠', '眼镜', '墨镜', '围巾', '背包'];
+  // 头部装饰（无/天线/安全帽/皇冠/眼镜/墨镜/围巾/背包/礼帽）。
+  const DECORATION_NAMES = ['无', '天线', '安全帽', '皇冠', '眼镜', '墨镜', '围巾', '背包', '礼帽'];
   const decorationSel = document.getElementById('m-decoration');
   for (const n of DECORATION_NAMES) {
     const o = document.createElement('option');
