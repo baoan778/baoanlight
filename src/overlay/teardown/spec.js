@@ -21,8 +21,8 @@ export const DIMS = {
   // 手臂挂在履带**外**侧（0.97–1.43 的履带墙之外）：状态机器人的手臂就是在
   // x=1.56 的净空里摆动，放到履带内或缝里都会被挡得看不见。
   arm: { x: 1.56, y: 1.58, z: 0.30, upper: 0.52, fore: 0.46, claw: 0.20 },
-  // 轮系
-  wheel: { r: 0.30, w: 0.16 },
+  // 轮系：前后负重轮同径，上托轮略小；宽度是压装尺寸。
+  wheel: { r: 0.30, top: 0.26, w: 0.16 },
 };
 
 // 拆解阶段。用户要的三段式：整体 → 依次拆解 → 全零件爆炸。
@@ -77,5 +77,15 @@ export const READOUTS = [
   { key: 'height', label: '整机高度', value: (m) => Math.round(m.size.y * MM_PER_UNIT), unit: 'mm' },
   { key: 'width', label: '整机宽度', value: (m) => Math.round(m.size.x * MM_PER_UNIT), unit: 'mm' },
   { key: 'hull', label: '壳体', value: () => `${Math.round(DIMS.hull.w * MM_PER_UNIT)}×${Math.round(DIMS.hull.d * MM_PER_UNIT)}`, unit: 'mm' },
-  { key: 'track', label: '履带周长', value: () => Math.round((DIMS.track.w * 2 + DIMS.track.h * 2) * MM_PER_UNIT), unit: 'mm' },
+  {
+    key: 'track',
+    label: '履带周长',
+    // 圆角矩形的真实周长：两条直边 + 两段四分之一圆弧，而不是 2(w+h) 的直线
+    // 近似 —— 后者会多算约 11%（1392 mm 对 1244 mm），而面板旁边那条履带就是
+    // 照着这个轮廓画出来的。
+    value: () => Math.round((2 * (DIMS.track.w - 2 * DIMS.track.r)
+      + 2 * (DIMS.track.h - 2 * DIMS.track.r)
+      + 2 * Math.PI * DIMS.track.r) * MM_PER_UNIT),
+    unit: 'mm',
+  },
 ];

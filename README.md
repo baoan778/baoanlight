@@ -317,7 +317,7 @@ bao fuel 12 --used --agent ci --label "build minutes"   # --used 表示「已用
 ## 本机接线对不对
 
 ```bash
-npm test         # 120 个逻辑测试：状态机、适配器、钩子、安装器、电量、鉴权、调色板、事件契约
+npm test         # 130 个逻辑测试：状态机、适配器、钩子、安装器、电量、鉴权、调色板、事件契约、HTTP 请求体与配置落盘
 npm run test:ui  # 59 个渲染测试：机器人、拆解台、标签、电量条、CSP、XSS、朗读文本，以及帧率/降级预算
 npm run lint     # 未定义的变量、声明了没用的变量、重复键、走不到的代码
 bao doctor       # 本机：二进制、配置路径、日志目录、服务器

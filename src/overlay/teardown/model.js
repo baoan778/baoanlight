@@ -150,13 +150,15 @@ export function buildRobot() {
     });
 
     // 轮系：前/后/上三只负重轮 + 主动轮
+    // 半径与宽度取 spec 里的一份：改了 DIMS.wheel，轮子跟着动，面板读数也
+    // 跟着动 —— 否则「单一真源」在轮系上只是一句注释。
     const wheels = [
-      { z: -0.62, y: 0.30, r: 0.30, label: '前负重轮' },
-      { z: 0.62, y: 0.30, r: 0.30, label: '后负重轮' },
-      { z: 0, y: 0.62, r: 0.26, label: '上托轮' },
+      { z: -0.62, y: 0.30, r: DIMS.wheel.r, label: '前负重轮' },
+      { z: 0.62, y: 0.30, r: DIMS.wheel.r, label: '后负重轮' },
+      { z: 0, y: 0.62, r: DIMS.wheel.top, label: '上托轮' },
     ];
     wheels.forEach((w, k) => {
-      const wheel = cyl(w.r, w.r, 0.16, M.steel, 24);
+      const wheel = cyl(w.r, w.r, DIMS.wheel.w, M.steel, 24);
       wheel.rotation.z = Math.PI / 2;
       wheel.position.set(side * DIMS.track.x, w.y + 0.05, w.z);
       part(`wheel${i}${k}`, `${i === 0 ? '左' : '右'}${w.label}`, 5, wheel, {
@@ -222,7 +224,9 @@ export function buildRobot() {
   cap.position.set(0, headY + 0.18, 0);
   part('headCap', '头顶护罩', 1, cap, { dir: [0, 1, -0.2], dist: 1.25, note: '双筒的防尘罩' });
 
-  const bridge = box(0.62, 0.20, 0.30, M.gun, { r: 0.06, bevel: 0.014 });
+  // 尺寸直接取 spec：状态机器人里的同一个零件是 slab(w, h, d)，两处写死不同
+  // 数字的话，拆解台里的桥接件会比它连接的那两只镜筒矮一圈。
+  const bridge = box(DIMS.head.w, DIMS.head.h, DIMS.head.d, M.gun, { r: 0.06, bevel: 0.014 });
   bridge.position.set(0, headY, -0.02);
   part('headBridge', '双筒桥接件', 1, bridge, { dir: [0, 0.8, -0.4], dist: 1.15, note: '铸铝，连接两只镜筒' });
 

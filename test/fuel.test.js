@@ -67,14 +67,28 @@ test('no fuel anywhere means no gauge, not an empty gauge', () => {
   assert.equal(s.snapshot().fuel, null);
 });
 
+// 一条迟到的 token_count / quota 上报属于某个已经在报状态的会话。store 里
+// 没有它，说明那条上报是旧的、或者来自已经结束的运行 —— 这时候在灯上点亮一格
+// 「就绪」的绿灯，就是在替什么都没发生的事作证。
 test('a fuel update for an unknown session does not invent one', () => {
   const s = new Store();
   s.set({ session: 'ghost', fuel: 50 });
-  // No prior session, so this falls through to a normal set and creates one
-  // rather than silently vanishing — but it must not crash or produce a
-  // session with an undefined state.
   const snap = s.snapshot();
-  if (snap.sessions.length) assert.ok(['idle', 'busy', 'waiting'].includes(snap.sessions[0].state));
+  assert.deepEqual(snap.sessions, [], 'no session was created');
+  assert.equal(snap.fuel, null, 'and no gauge appeared out of nowhere');
+});
+
+// 唯一的例外是人手敲的 `bao fuel 63 --agent x`：那是明确说「x 存在」，
+// CLI 会带 create: true。它建出来的会话必须是完整的，不能只有一个 fuel 字段。
+test('an explicit create from `bao fuel` makes a complete idle session', () => {
+  const s = new Store();
+  s.set({ session: 'ci:manual', agent: 'ci', fuel: { remaining: 63, label: 'plan quota' }, create: true });
+  const [only] = s.snapshot().sessions;
+  assert.ok(only, 'the session exists');
+  assert.equal(only.state, 'idle');
+  assert.equal(only.agent, 'ci');
+  assert.equal(only.session, 'ci:manual');
+  assert.equal(only.fuel.remaining, 63);
 });
 
 // ------------------------------------------------------------------- codex
