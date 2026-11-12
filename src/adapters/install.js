@@ -30,11 +30,39 @@ function backup(file) {
   if (!fs.existsSync(file)) return null;
   const bak = `${file}.baoanlight-backup-${Date.now()}`;
   fs.copyFileSync(file, bak);
+  // 反复 connect / disconnect 会在用户家目录里堆一串时间戳备份，而它们只是
+  // 「上一次改动前长什么样」。留最近 5 份足够回滚，也不会把 ~/.claude 塞满。
+  try {
+    const dir = path.dirname(file);
+    const prefix = `${path.basename(file)}.baoanlight-backup-`;
+    const olds = fs.readdirSync(dir).filter((n) => n.startsWith(prefix)).sort();
+    while (olds.length > 5) {
+      try { fs.unlinkSync(path.join(dir, olds.shift())); } catch { /* 删不掉就留着 */ }
+    }
+  } catch { /* 清理是礼貌，不是职责 */ }
   return bak;
 }
 
+// 读不出来就**不要写**。
+//
+// 这里原来把「解析失败」和「读不到」一律降级成 `{}`，随后 writeJson 把 `{}`
+// 连同我们的 hooks 一起写回去 —— 用户的 permissions / env / model 全没了，
+// 只留下一句「备份在 xxx」。一次权限抖动、或者 Claude Code 自己正在写这个
+// 文件，就足以触发。
 function readJson(file) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; }
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return {};   // 真的还没有这个文件
+    throw new Error(`cannot read ${file} (${err.code || err.message}); refusing to overwrite it`);
+  }
+  if (!raw.trim()) return {};
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`${file} is not valid JSON (${err.message}); refusing to overwrite it`);
+  }
 }
 
 function writeJson(file, data) {
@@ -89,7 +117,6 @@ function installClaude({ scope = 'user' } = {}) {
 function uninstallClaude({ scope = 'user' } = {}) {
   const file = claudeSettingsPath(scope);
   if (!fs.existsSync(file)) return { file, removed: 0 };
-  const bak = backup(file);
   const settings = readJson(file);
   let removed = 0;
 
@@ -102,6 +129,11 @@ function uninstallClaude({ scope = 'user' } = {}) {
   }
   if (settings.hooks && Object.keys(settings.hooks).length === 0) delete settings.hooks;
 
+  // 什么都没卸掉就别动这个文件：重排一次用户的 JSON、改掉缩进、再留一份备份，
+  // 只是白改。
+  if (!removed) return { file, backup: null, removed: 0 };
+  // 备份放在真正要写之前：它保存的是「改之前」的那份。
+  const bak = backup(file);
   writeJson(file, settings);
   return { file, backup: bak, removed };
 }
@@ -112,14 +144,38 @@ function codexConfigPath() {
   return path.join(process.env.CODEX_HOME || path.join(HOME, '.codex'), 'config.toml');
 }
 
+// `notify` 在 TOML 里只能有一个。可能被格式化成多行数组，所以按「括号配平」
+// 而不是按行来裁 —— 只删第一行会在文件里留下没人认领的 `"..."`，整个
+// config.toml 从此是非法 TOML，Codex 直接起不来。
+const NOTIFY_RE = /^\s*notify\s*=/;
+const bracketDelta = (line) => (line.match(/\[/g) || []).length - (line.match(/\]/g) || []).length;
+
+function stripNotify(lines) {
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!NOTIFY_RE.test(lines[i])) { out.push(lines[i]); continue; }
+    if (!isOurs(lines[i])) { out.push(lines[i]); continue; }
+    let depth = bracketDelta(lines[i]);
+    while (depth > 0 && i + 1 < lines.length) { i++; depth += bracketDelta(lines[i]); }
+  }
+  return out;
+}
+
 function installCodex() {
   const file = codexConfigPath();
   const bak = backup(file);
   const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  const notify = `notify = ["${nodeBin}", "${hookScript('codex')}"]`;
+
+  // 用户自己已经配了 notify？那我们不能悄悄吃掉它——一个已有通知钩子的
+  // 人，正在用的可能是桌面提醒或他自己的脚本。告诉他，让他决定。
+  const foreign = existing.split(/\r?\n/).find((l) => NOTIFY_RE.test(l) && !isOurs(l));
+  if (foreign) {
+    return { file, backup: bak, skipped: true, foreign: foreign.trim() };
+  }
 
   // `notify` is a top-level key, so it has to sit above the first [table] header.
-  const lines = existing.split(/\r?\n/).filter((l) => !/^\s*notify\s*=/.test(l));
-  const notify = `notify = ["${nodeBin}", "${hookScript('codex')}"]`;
+  const lines = stripNotify(existing.split(/\r?\n/));
   const firstTable = lines.findIndex((l) => /^\s*\[/.test(l));
   if (firstTable === -1) lines.push(notify);
   else lines.splice(firstTable, 0, notify, '');
@@ -134,7 +190,8 @@ function uninstallCodex() {
   if (!fs.existsSync(file)) return { file, removed: 0 };
   const bak = backup(file);
   const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-  const kept = lines.filter((l) => !(/^\s*notify\s*=/.test(l) && isOurs(l)));
+  const kept = stripNotify(lines);
+  if (kept.length === lines.length) return { file, backup: bak, removed: 0 };
   fs.writeFileSync(file, kept.join('\n'));
   return { file, backup: bak, removed: lines.length - kept.length };
 }
@@ -159,8 +216,8 @@ function genericSnippet(agent = 'my-agent') {
     `# if \`bao\` is on PATH (npm install -g baoanlight), this is shorter:`,
     `bao set waiting --agent ${agent} --detail "needs you"`,
     '',
-    '# or straight over HTTP, from anything at all:',
-    `curl -s "http://127.0.0.1:4747/set/busy?agent=${agent}&session=$$"`,
+    '# or straight over HTTP, from anything at all (writes need the local token):',
+    `curl -s -H "x-bao-token: $(bao token)" "http://127.0.0.1:4747/set/busy?agent=${agent}&session=$$"`,
   ].join('\n');
 }
 

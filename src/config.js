@@ -83,17 +83,28 @@ function migrateLegacy() {
   } catch { /* migration is a courtesy, never a failure */ }
 }
 
+let warnedCorrupt = false;
+
 function load() {
   let cfg;
   try {
-    const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    const text = fs.readFileSync(CONFIG_FILE, 'utf8');
+    if (!text.trim()) throw new Error('empty config file');
+    const raw = JSON.parse(text);
     cfg = {
       ...DEFAULTS,
       ...raw,
       window: { ...DEFAULTS.window, ...(raw.window || {}) },
       agents: { ...DEFAULTS.agents, ...(raw.agents || {}) },
     };
-  } catch {
+  } catch (err) {
+    // 回落默认值是对的（一个跑不起来的机器人更糟），但**不能是无声的**：
+    // 配置文件坏了意味着用户存下的窗口位置、皮肤和 presets 都读不到，而界面
+    // 看上去只是「变回了出厂设置」。说一次，别每帧刷屏。
+    if (!warnedCorrupt && err.code !== 'ENOENT') {
+      warnedCorrupt = true;
+      console.error(`baoanlight: ${CONFIG_FILE} could not be read (${err.message}); using defaults.`);
+    }
     cfg = { ...DEFAULTS, window: { ...DEFAULTS.window }, agents: { ...DEFAULTS.agents } };
   }
   // theme 只允许 full / mini。早期「配色主题」曾把这个字段写成「赛博霓虹」之类，
@@ -102,10 +113,24 @@ function load() {
   return cfg;
 }
 
+// 写盘必须原子：先写同目录的临时文件，再 rename 覆盖。直接截断写如果在中途
+// 崩掉（窗口拖动时每个滑杆都会写盘），留下的半个 JSON 会让下一次 load() 回落
+// 到 DEFAULTS —— 用户不会收到任何提示，只是设置全没了。
 function save(patch) {
   ensureDir();
   const next = { ...load(), ...patch };
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(next, null, 2));
+  const body = JSON.stringify(next, null, 2);
+  const tmp = `${CONFIG_FILE}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, body);
+  try {
+    fs.renameSync(tmp, CONFIG_FILE);
+  } catch (err) {
+    // Windows 上 rename 会被杀毒/索引服务短暂占用。退回直接写并清掉临时文件：
+    // 比让用户这次设置丢失要好，而且下次保存还会再试原子路径。
+    try { fs.writeFileSync(CONFIG_FILE, body); } catch { /* 真的写不进去，调用方自己决定 */ }
+    try { fs.unlinkSync(tmp); } catch { /* 已经被 rename 走了 */ }
+    if (err.code !== 'EPERM' && err.code !== 'EBUSY' && err.code !== 'EACCES') throw err;
+  }
   return next;
 }
 

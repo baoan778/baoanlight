@@ -29,6 +29,11 @@ jobs:
       - name: Install without optional binaries
         run: npm install --no-optional --ignore-scripts --no-audit --no-fund
 
+      # 语法层面的失败（引用了没定义的变量、声明了从来不用的东西）不需要跑三套
+      # 浏览器的逻辑测试来发现，先在最便宜的一层挡掉。
+      - name: Lint
+        run: npm run lint
+
       - name: Test
         run: npm test
 

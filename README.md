@@ -36,7 +36,10 @@ Gemini CLI、Aider、Cursor、opencode、Copilot、Cline、Windsurf、Qwen Code�
 - **情绪表情**：出错头顶冒火焰 + 虹膜发红，等待含泪跺脚，未知瞳孔放大，完成喷金色星星
 - **自主动作**：空闲时自己张望、伸懒腰、抛接、抖擞、看手爪、巡视、点头，不再呆坐
 - **互动**：拖拽会挣扎、连点三下悬空转圈、指针停手臂会张手爪，右键开设置、双击打招呼
-- **自定义外观**：11 皮肤 / 8 瞳色 / 7 履带 / 8 配件 / 5 手爪 / 3 头型 / 4 镜筒 / 10 场景 / 36 灯效，一键随机换装、命名方案、配色主题
+- **自定义外观**：11 皮肤 / 8 瞳色 / 7 履带 / 8 配件 / 5 手爪 / 3 头型 / 4 镜筒 / 14 场景 / 36 灯效，一键随机换装、命名方案、配色主题
+- **3D 拆解台**：从设置菜单在**独立应用窗口**里打开，把机器人按「整机 → 依次拆解 → 全部零件 → 部署」
+  拆到螺丝与履带齿（51 个命名零件），拖动旋转、点击零件看标注、拖滑块控制拆解程度，
+  无人操作时自己巡游 + 语音讲解
 - **今日时长广告牌**：机器人旁一块金边招牌显示今天谁忙了多久（最多/合计/轮播/关闭可选），另有「最近动态」时间线
 - **MCP**：`bao mcp` 让任何支持 MCP 的代理自己上报 `report_status`
 - **开机自启 + 一键盯全部**：`bao autostart on`、`bao watch all`
@@ -99,6 +102,13 @@ bao clear              # 清掉崩溃代理留下的僵尸会话
 bao doctor             # 体检：本机接线是否正确
 bao demo               # 依次播放四种状态，检查动效
 bao stop               # 全部关闭
+```
+
+设置菜单里的「打开 3D 拆解台」会在一个独立应用窗口里打开（`bao start --browser`
+模式下退化为新标签，地址 `http://127.0.0.1:4747/teardown/`）。想把它录成影片：
+
+```bash
+npm run capture:teardown -- --fps 30 --seconds 18   # 出 PNG 帧 + timeline.json；有 ffmpeg 自动合成 mp4
 ```
 
 ---
@@ -191,10 +201,11 @@ bao set waiting --agent deploy --detail "approve prod push?"
 bao set idle    --agent deploy
 ```
 
-或从任何语言发 HTTP：
+或从任何语言发 HTTP（写入要带本机 token，读不用，见「本地安全」）：
 
 ```bash
-curl -s "http://127.0.0.1:4747/set/busy?agent=my-bot&session=$$&detail=thinking"
+curl -s -H "x-bao-token: $(bao token)" \
+  "http://127.0.0.1:4747/set/busy?agent=my-bot&session=$$&detail=thinking"
 ```
 
 ---
@@ -229,10 +240,14 @@ bao fuel 12 --used --agent ci --label "build minutes"   # --used 表示「已用
 胸口的仪表板上有 **8 段固定槽位灯**，一个软件一段，左右顺序永远不变：
 
 ```
-槽位:   claude  codex  workbuddy  deepseek   [4 个空位，给以后新增的]
-         ●       ●        ○           ●
-        绿      黄       熄灭        红
+槽位:   deepseek  claude   codex   workbuddy   [4 个空位，给以后新增的]
+          ●         ●        ●         ○
+         红        绿       黄        熄灭
 ```
+
+顺序就是 `src/store.js` 的 `AGENT_ORDER`（也是 `shared/palette.mjs` 的 `AGENT_SLOTS`，
+测试盯着两者不许分叉）。同级时排在前面的那个拿走主灯，所以 DeepSeek Harness 是默认的
+「主」软件——位置是契约的一部分，不要按心情重排。
 
 - **段灯**常亮，任何一个软件的状态都不会被别的软件盖住——不用切换、不用轮播。
 - **主灯**（大灯 + 地面溢光 + 全身姿态）只显示最要紧的那一个：
@@ -243,6 +258,9 @@ bao fuel 12 --used --agent ci --label "build minutes"   # --used 表示「已用
 - 仪表板下方还有一行文字标签（颜色 + 名字），色觉障碍也能读。
 - **桌面灯环**：底座一圈 16 段灯按软件分区，谁最要紧，谁的那一段就在跑马/呼吸/频闪，
   其余段常亮——「谁在拖后腿」和「还有谁在跑」能同时看到，不用切换。
+- **槽位表由服务端下发**（`src/store.js` 的 `AGENT_ORDER`）：多接一个软件只需在那里
+  加一个名字，界面自动多一行、灯环多一段，前端不用改；用户在设置里排过的顺序优先，
+  服务端新增的软件追加在末尾。
 - 窗口宽度固定、只向下生长，所以机器人永远钉在屏幕的同一个像素上。
 
 手上能做的事：
@@ -299,8 +317,9 @@ bao fuel 12 --used --agent ci --label "build minutes"   # --used 表示「已用
 ## 本机接线对不对
 
 ```bash
-npm test         # 80 个逻辑测试：状态机、适配器、钩子、安装器、电量
-npm run test:ui  # 渲染测试：真实浏览器里的机器人、标签、电量条
+npm test         # 120 个逻辑测试：状态机、适配器、钩子、安装器、电量、鉴权、调色板、事件契约
+npm run test:ui  # 59 个渲染测试：机器人、拆解台、标签、电量条、CSP、XSS、朗读文本，以及帧率/降级预算
+npm run lint     # 未定义的变量、声明了没用的变量、重复键、走不到的代码
 bao doctor       # 本机：二进制、配置路径、日志目录、服务器
 ```
 
@@ -316,9 +335,31 @@ bao doctor       # 本机：二进制、配置路径、日志目录、服务器
   是否显示标签、四个超时（`sessionTtlMs` / `idleTtlMs` / `quietAfterMs` / `unusedTtlMs`）、
   各代理日志目录 `agents`
 - `hook-events.log` —— 每个钩子事件 → 状态映射的流水账（`BAOANLIGHT_LOG=0` 关闭）
+- `token` —— 本机写入令牌（0600，首次启动自动生成）。`bao token` 打印它；
+  钩子、CLI、MCP 自己读，不需要你抄到任何地方
 - `port`、`server.log`
 
 从旧版本升级时，第一次运行会把 `~/.signalhead/config.json` 复制过来，旧目录不删除。
+
+---
+
+## 本地安全
+
+服务只绑 `127.0.0.1`，但「只绑回环」不等于「只有你」——浏览器允许任何网页往本机端口
+发请求，一个 `<img src="http://127.0.0.1:4747/set/busy">` 就能让机器人替别人的网站
+举手，而这个工具唯一的承诺就是灯不说谎。所以：
+
+- **写入要 token。** `/set/*`、`POST /state`、`/clear`、`/quit` 都必须带
+  `x-bao-token`（也接受 `?token=` 或 `Authorization: Bearer`）。`bao set`、
+  `bao fuel`、各代理钩子、MCP 都已经自己读 `~/.baoanlight/token`，接线不用改。
+- **读不设卡。** `/state`、`/events`、`/health` 免 token：`bao status`、机器人窗口、
+  OBS 浏览器源照旧。
+- **Host 和 Origin 都必须是本机。** 前者挡 DNS rebinding（`evil.com` 解析到
+  127.0.0.1 时 Host 还是 `evil.com`），后者挡跨源读写；不再回显
+  `Access-Control-Allow-Origin: *`，别的网页连你的工作目录都读不到。
+- **渲染进程是沙箱。** 页面自带 CSP（`script-src 'self'`，没有内联脚本），Electron
+  窗口 `sandbox: true` 且禁止跳转到别的地址；服务端来的字符串（软件名、detail、
+  模型名）一律按文本渲染，不拼 HTML。
 
 ---
 
@@ -333,7 +374,11 @@ bao doctor       # 本机：二进制、配置路径、日志目录、服务器
 - **忙着的会话沉默不会变成空闲。** 它在深度思考、没有工具调用时可以几分钟不输出；沉默不是完成的证据。
   超过空闲窗口就直接丢弃，而不是改灯。
 - **窗口断线时全部熄灭。** 断线不是代理的状态，是我们不知道；冻结的绿色会骗你去查看。
+- **只报额度的上报不会凭空造出一个软件。** 一条迟到的 `token_count` / quota 事件属于某个
+  已经在报状态的会话；如果那个会话已经不在了，它只更新电量条，不会在仪表板上点亮一格
+  「就绪」。人手敲的 `bao fuel 63 --agent x` 是例外——那是你明确说「x 存在」。
 - 每次事件都写进 `~/.baoanlight/hook-events.log`，这是区分「代理没发」和「我们映射错了」最快的方式。
+  无法识别的事件只记录字段名与长度，**不记录内容**——这些载荷里常带 prompt 与工具输入。
 
 ---
 
@@ -354,14 +399,19 @@ bao doctor       # 本机：二进制、配置路径、日志目录、服务器
 
 ```
 src/server.js           HTTP + SSE，只绑 127.0.0.1
-src/store.js            会话、四种状态、电量、优先级
-src/overlay/            机器人窗口（index.html 是全部 UI 与动效）
+src/auth.js             本机写入 token + Host/Origin 校验（见「本地安全」）
+src/store.js            会话、七种状态、电量、优先级
+src/overlay/            机器人窗口（index.html 结构样式，ui.js 界面逻辑，robot3d.js 建模与动效）
+  shared/palette.mjs    外观色值的唯一真源（界面色块与 3D 材质同读一份）
+  scene/geometry.js     纯几何：尺寸进、BufferGeometry 出
+  scene/surfaces.js     程序化纹理：锈迹、掉漆、地表、铭牌，全部现画
 src/hooks/              claude.js / codex.js / event.js（通用）
 src/adapters/
   agents.js             支持哪些代理、各自怎么接入、日志在哪
   log-watch.js          通用 JSONL 会话日志观察器（Codex 等）
   dsh-watch.js          DeepSeek Harness 会话投影观察器
   task-watch.js         WorkBuddy 任务板观察器
+  watchdog.js           三个观察器共用的一条规矩：机器人退了就收摊
   install.js            写 Claude/Codex 配置
   wrap.js + patterns.js 伪终端包装器与输出正则
 src/doctor.js           本机诊断
@@ -369,6 +419,8 @@ src/doctor.js           本机诊断
 
 加一个「有日志的代理」只需在 `agents.js` 加条目、在 `log-watch.js` 补关键词；
 加一个「只有终端的代理」只需在 `patterns.js` 加一组正则。
+
+拆解台的完整制作流程（参考图 → 网页 → 影片）见 **[docs/teardown-guide.md](docs/teardown-guide.md)**。
 
 ---
 

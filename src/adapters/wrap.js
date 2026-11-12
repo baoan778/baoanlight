@@ -150,10 +150,17 @@ function run(argv, opts = {}) {
 
   const finish = (code) => {
     clearTimeout(quietTimer);
+    process.stdout.removeListener('resize', onResize);
     if (process.stdin.isTTY) { try { process.stdin.setRawMode(false); } catch {} }
     process.stdin.pause();
     setState({ session, agent, state: 'offline' }).finally(() => process.exit(code || 0));
   };
+
+  // 任何异常退出路径也要把终端还回去：留着 raw mode 的终端不再回显回车，
+  // 用户只会以为自己的 shell 坏了。
+  process.on('exit', () => {
+    if (process.stdin.isTTY) { try { process.stdin.setRawMode(false); } catch { /* 已经关了 */ } }
+  });
 
   child.onExit(({ exitCode }) => finish(exitCode));
 

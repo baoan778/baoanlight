@@ -113,6 +113,7 @@ ${c.b('USAGE')}
                                drive the fuel gauge from anything
   bao status                   print current states
   bao status --json            same, as JSON, for scripts and overlays
+  bao token                    print the local write token (for curl / scripts)
   bao clear [--session id]     forget sessions left behind by a crashed agent
   bao setup                    download the Electron runtime for the window
   bao autostart on|off|status  start the robot at login (all platforms)
@@ -372,6 +373,12 @@ async function cmdOverlay(flags) {
   child.on('exit', (code) => process.exit(code || 0));
 }
 
+// 打印本机写入 token。`curl`、脚本、第二屏要用它证明「我是这台机器上的用户」；
+// 它本来就存在 0600 的文件里，打印出来不会让权限变宽。
+function cmdToken() {
+  console.log(require('./auth').token());
+}
+
 async function cmdStop() {
   const running = await client.health();
   if (!running) return console.log(c.dim('nothing running'));
@@ -436,6 +443,9 @@ async function cmdFuel(positional, flags) {
     session: flags.session || `${agent}:manual`,
     agent,
     fuel: { remaining, label: flags.label || 'remaining' },
+    // 人手敲的「这个软件额度是这个数」：允许它建一格会话。watcher 顺带读到的
+    // 额度不带这个标记，否则一条迟到的 token_count 就能点亮一格假的绿色「就绪」。
+    create: true,
     ...(flags.state ? { state: flags.state } : {}),
   });
   if (!res) {
@@ -511,7 +521,8 @@ function cmdAgents() {
   }
   console.log('');
   console.log(c.dim('  Anything else: bao hook --agent <name>  (one JSON event on stdin)'));
-  console.log(c.dim('  Or over HTTP:  curl "http://127.0.0.1:4747/set/busy?agent=my-bot"\n'));
+  console.log(c.dim('  Or over HTTP (writes need the local token):'));
+  console.log(c.dim('    curl -H "x-bao-token: $(bao token)" "http://127.0.0.1:4747/set/busy?agent=my-bot"\n'));
 }
 
 function cmdWatch(positional, flags) {
@@ -597,7 +608,17 @@ function cmdInstall(positional, flags) {
   const scope = flags.scope === 'project' ? 'project' : 'user';
 
   if (target === 'claude') {
-    const r = install.installClaude({ scope });
+    let r;
+    try {
+      r = install.installClaude({ scope });
+    } catch (err) {
+      // 文件读不出来 / 不是合法 JSON：什么都不写，并把原因说清楚。这条路径
+      // 以前会静默地把整份 settings.json 换成 `{}`。
+      console.error(`${c.red('✗')} ${err.message}`);
+      console.error(c.dim('  Nothing was written. Fix or move that file, then run it again.'));
+      process.exitCode = 1;
+      return;
+    }
     console.log(`${c.grn('●')} Claude Code hooks installed (${r.events} events)`);
     console.log(c.dim(`  ${r.file}`));
     if (r.backup) console.log(c.dim(`  backup: ${r.backup}`));
@@ -619,6 +640,16 @@ function cmdInstall(positional, flags) {
   }
   if (target === 'codex') {
     const r = install.installCodex();
+    if (r.skipped) {
+      // 不覆盖用户已有的通知钩子。一个 notify 槽位只能有一个主人。
+      console.log(`${c.yel('!')} Codex already has its own notify hook — left untouched:`);
+      console.log(c.dim(`  ${r.foreign}`));
+      console.log(c.dim(`  ${r.file}`));
+      console.log('');
+      console.log(`  To hand that slot to baoanlight, delete that line and run this again.`);
+      console.log(c.dim(`  Nothing else changes: \`bao watch codex\` still reads the sessions.`));
+      return;
+    }
     console.log(`${c.grn('●')} Codex notify hook installed`);
     console.log(c.dim(`  ${r.file}`));
     if (r.backup) console.log(c.dim(`  backup: ${r.backup}`));
@@ -665,13 +696,21 @@ function cmdUninstall(positional, flags) {
   const target = (positional[0] || '').toLowerCase();
   const scope = flags.scope === 'project' ? 'project' : 'user';
   if (target === 'claude') {
-    const r = install.uninstallClaude({ scope });
-    console.log(`removed baoanlight hooks from ${r.file}`);
+    let r;
+    try {
+      r = install.uninstallClaude({ scope });
+    } catch (err) {
+      console.error(`${c.red('✗')} ${err.message}`);
+      console.error(c.dim('  Nothing was written.'));
+      process.exitCode = 1;
+      return;
+    }
+    console.log(r.removed ? `removed baoanlight hooks from ${r.file}` : `no baoanlight hooks in ${r.file} — nothing to do`);
     return;
   }
   if (target === 'codex') {
     const r = install.uninstallCodex();
-    console.log(`removed baoanlight notify from ${r.file}`);
+    console.log(r.removed ? `removed baoanlight notify from ${r.file}` : `no baoanlight notify in ${r.file} — nothing to do`);
     return;
   }
   console.error('usage: bao disconnect <claude|codex>');
@@ -774,6 +813,7 @@ async function main() {
     case 'autostart':  return cmdAutostart(positional);
     case 'set':        return cmdSet(positional, flags);
     case 'status':     return cmdStatus(flags);
+    case 'token':      return cmdToken();
     case 'clear':      return cmdClear(flags);
     case 'doctor':     return require('./doctor').run();
     case 'onboard':    return cmdOnboard();
@@ -790,7 +830,11 @@ async function main() {
     case 'uninstall':  return cmdUninstall(positional, flags);
     case 'watch':      return cmdWatch(positional, flags);
     case 'hook': {
-      require('./hooks/event').run(positional, flags);
+      // 走 failSafe：1.5 秒硬超时 + 无论如何 exit 0。
+      // 原来直接调 run()，既没有超时也没有 catch —— 而 `bao hook` 正是文档让
+      // 用户接进自己代理的那条命令。调用方只要不关 stdin，这个进程就一直挂着。
+      const event = require('./hooks/event');
+      event.failSafe(() => event.run(positional, flags));
       return new Promise(() => {});
     }
     case 'mcp':

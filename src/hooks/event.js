@@ -65,7 +65,10 @@ function pickState(evt, explicit) {
 
   const name = evt.hook_event_name || evt.event || evt.event_type || evt.eventType
     || evt.type || evt.kind || evt.name;
-  if (name && CLAUDE_STYLE[name]) return CLAUDE_STYLE[name];
+  // 只认自己表里的键：`CLAUDE_STYLE['constructor']` 会顺着原型链返回一个函数
+  // （真值），于是一个 `{"hook_event_name":"constructor"}` 的载荷就能绕过
+  // 「未知事件不许动灯」，让状态变成一个函数、JSON 里丢掉、服务端按 idle 建会话。
+  if (name && Object.prototype.hasOwnProperty.call(CLAUDE_STYLE, name)) return CLAUDE_STYLE[name];
 
   // Defer to the log watcher's table so a new agent only needs one vocabulary.
   const { classify } = require('../adapters/log-watch');
@@ -117,4 +120,4 @@ if (require.main === module) {
   failSafe(() => run(positional, flags));
 }
 
-module.exports = { run, pickState, parseArgs };
+module.exports = { run, pickState, parseArgs, failSafe };

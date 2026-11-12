@@ -46,13 +46,18 @@ function cachedZip() {
 function extract(zip, dest) {
   fs.rmSync(dest, { recursive: true, force: true });
   fs.mkdirSync(dest, { recursive: true });
+  // Windows 分支不能把路径插进 -Command 字符串：路径里只要有一个引号或反引号，
+  // 这条命令就被改写（甚至被当成别的命令）。走环境变量，PowerShell 自己取值。
   const cmd =
     process.platform === 'win32'
-      ? ['powershell', ['-NoProfile', '-Command', `Expand-Archive -LiteralPath "${zip}" -DestinationPath "${dest}" -Force`]]
+      ? ['powershell', ['-NoProfile', '-Command', 'Expand-Archive -LiteralPath $env:BAO_ZIP -DestinationPath $env:BAO_DEST -Force']]
       : process.platform === 'darwin'
         ? ['ditto', ['-x', '-k', zip, dest]]
         : ['unzip', ['-oq', zip, '-d', dest]];
-  const r = spawnSync(cmd[0], cmd[1], { stdio: 'inherit' });
+  const r = spawnSync(cmd[0], cmd[1], {
+    stdio: 'inherit',
+    env: { ...process.env, BAO_ZIP: zip, BAO_DEST: dest },
+  });
   if (r.status !== 0) throw new Error(`could not unpack ${zip}`);
 
   const exe =

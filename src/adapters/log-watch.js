@@ -18,8 +18,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const client = require('../client');
-const { setState } = client;
+const { keepAliveWith } = require('./watchdog');
+const { setState } = require('../client');
 const config = require('../config');
 const agents = require('./agents');
 
@@ -229,6 +229,9 @@ function run(opts = {}) {
 
     const type = typeOf(rec);
     const session = `${name}:${t.sessionId || fallbackId(file)}`;
+    // 记住「这个文件到底用了哪个会话名」：收摊时要靠它发 offline。只存
+    // t.sessionId 的话，靠文件名兜底的那些会话永远收不了摊，灯上留一个残影。
+    t.session = session;
 
     if (type === 'token_count' || /fuel|usage|quota|rate_limit/i.test(normaliseType(type))) {
       const f = readFuel(rec.payload || rec.data || rec, opts.fuel);
@@ -267,8 +270,29 @@ function run(opts = {}) {
     }
   };
 
+  // 目录树每 5 秒重扫一次就够了：新会话文件不可能一秒冒出两批。原来是每秒递归
+  // readdir 并对历史里的每个文件 statSync 一次 —— 几个月的会话历史下就是每秒
+  // 几千次系统调用，一个常驻后台的进程一直在磨磁盘。
+  let dirCache = [];
+  let dirCacheAt = 0;
+
   const tick = () => {
-    for (const f of newestFiles(dir, Date.now() - lookbackMs)) {
+    const now = Date.now();
+    if (now - dirCacheAt >= 5000) {
+      dirCacheAt = now;
+      dirCache = newestFiles(dir, now - lookbackMs);
+    }
+    const byPath = new Map(dirCache.map((f) => [f.path, f]));
+    // 正在跟踪的文件每轮都重新 stat：它们正在被写，尺寸必须是最新的。
+    for (const p of tracked.keys()) {
+      try {
+        const st = fs.statSync(p);
+        const hit = byPath.get(p);
+        if (hit) { hit.size = st.size; hit.mtimeMs = st.mtimeMs; }
+        else byPath.set(p, { path: p, size: st.size, mtimeMs: st.mtimeMs });
+      } catch { /* 文件没了：下一轮目录扫描自会把它清掉 */ }
+    }
+    for (const f of byPath.values()) {
       let t = tracked.get(f.path);
       if (!t) {
         // Start from the end of a file that already existed, so old sessions do
@@ -278,7 +302,11 @@ function run(opts = {}) {
         tracked.set(f.path, t);
         if (!fresh) continue;
       }
-      if (f.size <= t.offset) continue;
+      // 文件被截断/轮转（日志轮转、Codex 重写 rollout）之后 offset 会比 size 还大。
+      // 直接 continue 会让这个文件永久失明，而且不报任何错 —— 灯就停在最后一次
+      // 听到的状态上，看起来一切正常。
+      if (f.size < t.offset) { t.offset = 0; t.buffer = ''; }
+      if (f.size === t.offset) continue;
 
       let chunk = '';
       try {
@@ -308,8 +336,8 @@ function run(opts = {}) {
     clearInterval(timer);
     if (watchServer) clearInterval(watchServer);
     for (const t of tracked.values()) {
-      if (t.state && t.state !== 'idle' && t.state !== 'offline') {
-        setState({ session: `${name}:${t.sessionId}`, agent: name, state: 'offline' });
+      if (t.session && t.state && t.state !== 'idle' && t.state !== 'offline') {
+        setState({ session: t.session, agent: name, state: 'offline' });
       }
     }
     // In-process callers (tests, `watch all`) stop the watcher without taking
@@ -318,13 +346,7 @@ function run(opts = {}) {
   };
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, stop);
 
-  let misses = 0;
-  watchServer = setInterval(async () => {
-    const h = await client.get('/health');
-    misses = h && h.ok ? 0 : misses + 1;
-    if (misses >= 3) stop();
-  }, 20000);
-  if (watchServer.unref) watchServer.unref();
+  watchServer = keepAliveWith(stop);
 
   return { stop, tracked, dir };
 }

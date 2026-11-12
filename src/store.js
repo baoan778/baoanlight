@@ -168,13 +168,35 @@ class Store extends EventEmitter {
     this.emit('change', this.snapshot());
   }
 
-  set({ session = 'default', agent = 'agent', state, detail = '', cwd = '', fuel } = {}) {
+  set({
+    session = 'default', agent = 'agent', state, detail = '', cwd = '', fuel, create = false,
+  } = {}) {
     const prev = this.sessions.get(session);
 
     // A fuel-only update must not disturb the lamp: quota reports and state
     // changes arrive on completely different schedules.
-    if (state === undefined && fuel !== undefined && prev) {
-      this.sessions.set(session, { ...prev, fuel: normaliseFuel(fuel), updatedAt: Date.now() });
+    //
+    // 但它也**不能凭空造出一个会话**：`token_count` / 额度上报属于某个已经在
+    // 报状态的会话。store 里没有它，说明这条上报是旧的、或者来自已经结束的
+    // 运行 —— 这时候按下面那条路走会 normalise 成 idle，在灯上点亮一格
+    // 「就绪」的绿灯，而实际上什么也没在跑。
+    // 唯一的例外是 `bao fuel --agent x`：那是人明确说「x 存在，额度是这个数」，
+    // 所以 CLI 会带 create: true。
+    if (state === undefined && fuel !== undefined) {
+      if (!prev && !create) return this.snapshot();
+      // create 的时候要有一条完整的记录（state/agent/session 一个都不能缺），
+      // 否则 `{...undefined}` 会写进一个只有 fuel 的对象，界面拿不到 agent。
+      const base = prev || {
+        session,
+        agent: agent || 'agent',
+        state: 'idle',
+        detail: '',
+        cwd: cwd || '',
+        fuel: null,
+        everBusy: false,
+        since: Date.now(),
+      };
+      this.sessions.set(session, { ...base, fuel: normaliseFuel(fuel), updatedAt: Date.now() });
       this.emit('change', this.snapshot());
       return this.snapshot();
     }

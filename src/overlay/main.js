@@ -2,6 +2,7 @@
 const { app, BrowserWindow, ipcMain, screen, shell, Tray, Menu, nativeImage, globalShortcut, Notification } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 const http = require('http');
 const config = require('../config');
 
@@ -78,7 +79,10 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // 页面通过 http://127.0.0.1 加载，CSP 里也没有 eval —— 没有理由让渲染进程
+      // 拿到 Node。端口走启动参数，preload 因此不需要 require 任何本地文件。
+      sandbox: true,
+      additionalArguments: [`--bao-port=${PORT}`],
     },
   });
 
@@ -90,6 +94,15 @@ function createWindow() {
 
   win.loadURL(URL_BASE + '/');
   win.once('ready-to-show', () => win.showInactive());
+
+  // 这个窗口只该显示机器人自己的页面。挡住跳转，页面里任何意外链接都不会把
+  // 渲染进程带走 —— 而 preload 暴露的那组能力（通知、开终端、退出）是跟着
+  // 渲染进程走的，所以「它停在哪里」也是一条安全边界。
+  win.webContents.on('will-navigate', (e, url) => {
+    if (!url.startsWith(URL_BASE)) e.preventDefault();
+  });
+  // 机器人没有需要网页权限的功能（声音由 WebAudio 合成，通知走主进程）。
+  win.webContents.session.setPermissionRequestHandler((_wc, _permission, cb) => cb(false));
 
   // Keep the window where the user dragged it.
   const remember = () => {
@@ -186,6 +199,9 @@ ipcMain.on('window:hotrect', (_e, rect) => { hotRect = rect; });
 
 function pollCursor() {
   if (!win || win.isDestroyed()) return;
+  // 托盘把窗口藏起来之后，没人看得见那只眼睛 —— 就别再以每秒 12 次的频率往
+  // 一个不可见的渲染进程推坐标了。
+  if (!win.isVisible()) return;
 
   const pt = screen.getCursorScreenPoint();
   const b = win.getBounds();
@@ -275,6 +291,34 @@ ipcMain.on('window:drag-end', () => {
 
 ipcMain.on('app:quit', () => app.quit());
 
+// 3D 拆解台：从设置菜单打开一个**独立的普通窗口**（不是浏览器标签，也不是那个
+// 340px 的透明小窗 —— 拆解要整屏看零件和标注）。窗口是常规可缩放窗口，关掉就
+// 释放，下次再开新的。
+let teardownWin = null;
+ipcMain.on('teardown:open', () => {
+  if (teardownWin && !teardownWin.isDestroyed()) {
+    teardownWin.focus();
+    return;
+  }
+  teardownWin = new BrowserWindow({
+    width: 1440, height: 920,
+    minWidth: 900, minHeight: 620,
+    title: 'baoanlight · 拆解台',
+    backgroundColor: '#f4f1ea',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      additionalArguments: [`--bao-port=${PORT}`],
+    },
+  });
+  teardownWin.loadURL(URL_BASE + '/teardown/');
+  teardownWin.on('closed', () => { teardownWin = null; });
+  teardownWin.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+});
+
 // 原生系统通知：某个软件需要你 / 出错 / 额度见底时弹一次。
 ipcMain.on('notify:show', (_e, { title, body } = {}) => {
   if (!title) return;
@@ -284,10 +328,17 @@ ipcMain.on('notify:show', (_e, { title, body } = {}) => {
 });
 
 // 一键打开终端：在某个会话的工作目录里起一个终端，回到「事故现场」。
+//
+// cwd 来自服务端（hooks 上报）。「本机」不等于「一定是个安全路径」：
+// 原来只是把引号和反斜杠删掉就拼进 `cmd /k "cd /d ..."`，而 cmd.exe 在引号
+// 内部仍然会展开 %VAR%。现在只接受一个**真实存在的目录**，含展开字符的一律
+// 拒绝 —— 打不开终端是小事，执行到别处是大事。
 ipcMain.on('shell:open', (_e, { cwd } = {}) => {
   if (!cwd || typeof cwd !== 'string') return;
-  const dir = cwd.replace(/["\\]/g, '').trim();
-  if (!dir) return;
+  if (/[%$`"\r\n]/.test(cwd)) return;
+  let dir;
+  try { dir = path.resolve(cwd); } catch { return; }
+  try { if (!fs.statSync(dir).isDirectory()) return; } catch { return; }
   try {
     if (process.platform === 'win32') {
       spawn('cmd', ['/c', 'start', 'cmd', '/k', `cd /d "${dir}"`], { detached: true, stdio: 'ignore' }).unref();

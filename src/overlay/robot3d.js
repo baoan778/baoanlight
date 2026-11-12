@@ -12,410 +12,86 @@
 // not move much and stops entirely when the window is hidden.
 
 import * as THREE from './vendor/three.module.js';
+// 几何与纹理在 scene/ 下：它们是纯函数（进去是数字，出来是几何/贴图），
+// 跟这个文件里的人偶动画没有关系。
+import { roundedRectPoints, roundedPolygon, slab, mesh } from './scene/geometry.js';
+import {
+  canvasTexture, sceneTexture, edgeFadeTexture, hazardTexture, softTexture,
+  wordmarkTexture, rng, paint,
+} from './scene/surfaces.js';
+// 外观色值的唯一真源（ui.js 的色块预览读的是同一份）。
+import {
+  SKIN_TONES, EYE_TONES, TRACK_TONES, ARM_TONES, DEFAULT_POSES,
+} from './shared/palette.mjs';
 
 const body = document.body;
 const host = document.getElementById('bot');
 
 const V2 = THREE.Vector2;
 
-// ------------------------------------------------------------------ helpers
-
-function roundedRectPoints(w, h, r, seg = 10) {
-  const x = -w / 2;
-  const y = -h / 2;
-  const rr = Math.max(0.001, Math.min(r, w / 2, h / 2));
-  const pts = [];
-  const line = (x0, y0, x1, y1) => {
-    for (let i = 0; i < seg; i++) pts.push(new V2(x0 + (x1 - x0) * (i / seg), y0 + (y1 - y0) * (i / seg)));
-  };
-  const quad = (x0, y0, cx, cy, x1, y1) => {
-    for (let i = 0; i < seg; i++) {
-      const t = i / seg;
-      const u = 1 - t;
-      pts.push(new V2(u * u * x0 + 2 * u * t * cx + t * t * x1, u * u * y0 + 2 * u * t * cy + t * t * y1));
-    }
-  };
-  line(x + rr, y, x + w - rr, y);
-  quad(x + w - rr, y, x + w, y, x + w, y + rr);
-  line(x + w, y + rr, x + w, y + h - rr);
-  quad(x + w, y + h - rr, x + w, y + h, x + w - rr, y + h);
-  line(x + w - rr, y + h, x + rr, y + h);
-  quad(x + rr, y + h, x, y + h, x, y + h - rr);
-  line(x, y + h - rr, x, y + rr);
-  quad(x, y + rr, x, y, x + rr, y);
-  return pts;
-}
-
-// 任意凸多边形的圆角轮廓：直线段 + 每个顶点的圆角弧。用于三角形/梯形履带。
-function roundedPolygon(verts, r, seg = 8) {
-  const pts = [];
-  const n = verts.length;
-  const line = (a, b) => { for (let i = 0; i < seg; i++) pts.push(new V2(a[0] + (b[0] - a[0]) * i / seg, a[1] + (b[1] - a[1]) * i / seg)); };
-  const quad = (a, c, b) => { for (let i = 0; i < seg; i++) { const t = i / seg; const u = 1 - t; pts.push(new V2(u * u * a[0] + 2 * u * t * c[0] + t * t * b[0], u * u * a[1] + 2 * u * t * c[1] + t * t * b[1])); } };
-  const T = [];
-  for (let i = 0; i < n; i++) {
-    const prev = verts[(i - 1 + n) % n], cur = verts[i], next = verts[(i + 1) % n];
-    const dPrev = Math.hypot(prev[0] - cur[0], prev[1] - cur[1]) || 1;
-    const dNext = Math.hypot(next[0] - cur[0], next[1] - cur[1]) || 1;
-    const cutPrev = Math.min(r, dPrev / 2), cutNext = Math.min(r, dNext / 2);
-    T.push({
-      tin: [cur[0] + (prev[0] - cur[0]) / dPrev * cutPrev, cur[1] + (prev[1] - cur[1]) / dPrev * cutPrev],
-      tout: [cur[0] + (next[0] - cur[0]) / dNext * cutNext, cur[1] + (next[1] - cur[1]) / dNext * cutNext],
-      c: cur,
-    });
-  }
-  for (let i = 0; i < n; i++) {
-    const cur = T[i], next = T[(i + 1) % n];
-    line(cur.tout, next.tin);
-    quad(next.tin, next.c, next.tout);
-  }
-  return pts;
-}
-
-// A slab with rounded corners and a machined chamfer. The chamfer is what
-// catches the key light along every edge — without it a yellow box reads as
-// a sticker, which is exactly the flat look this replaces.
-function slab(w, h, d, { r = 0.08, bevel = 0.018, holes = [], seg = 8 } = {}) {
-  const b = Math.min(bevel, w * 0.24, h * 0.24, d * 0.24);
-  const shape = new THREE.Shape(roundedRectPoints(w - 2 * b, h - 2 * b, Math.max(0.002, r - b), seg));
-  for (const hole of holes) {
-    shape.holes.push(new THREE.Path(
-      roundedRectPoints(hole.w, hole.h, hole.r ?? 0.03, seg)
-        .map((p) => new V2(p.x + (hole.x || 0), p.y + (hole.y || 0)))
-    ));
-  }
-  const geo = new THREE.ExtrudeGeometry(shape, {
-    depth: Math.max(0.004, d - 2 * b),
-    bevelEnabled: b > 0.001,
-    bevelSize: b,
-    bevelThickness: b,
-    bevelSegments: 2,
-    curveSegments: seg,
-  });
-  geo.center();
-  return geo;
-}
-
-function mesh(geo, mat, { cast = true, receive = true } = {}) {
-  const m = new THREE.Mesh(geo, mat);
-  m.castShadow = cast;
-  m.receiveShadow = receive;
-  return m;
-}
-
-// A canvas is the cheapest way to get crisp print on a machined panel: stripes,
-// the dot-matrix wordmark, the engraved agent name, the "!" bubble.
-function canvasTexture(w, h, draw) {
-  const c = document.createElement('canvas');
-  c.width = w;
-  c.height = h;
-  draw(c.getContext('2d'), w, h);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 4;
-  return tex;
-}
-
-// 场景地表纹理：程序化生成的噪声/颗粒/波纹，让地面读作真实地表而不是纯色。
-function sceneTexture(type) {
-  const seedMap = { 雪地: 11, 草原: 22, 沙漠: 33, 星空: 44, 岩浆: 55, 樱花: 66, 海洋: 77, 森林: 88, 雨夜: 99, 工厂: 111, 雪夜: 123, 黄昏: 135, 极光: 147 };
-  return canvasTexture(512, 512, (g, w, h) => {
-    const r = rng(seedMap[type] || 1);
-    const blob = (x, y, rad, rgb, a) => {
-      const grad = g.createRadialGradient(x, y, 0, x, y, rad);
-      grad.addColorStop(0, `rgba(${rgb},${a})`);
-      grad.addColorStop(1, `rgba(${rgb},0)`);
-      g.fillStyle = grad; g.beginPath(); g.arc(x, y, rad, 0, Math.PI * 2); g.fill();
-    };
-    const speck = (rgb, a, n, s = 2) => { for (let i = 0; i < n; i++) { g.fillStyle = `rgba(${rgb},${a()})`; g.fillRect(r() * w, r() * h, s * r() + 0.6, s * r() + 0.6); } };
-    const blade = (rgb) => { g.strokeStyle = rgb; g.beginPath(); const x = r() * w, y = r() * h; g.moveTo(x, y); g.lineTo(x + 1, y - 4 - r() * 7); g.stroke(); };
-    if (type === '雪地') {
-      g.fillStyle = '#e6edf4'; g.fillRect(0, 0, w, h);
-      for (let i = 0; i < 70; i++) blob(r() * w, r() * h, 10 + r() * 42, '185,208,230', 0.15 + r() * 0.25);
-      speck('255,255,255', () => 0.2 + r() * 0.4, 320);
-    } else if (type === '草原') {
-      g.fillStyle = '#5c873b'; g.fillRect(0, 0, w, h);
-      for (let i = 0; i < 90; i++) blob(r() * w, r() * h, 9 + r() * 32, '70,110,40', 0.2 + r() * 0.3);
-      for (let i = 0; i < 460; i++) blade(`rgba(${40 + r() * 25},${82 + r() * 30},${28 + r() * 15},${0.3 + r() * 0.4})`);
-      speck(`${180 + r() * 70},${200 + r() * 45},70`, () => 0.5 + r() * 0.4, 26, 2.5);
-    } else if (type === '沙漠') {
-      g.fillStyle = '#c9a562'; g.fillRect(0, 0, w, h);
-      for (let i = 0; i < 90; i++) blob(r() * w, r() * h, 12 + r() * 42, '178,148,88', 0.2 + r() * 0.3);
-      speck('150,120,70', () => 0.15 + r() * 0.2, 140);
-    } else if (type === '星空') {
-      g.fillStyle = '#14162a'; g.fillRect(0, 0, w, h);
-      for (let i = 0; i < 60; i++) blob(r() * w, r() * h, 12 + r() * 42, '42,52,96', 0.3 + r() * 0.4);
-      speck('255,255,255', () => 0.3 + r() * 0.7, 180);
-    } else if (type === '岩浆') {
-      g.fillStyle = '#1a0e0a'; g.fillRect(0, 0, w, h);
-      for (let i = 0; i < 50; i++) { g.strokeStyle = `rgba(255,${80 + r() * 90},20,${0.5 + r() * 0.5})`; g.beginPath(); let x = r() * w, y = r() * h; g.moveTo(x, y); for (let j = 0; j < 4; j++) { x += r() * 22 - 11; y += r() * 22 - 11; g.lineTo(x, y); } g.stroke(); }
-      for (let i = 0; i < 46; i++) blob(r() * w, r() * h, 8 + r() * 26, '255,120,30', 0.3 + r() * 0.4);
-    } else if (type === '樱花') {
-      g.fillStyle = '#f0dcd8'; g.fillRect(0, 0, w, h);
-      for (let i = 0; i < 90; i++) blob(r() * w, r() * h, 8 + r() * 30, '240,190,205', 0.3 + r() * 0.4);
-      speck(`${228 + r() * 22},${170 + r() * 22},${192 + r() * 22}`, () => 0.4 + r() * 0.4, 140, 3);
-    } else if (type === '海洋') {
-      g.fillStyle = '#1a4a6a'; g.fillRect(0, 0, w, h);
-      for (let i = 0; i < 90; i++) blob(r() * w, r() * h, 10 + r() * 36, '30,90,140', 0.3 + r() * 0.4);
-      speck('200,240,255', () => 0.2 + r() * 0.4, 110);
-    } else if (type === '森林') {
-      g.fillStyle = '#2c4a24'; g.fillRect(0, 0, w, h);
-      for (let i = 0; i < 90; i++) blob(r() * w, r() * h, 10 + r() * 36, '40,70,30', 0.3 + r() * 0.4);
-      for (let i = 0; i < 240; i++) { g.fillStyle = `rgba(${22 + r() * 16},${50 + r() * 22},${20 + r() * 10},${0.3 + r() * 0.4})`; g.fillRect(r() * w, r() * h, 2, 3 + r() * 5); }
-    } else if (type === '雨夜') {
-      // 湿漉漉的深色路面：蓝灰底 + 反光水渍，雨夜里地面会映出周围的亮光。
-      g.fillStyle = '#1c2530'; g.fillRect(0, 0, w, h);
-      for (let i = 0; i < 90; i++) blob(r() * w, r() * h, 10 + r() * 36, '30,44,60', 0.3 + r() * 0.4);
-      speck('150,180,210', () => 0.15 + r() * 0.3, 120, 2.5);
-    } else if (type === '雪夜') {
-      // 雪夜：深蓝黑的地面 + 一层薄雪，月光下泛着冷白，和白天雪地不同。
-      g.fillStyle = '#1a2230'; g.fillRect(0, 0, w, h);
-      for (let i = 0; i < 70; i++) blob(r() * w, r() * h, 12 + r() * 40, '38,50,70', 0.3 + r() * 0.4);
-      speck('225,235,248', () => 0.35 + r() * 0.5, 260, 2.4);
-      for (let i = 0; i < 24; i++) blob(r() * w, r() * h, 8 + r() * 22, '210,225,245', 0.15 + r() * 0.2);
-    } else if (type === '黄昏') {
-      // 黄昏：暖橙到紫的地面，落日的余晖洒在地上，带一点紫红的晚霞色调。
-      g.fillStyle = '#8a4a3a'; g.fillRect(0, 0, w, h);
-      for (let i = 0; i < 90; i++) blob(r() * w, r() * h, 12 + r() * 44, '200,110,70', 0.25 + r() * 0.35);
-      for (let i = 0; i < 60; i++) blob(r() * w, r() * h, 10 + r() * 30, '120,60,90', 0.2 + r() * 0.3);
-      speck('255,205,150', () => 0.3 + r() * 0.4, 120, 2.2);
-    } else if (type === '极光') {
-      // 极光：深色冰原 + 几条斜向的绿/紫光带，像头顶的极光映在地上。
-      g.fillStyle = '#0a1418'; g.fillRect(0, 0, w, h);
-      for (let i = 0; i < 9; i++) {
-        const y0 = r() * h;
-        const grad = g.createLinearGradient(0, y0, w, y0 + 90);
-        grad.addColorStop(0, 'rgba(60,255,180,0)');
-        grad.addColorStop(0.4, `rgba(${40 + r() * 40},${200 + r() * 55},${140 + r() * 60},${0.5 + r() * 0.3})`);
-        grad.addColorStop(0.7, `rgba(${130 + r() * 60},${80 + r() * 60},230,${0.4 + r() * 0.25})`);
-        grad.addColorStop(1, 'rgba(60,255,180,0)');
-        g.fillStyle = grad; g.fillRect(0, y0 - 45, w, 135);
-      }
-      speck('200,255,230', () => 0.35 + r() * 0.5, 160, 2);
-    } else if (type === '工厂') {
-      // 车间钢板地面：深灰底 + 钢板拼缝 + 铆钉点，像真正的车间地坪。
-      g.fillStyle = '#2e3238'; g.fillRect(0, 0, w, h);
-      for (let i = 0; i < 70; i++) blob(r() * w, r() * h, 10 + r() * 34, '38,42,48', 0.3 + r() * 0.4);
-      g.strokeStyle = 'rgba(20,22,26,.8)'; g.lineWidth = 3;
-      for (let i = 0; i < 6; i++) { g.beginPath(); g.moveTo(0, (i / 6) * h); g.lineTo(w, (i / 6) * h); g.stroke(); }
-      for (let i = 0; i < 8; i++) { g.beginPath(); g.moveTo((i / 8) * w, 0); g.lineTo((i / 8) * w, h); g.stroke(); }
-      speck('90,96,104', () => 0.4 + r() * 0.4, 240, 2.2);
-    }
-  });
-}
-
-// 场景地面的边缘羽化：中心实、边缘虚，让圆盘地表融入桌面而不是硬边一块。
-function edgeFadeTexture(size = 256) {
-  return canvasTexture(size, size, (g, w, h) => {
-    const grad = g.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
-    grad.addColorStop(0, 'rgba(255,255,255,1)');
-    grad.addColorStop(0.72, 'rgba(255,255,255,1)');
-    grad.addColorStop(1, 'rgba(255,255,255,0)');
-    g.fillStyle = grad;
-    g.fillRect(0, 0, w, h);
-  });
-}
-
-function hazardTexture() {
-  return canvasTexture(256, 56, (g, w, h) => {
-    g.fillStyle = '#eef1f5';
-    g.fillRect(0, 0, w, h);
-    g.fillStyle = '#191c20';
-    for (let x = -h; x < w + h; x += 44) {
-      g.beginPath();
-      g.moveTo(x, 0);
-      g.lineTo(x + 22, 0);
-      g.lineTo(x + 22 + h, h);
-      g.lineTo(x + h, h);
-      g.closePath();
-      g.fill();
-    }
-  });
-}
-
-function softTexture(size = 128, stops = [[0, 'rgba(255,255,255,1)'], [1, 'rgba(255,255,255,0)']]) {
-  return canvasTexture(size, size, (g) => {
-    const grad = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-    for (const [at, colour] of stops) grad.addColorStop(at, colour);
-    g.fillStyle = grad;
-    g.fillRect(0, 0, size, size);
-  });
-}
-
-// 5×7 dot matrix, drawn not imported — the wordmark is ours, and a bitmap
-// font is the one typeface that survives being 8mm wide on a toy robot.
-const DOT = {
-  B: ['11110', '10001', '10001', '11110', '10001', '10001', '11110'],
-  A: ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
-  O: ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
-  N: ['10001', '11001', '11001', '10101', '10011', '10011', '10001'],
-};
-
-function wordmarkTexture() {
-  return canvasTexture(512, 128, (g, w, h) => {
-    const cell = 13;
-    const gap = 13;
-    const word = 'BAOAN';
-    let x = 14;
-    g.fillStyle = '#15181c';
-    for (const ch of word) {
-      const rows = DOT[ch];
-      for (let r = 0; r < 7; r++) {
-        for (let c = 0; c < 5; c++) {
-          if (rows[r][c] === '1') g.fillRect(x + c * cell, 22 + r * cell, cell - 2, cell - 2);
-        }
-      }
-      x += 5 * cell + gap;
-    }
-    // the badge: a hexagon bolt, our mark, not anybody else's character
-    const cx = x + 44;
-    const cy = 64;
-    g.beginPath();
-    for (let i = 0; i < 6; i++) {
-      const a = (Math.PI / 3) * i - Math.PI / 6;
-      const px = cx + Math.cos(a) * 30;
-      const py = cy + Math.sin(a) * 30;
-      if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
-    }
-    g.closePath();
-    g.fillStyle = '#f0c11a';
-    g.fill();
-    g.lineWidth = 6;
-    g.strokeStyle = '#15181c';
-    g.stroke();
-    g.fillStyle = '#15181c';
-    g.font = 'bold 30px monospace';
-    g.textAlign = 'center';
-    g.textBaseline = 'middle';
-    g.fillText('B', cx, cy + 1);
-  });
-}
-
-function bubbleTexture() {
-  return canvasTexture(128, 128, (g) => {
-    g.beginPath();
-    g.arc(64, 64, 52, 0, Math.PI * 2);
-    g.fillStyle = '#ffffff';
-    g.fill();
-    g.lineWidth = 10;
-    g.strokeStyle = 'rgba(12,15,19,.85)';
-    g.stroke();
-    g.fillStyle = '#12151a';
-    g.font = 'bold 76px system-ui, sans-serif';
-    g.textAlign = 'center';
-    g.textBaseline = 'middle';
-    g.fillText('!', 64, 62);
-  });
+// ui.js 把「今日时长」「战绩」以 JSON 字符串放在 body.dataset 上（dataset 只能存
+// 字符串）。渲染循环每帧都要读它们，所以按字符串内容缓存解析结果：内容没变就
+// 复用上次那个对象，省掉每帧一次 JSON.parse。
+const jsonCache = new Map();
+function datasetJson(key) {
+  const raw = body.dataset[key] || '';
+  const hit = jsonCache.get(key);
+  if (hit && hit.raw === raw) return hit.value;
+  let value = {};
+  try { value = raw ? JSON.parse(raw) : {}; } catch { value = {}; }
+  jsonCache.set(key, { raw, value });
+  return value;
 }
 
 // ------------------------------------------------------------------ materials
 
-// A seeded PRNG, so the weathering lands in the same place on every launch:
-// rust that rearranges itself between frames is a rendering bug, not a paint
-// job.
-function rng(seed) {
-  let s = seed >>> 0;
-  return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
-}
-
-// Seven hundred years of sun, dust and rain, painted into one 256px canvas:
-// a dusty base, dirt blotches, rust blooming up out of the seams, streaks
-// running down, and a few chips of bare metal. Flat, saturated yellow is what
-// made the old robot read as a toy; the shape was never the whole problem.
-function weatherTexture(base, { seed = 1, amount = 1 } = {}) {
-  return canvasTexture(256, 256, (g, w, h) => {
-    const r = rng(seed);
-    g.fillStyle = base;
-    g.fillRect(0, 0, w, h);
-
-    const blob = (x, y, rad, rgb, a) => {
-      const grad = g.createRadialGradient(x, y, 0, x, y, rad);
-      grad.addColorStop(0, `rgba(${rgb},${a})`);
-      grad.addColorStop(0.55, `rgba(${rgb},${a * 0.5})`);
-      grad.addColorStop(1, `rgba(${rgb},0)`);
-      g.fillStyle = grad;
-      g.beginPath();
-      g.arc(x, y, rad, 0, Math.PI * 2);
-      g.fill();
-    };
-
-    // grime
-    for (let i = 0; i < 26; i++) {
-      blob(r() * w, r() * h, 10 + r() * 46, '58,42,22', (0.05 + r() * 0.12) * amount);
-    }
-    // rust, biased low: that is where water sits
-    for (let i = 0; i < 16; i++) {
-      blob(r() * w, h * (0.4 + r() * 0.58), 4 + r() * 12, '124,62,30', (0.22 + r() * 0.32) * amount);
-    }
-    // streaks
-    for (let i = 0; i < 12; i++) {
-      const x = r() * w;
-      const y = r() * h * 0.55;
-      const len = 24 + r() * 70;
-      const grad = g.createLinearGradient(0, y, 0, y + len);
-      grad.addColorStop(0, `rgba(86,56,26,${0.14 * amount})`);
-      grad.addColorStop(1, 'rgba(86,56,26,0)');
-      g.fillStyle = grad;
-      g.fillRect(x, y, 1.5 + r() * 2.5, len);
-    }
-    // chips of bare metal
-    for (let i = 0; i < 20; i++) {
-      g.fillStyle = `rgba(204,194,174,${(0.08 + r() * 0.14) * amount})`;
-      g.fillRect(r() * w, r() * h, 1 + r() * 3, 1 + r() * 1.4);
-    }
-  });
-}
-
-function paint(base, { seed = 1, amount = 1, repeat = [1, 1] } = {}) {
-  const tex = weatherTexture(base, { seed, amount });
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(repeat[0], repeat[1]);
-  return tex;
-}
-
 // The palette is the character: dusty ochre paint over gunmetal, rust where the
 // paint has worn through, and not one mirror-bright surface anywhere. Chrome
 // reads as "new toy"; WALL·E is a machine that has been outside for 700 years.
+// 初始材质取 palette 的第一项（做旧黄 / 默认黑瞳 / 黑履带 / 枪灰配件），
+// 也就是 config 的出厂默认值 —— 免得同一组颜色在这里被抄第三遍。
+const DEFAULT_SKIN = SKIN_TONES[0];
+const DEFAULT_EYE = EYE_TONES[0];
+const DEFAULT_TRACK = TRACK_TONES[0];
+const DEFAULT_ARM = ARM_TONES[0];
+
 const M = {
-  yellow: new THREE.MeshStandardMaterial({ map: paint('#c9a238', { seed: 3, repeat: [0.55, 0.72] }), metalness: 0.14, roughness: 0.66 }),
-  yellowDark: new THREE.MeshStandardMaterial({ map: paint('#9a7923', { seed: 5, amount: 1.2, repeat: [0.8, 0.8] }), metalness: 0.16, roughness: 0.7 }),
+  yellow: new THREE.MeshStandardMaterial({ map: paint(DEFAULT_SKIN.hex, { seed: 3, repeat: [0.55, 0.72] }), metalness: 0.14, roughness: 0.66 }),
+  yellowDark: new THREE.MeshStandardMaterial({ map: paint(DEFAULT_SKIN.dark, { seed: 5, amount: 1.2, repeat: [0.8, 0.8] }), metalness: 0.16, roughness: 0.7 }),
   metal: new THREE.MeshStandardMaterial({ map: paint('#77736a', { seed: 7, amount: 0.7, repeat: [0.9, 0.9] }), metalness: 0.6, roughness: 0.56 }),
   metalDark: new THREE.MeshStandardMaterial({ color: 0x4b4842, metalness: 0.65, roughness: 0.58 }),
-  steel: new THREE.MeshStandardMaterial({ map: paint('#8b8779', { seed: 11, amount: 0.55, repeat: [1.6, 1.6] }), metalness: 0.74, roughness: 0.44 }),
+  steel: new THREE.MeshStandardMaterial({ map: paint(DEFAULT_ARM.steel, { seed: 11, amount: 0.55, repeat: [1.6, 1.6] }), metalness: 0.74, roughness: 0.44 }),
   // the arms have to read against black rubber at 300px, so they are the one
   // bright surface left on the machine — worn aluminium, not chrome
-  arm: new THREE.MeshStandardMaterial({ map: paint('#97958a', { seed: 23, amount: 0.6, repeat: [1.4, 1.4] }), metalness: 0.5, roughness: 0.46 }),
+  arm: new THREE.MeshStandardMaterial({ map: paint(DEFAULT_ARM.arm, { seed: 23, amount: 0.6, repeat: [1.4, 1.4] }), metalness: 0.5, roughness: 0.46 }),
   rust: new THREE.MeshStandardMaterial({ map: paint('#8a4a28', { seed: 13, amount: 0.8, repeat: [2, 2] }), metalness: 0.32, roughness: 0.8 }),
-  dark: new THREE.MeshStandardMaterial({ color: 0x2b2b28, metalness: 0.5, roughness: 0.62 }),
+  dark: new THREE.MeshStandardMaterial({ color: DEFAULT_ARM.dark, metalness: 0.5, roughness: 0.62 }),
   black: new THREE.MeshStandardMaterial({ color: 0x141412, metalness: 0.4, roughness: 0.58 }),
-  rubber: new THREE.MeshStandardMaterial({ color: 0x1a1a18, metalness: 0.05, roughness: 0.95 }),
+  rubber: new THREE.MeshStandardMaterial({ color: DEFAULT_TRACK.rubber, metalness: 0.05, roughness: 0.95 }),
   rubberIn: new THREE.MeshStandardMaterial({ color: 0x121211, metalness: 0.02, roughness: 1.0 }),
-  rubberHi: new THREE.MeshStandardMaterial({ color: 0x3a3833, metalness: 0.22, roughness: 0.86 }),
+  rubberHi: new THREE.MeshStandardMaterial({ color: DEFAULT_TRACK.hi, metalness: 0.22, roughness: 0.86 }),
   wheel: new THREE.MeshStandardMaterial({ map: paint('#7a4530', { seed: 17, amount: 0.9, repeat: [2, 2] }), metalness: 0.45, roughness: 0.62 }),
   wheelDark: new THREE.MeshStandardMaterial({ color: 0x45271b, metalness: 0.5, roughness: 0.66 }),
   // binocular glass, not ping-pong balls: near-black, glossy, with a catchlight
-  lens: new THREE.MeshPhysicalMaterial({ color: 0x131c23, metalness: 0.1, roughness: 0.05, clearcoat: 1, clearcoatRoughness: 0.03 }),
-  eyeBody: new THREE.MeshStandardMaterial({ map: paint('#5c594f', { seed: 19, amount: 0.5, repeat: [1.6, 1.6] }), metalness: 0.7, roughness: 0.45 }),
+  lens: new THREE.MeshPhysicalMaterial({ color: DEFAULT_EYE.lens, metalness: 0.1, roughness: 0.05, clearcoat: 1, clearcoatRoughness: 0.03 }),
+  eyeBody: new THREE.MeshStandardMaterial({ map: paint(DEFAULT_ARM.eye, { seed: 19, amount: 0.5, repeat: [1.6, 1.6] }), metalness: 0.7, roughness: 0.45 }),
   // 只有 irisInner 真的被装到镜片里（M.iris 曾经是个没有挂到任何几何上的死材质）。
-  irisInner: new THREE.MeshStandardMaterial({ color: 0x1b242c, metalness: 0.45, roughness: 0.32 }),
+  irisInner: new THREE.MeshStandardMaterial({ color: EYE_TONES[0].iris, metalness: 0.45, roughness: 0.32 }),
   panel: new THREE.MeshStandardMaterial({ color: 0x17171a, metalness: 0.6, roughness: 0.6 }),
   glow: new THREE.MeshStandardMaterial({ color: 0x0c0e11, emissive: 0x34c759, emissiveIntensity: 1.6, roughness: 0.4 }),
+  // 眼睛内部的小件（瞳孔、两点高光、泪滴）曾经在 buildEyes 里每次新建，
+  // 而换头型时只释放几何 —— 每换一次就漏 4 个材质（三眼头 12 个）。放进共享
+  // 表里之后，`disposeGeometries` 那句「材质是共享的」才真的是真的。
+  pupil: new THREE.MeshStandardMaterial({ color: 0x07090c, roughness: 0.2 }),
+  catchlight: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55 }),
+  catchlightSmall: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 }),
+  tear: new THREE.MeshStandardMaterial({
+    color: 0x9fd4ff, emissive: 0x1e4e78, emissiveIntensity: 0.5, transparent: true, opacity: 0.9, roughness: 0.08,
+  }),
 };
 
 // ---- 皮肤系统：身体主色 + 暗色（门板/下板）可换，做旧纹理保留 --------------
-const SKINS = {
-  '做旧黄': { main: '#c9a238', dark: '#9a7923' },
-  '军绿': { main: '#7d8a4a', dark: '#5a6635' },
-  '铁锈橙': { main: '#c2773e', dark: '#8f5628' },
-  '深海蓝': { main: '#5a7d9a', dark: '#3f5c72' },
-  '岩灰': { main: '#9a968c', dark: '#6e6a60' },
-  '暗红': { main: '#a05048', dark: '#743a34' },
-  '金属银': { main: '#b9c2cd', dark: '#8a929c' },
-  '碳纤黑': { main: '#3a3d42', dark: '#24262a' },
-  '森林绿': { main: '#4a6a3a', dark: '#334a28' },
-  '日落橙': { main: '#d8823a', dark: '#a85a20' },
-  '樱花粉': { main: '#d98aa8', dark: '#a85e7a' },
-};
+const SKINS = Object.fromEntries(SKIN_TONES.map((t) => [t.name, { main: t.hex, dark: t.dark }]));
 function applySkin(name) {
   const s = SKINS[name] || SKINS['做旧黄'];
   // 旧贴图要显式释放：换皮肤会重新生成两张纹理，不释放的话来回切换会一直吃显存。
@@ -430,16 +106,7 @@ function applySkin(name) {
 }
 
 // ---- 眼睛配色：镜片 + 虹膜换色（表情的核心颜色） --------------------------
-const EYE_STYLES = {
-  '默认黑': { lens: 0x131c23, iris: 0x1b242c },
-  '蓝瞳': { lens: 0x0c1a2e, iris: 0x1e3a5f },
-  '绿瞳': { lens: 0x0c1e14, iris: 0x1e4a30 },
-  '金瞳': { lens: 0x1e1408, iris: 0x4a3a10 },
-  '紫瞳': { lens: 0x1a0c2e, iris: 0x3a1a5f },
-  '红瞳': { lens: 0x2e0c0c, iris: 0x5f1a1a },
-  '橙瞳': { lens: 0x2e1a0c, iris: 0x5f3a1a },
-  '青瞳': { lens: 0x0c2a2a, iris: 0x1a5a5a },
-};
+const EYE_STYLES = Object.fromEntries(EYE_TONES.map((t) => [t.name, { lens: t.lens, iris: t.iris }]));
 function applyEyeStyle(name) {
   const s = EYE_STYLES[name] || EYE_STYLES['默认黑'];
   // 镜片本身接近黑玻璃，换色几乎看不出来；真正被看见的是镜片里那圈虹膜，
@@ -449,15 +116,7 @@ function applyEyeStyle(name) {
 }
 
 // ---- 履带配色：橡胶 + 履带齿高光换色 --------------------------------------
-const TRACK_SKINS = {
-  '黑': { rubber: 0x1a1a18, hi: 0x3a3833 },
-  '深棕': { rubber: 0x2a1c14, hi: 0x4a3428 },
-  '岩灰': { rubber: 0x2a2a28, hi: 0x4a4a46 },
-  '军绿': { rubber: 0x1c2418, hi: 0x38442e },
-  '深蓝': { rubber: 0x141a24, hi: 0x283848 },
-  '暗红': { rubber: 0x240c0c, hi: 0x48201a },
-  '墨绿': { rubber: 0x141c14, hi: 0x2a3a26 },
-};
+const TRACK_SKINS = Object.fromEntries(TRACK_TONES.map((t) => [t.name, { rubber: t.rubber, hi: t.hi }]));
 function applyTrackSkin(name) {
   const s = TRACK_SKINS[name] || TRACK_SKINS['黑'];
   M.rubber.color.set(s.rubber);
@@ -465,16 +124,9 @@ function applyTrackSkin(name) {
 }
 
 // ---- 配件配色：手臂金属 / 手爪 / 头镜筒一起换色 ----------------------------
-const ARM_SKINS = {
-  '枪灰': { arm: '#97958a', steel: '#8b8779', dark: '#2b2b28', eye: '#5c594f' },
-  '银白': { arm: '#c4c1b6', steel: '#d6d2c6', dark: '#4a4a46', eye: '#9a9a94' },
-  '金色': { arm: '#b89a55', steel: '#c9ad6e', dark: '#5a4526', eye: '#8a7438' },
-  '暗黑': { arm: '#4a4a46', steel: '#5f5f5a', dark: '#1f1f1c', eye: '#3a3a36' },
-  '铜色': { arm: '#b0764a', steel: '#c0895e', dark: '#4a3526', eye: '#7a5a3a' },
-  '青铜': { arm: '#8a6a3a', steel: '#a07e48', dark: '#3a2a18', eye: '#6a5030' },
-  '枪铁': { arm: '#5a5f66', steel: '#6e737a', dark: '#22252a', eye: '#454a52' },
-  '香槟金': { arm: '#c9b48a', steel: '#ddcba0', dark: '#6a5a3a', eye: '#a08a60' },
-};
+const ARM_SKINS = Object.fromEntries(
+  ARM_TONES.map((t) => [t.name, { arm: t.arm, steel: t.steel, dark: t.dark, eye: t.eye }])
+);
 function applyArmSkin(name) {
   const s = ARM_SKINS[name] || ARM_SKINS['枪灰'];
   M.arm.color.set(s.arm);
@@ -550,7 +202,6 @@ const BODY_TYPES = {
   '标准': { x: 1.0, y: 1.0, z: 1.0 },
   '修长': { x: 0.9, y: 1.15, z: 0.9 },
 };
-let bodyType = '标准';
 
 // ---- 手势库：每个状态可配置一种手势（动作系统核心） ------------------------
 // z/x/bend/curl 是基值，fx 是特效（tremble 颤抖 / pump 泵动 / wave 挥手 / none）。
@@ -565,10 +216,9 @@ const ARM_POSES = {
   '托下巴': { z: 0.35, x: -0.48, bend: 1.10, curl: -0.20, fx: 'none' },
   '握拳': { z: -0.20, x: -0.30, bend: 0.14, curl: 0.45, fx: 'tremble' },
 };
-const POSE_NAMES = Object.keys(ARM_POSES);
 // 五个状态各配一种手势（用户可改，存 config）。
 const STATE_KEYS = ['error', 'waiting', 'busy', 'done', 'idle'];
-let statePoses = { error: '环抱', waiting: '举手', busy: '泵动', done: '摊开', idle: '垂放' };
+let statePoses = { ...DEFAULT_POSES };
 
 // 空闲时的自主小动作。编号 → 这段动作演多久（秒）：
 //   1 张望  2 伸懒腰  3 抛接小球  4 抖擞  5 看自己的手爪  6 转身巡视  7 点头致意
@@ -774,10 +424,16 @@ if (host && renderer) {
     const Mcoral = new THREE.MeshStandardMaterial({ color: 0xe06050, roughness: 0.85 });
     // 点缀落地并开启投影/受影：一棵投下影子的树才「站」在地上，而不是贴图。
     // 同时记录一个随机相位与幅度，供 update 里的「随风摆动」使用。
+    // 这 7 个共享材质每次调用都新建；只有真的挂到物件上的才算「在用」。
+    const usedMats = new Set();
     const place = (m, x, z, s = 1) => {
       m.position.set(x, 0, z);
       m.scale.setScalar(s);
-      m.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+      m.traverse((o) => {
+        if (!o.isMesh) return;
+        o.castShadow = true; o.receiveShadow = true;
+        if (o.material) usedMats.add(o.material);
+      });
       m.userData.swayPhase = r() * Math.PI * 2;
       m.userData.swayAmp = 0.035 + r() * 0.05;
       sceneProps.add(m);
@@ -941,6 +597,12 @@ if (host && renderer) {
         place(g, x, z, 0.9 + r() * 0.5);
       }
     }
+
+    // 没被挂上去的那几个（松树场景用不到岩石、珊瑚、粉色花）当场释放：
+    // 它们不在场景图里，下一轮 buildProps 的 traverse 永远遍历不到它们。
+    for (const m of [Mwood, Mleaf, Msnow, Mrock, Mgreen, Mpink, Mcoral]) {
+      if (!usedMats.has(m)) m.dispose();
+    }
   }
 
   function applyScene(name) {
@@ -986,7 +648,6 @@ if (host && renderer) {
   // 体型切换：整体非均匀缩放，Q版矮胖、修长瘦高。
   function applyBody(name) {
     const b = BODY_TYPES[name] || BODY_TYPES['标准'];
-    bodyType = name;
     robot.scale.set(b.x, b.y, b.z);
   }
 
@@ -1109,12 +770,14 @@ if (host && renderer) {
     });
   }
   const HALO_STYLES = { '环形': 'ring', '圆形': 'disc', '星形': 'star', '无': 'none' };
-  let haloStyle = '环形';
   function applyHalo(style) {
-    haloStyle = style;
     const tex = haloTexture(style);
-    haloA.map = tex; haloA.needsUpdate = true;
-    haloB.map = tex; haloB.needsUpdate = true;
+    // 贴图是每次现画的：旧的必须释放，否则每切一次光环样式就漏一张 256² 纹理。
+    for (const h of [haloA, haloB]) {
+      if (h.map && h.map !== tex) h.map.dispose();
+      h.map = tex;
+      h.needsUpdate = true;
+    }
   }
 
   function floorRing(size, band, opacity) {
@@ -1149,6 +812,9 @@ if (host && renderer) {
   const armAccents = [];    // emissive strips on the booms, tinted by state
   const trackLeds = [];     // LEDs traced along each belt, a chasing marquee
   const trackGroups = [];   // belt groups, for shape switching
+  // 只属于某一条履带的材质（灯珠那一圈）。其余材质都是共享的 M.*，重建时
+  // 千万不能跟着 dispose，否则整台机器会掉材质。
+  const trackOwnedMaterials = [];
 
   // ---- tracks ------------------------------------------------------------
   function buildTrack(side) {
@@ -1277,6 +943,7 @@ if (host && renderer) {
     for (let i = 0; i < TRACK_LED_N; i++) {
       const p = ledProfile[i];
       const mat = new THREE.MeshStandardMaterial({ color: 0x101010, emissive: 0x000000, emissiveIntensity: 0, roughness: 0.3 });
+      trackOwnedMaterials.push(mat);
       const led = mesh(new THREE.BoxGeometry(0.075, 0.032, 0.02), mat, { cast: false });
       led.position.set(p.x, p.y, outer + 0.005);
       space.add(led);
@@ -1291,8 +958,20 @@ if (host && renderer) {
   robot.add(tA, tB);
 
   // 切换履带形状时重建：清空履带/链轮/灯带，按新 trackType 重建。
+  // 旧的一定要真的释放：每条履带里有 3 个 ExtrudeGeometry、几十个齿/轮/辐条
+  // 几何，以及 34 个只属于这条灯带的材质。只 robot.remove() 的话，来回切几次
+  // 形状就攒下几百个没人用的 GPU 对象，显存一路涨到标签页崩掉。
   function rebuildTracks() {
-    for (const g of trackGroups) robot.remove(g);
+    for (const g of trackGroups) {
+      robot.remove(g);
+      g.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        // InstancedMesh 的实例矩阵是它自己的 buffer，也要还回去。
+        if (o.isInstancedMesh) o.dispose();
+      });
+    }
+    for (const m of trackOwnedMaterials) m.dispose();
+    trackOwnedMaterials.length = 0;
     trackGroups.length = 0;
     // 清空与履带相关的动画条目
     lugs.length = 0;
@@ -1796,9 +1475,7 @@ if (host && renderer) {
 
   // 装饰：无 / 天线 / 安全帽 / 皇冠 / 眼镜 / 墨镜 / 围巾 / 背包 / 礼帽 / 领结 / 勋章 / 贝雷帽。
   const DECORATIONS = ['无', '天线', '安全帽', '皇冠', '眼镜', '墨镜', '围巾', '背包', '礼帽', '领结', '勋章', '贝雷帽'];
-  let decoration = '无';
   function setDecoration(name) {
-    decoration = name;
     antenna.visible = name === '天线';
     hat.visible = name === '安全帽';
     crown.visible = name === '皇冠';
@@ -1898,21 +1575,15 @@ if (host && renderer) {
     inner.position.z = 0.001;
     look.add(inner);
 
-    const pupil = mesh(new THREE.CircleGeometry(0.062, 32), new THREE.MeshStandardMaterial({ color: 0x07090c, roughness: 0.2 }));
+    const pupil = mesh(new THREE.CircleGeometry(0.062, 32), M.pupil);
     pupil.position.z = 0.002;
     look.add(pupil);
 
     // two catchlights, not one: that is what makes glass read as glass
-    const spec = new THREE.Mesh(
-      new THREE.CircleGeometry(0.030, 20),
-      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55 })
-    );
+    const spec = new THREE.Mesh(new THREE.CircleGeometry(0.030, 20), M.catchlight);
     spec.position.set(-0.072, 0.078, 0.004);
     look.add(spec);
-    const spec2 = new THREE.Mesh(
-      new THREE.CircleGeometry(0.011, 14),
-      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 })
-    );
+    const spec2 = new THREE.Mesh(new THREE.CircleGeometry(0.011, 14), M.catchlightSmall);
     spec2.position.set(0.062, -0.058, 0.004);
     look.add(spec2);
 
@@ -1941,10 +1612,7 @@ if (host && renderer) {
     eye.add(face);
 
     // 泪滴：error 时沿镜筒下方滑落、淡出再循环——「故障/难过」的拟人化。
-    const tear = mesh(new THREE.SphereGeometry(0.032, 12, 10), new THREE.MeshStandardMaterial({
-      color: 0x9fd4ff, emissive: 0x1e4e78, emissiveIntensity: 0.5,
-      transparent: true, opacity: 0.9, roughness: 0.08,
-    }), { cast: false });
+    const tear = mesh(new THREE.SphereGeometry(0.032, 12, 10), M.tear, { cast: false });
     tear.scale.y = 1.6;
     // z 放在镜片前方，否则泪滴会被 bezel/玻璃挡住看不见
     tear.position.set(side * 0.04, -0.30, 0.26);
@@ -2457,7 +2125,6 @@ if (host && renderer) {
     if (d.agent !== theme.agent) {
       theme.agent = d.agent || '';
       drawName(theme.agent);
-      nameCycle = 0;
     }
     planRing();
     syncSlots();
@@ -2645,9 +2312,19 @@ if (host && renderer) {
     }
   }
 
+  // 每帧调 getComputedStyle 会强制一次样式计算 —— 60fps 下就是每秒 60 次，
+  // 这是常驻窗口里最没必要的一笔固定开销。`--state` 只跟着 body[data-state]
+  // 走，所以盯着那个属性就够了，属性不变就不必再算。
+  let stateColor = null;
+  function readStateColor() {
+    stateColor = getComputedStyle(body).getPropertyValue('--state').trim() || null;
+  }
+  if (typeof MutationObserver === 'function') {
+    new MutationObserver(readStateColor).observe(body, { attributes: true, attributeFilter: ['data-state'] });
+  }
   function cssColor(state) {
-    const v = getComputedStyle(body).getPropertyValue('--state').trim();
-    return v || FALLBACK[state] || FALLBACK.unknown;
+    if (!stateColor) readStateColor();
+    return stateColor || FALLBACK[state] || FALLBACK.unknown;
   }
 
   // ------------------------------------------------------------------ pointer
@@ -2746,7 +2423,20 @@ if (host && renderer) {
   // backing store drops to 1x and the dust stops; the lights, the ring and the
   // state colours never degrade, because a status robot that hides its state to
   // go faster has no reason to exist.
-  const perf = { frames: 0, since: performance.now(), cap: 2.5, lite: false };
+  // `warmupUntil`：开头两秒在编译着色器、生成纹理，帧率必然难看。拿这段时间去
+  // 「测量机器性能」只会把每一台机器都判定成带不动。
+  const perf = {
+    frames: 0,
+    since: performance.now(),
+    // 当前档位（fps）。统计只在同一档内累计，见 frame()。
+    tier: 0,
+    // 与下面的初始 pixelRatio 保持一致（min(2, dpr)）。原来这里是 2.5：
+    // 初始化 2、resize 之后 2.5，同一个窗口在缩放的瞬间偷偷多画 56% 的像素，
+    // 和「绝不掉帧」的目标正好相反。
+    cap: 2,
+    lite: false,
+    warmupUntil: performance.now() + 2500,
+  };
 
   let state = '';
   let dead = false;
@@ -2773,7 +2463,6 @@ if (host && renderer) {
   const FREQ_BOOST = { 活泼: 1.4, 沉稳: 0.65, 话痨: 1.0, 害羞: 0.9 };
   let shyLookAt = -99;   // 被盯着看久了 → 害羞地别开视线
   let boredBubbleAt = -99;   // 无聊冒泡的防抖
-  let nameCycle = 0;
   let nameShown = '';
   let nameplateText = '';   // 用户自定义铭牌文字，空则显示主灯代表的软件名
 
@@ -2810,6 +2499,17 @@ if (host && renderer) {
     return current + (target - current) * (1 - Math.exp(-rate * dt));
   }
 
+  // 每帧的总编排。分界线是「数据流」而不是行数：
+  //
+  //   * 前 250 行是一次姿态求解：光标位置 → 转向 → 头部朝向 → 眼睛 → 手臂，
+  //     每一步的产出是下一步的输入（yawDelta 决定履带差速，done 决定庆祝动画，
+  //     等等）。它不拆成多个函数，因为那样要维护一个十来个字段的中间契约，
+  //     读者得在四个函数之间来回跳才能回答「头为什么转过去了」。
+  //   * 后面各部件（灯环、状态条、广告牌、信标、铭牌、火焰、星点、熄灯……）
+  //     彼此独立，已经拆成 updateXxx()，调用顺序与原来的书写顺序一致。
+  //
+  // 拆不动的部分保持完整，比为了「短」而拆得更碎更好维护 —— 这个判断写在
+  // 这里，免得下一个人再来试一次。
   function update(dt) {
     const t = (clock.t += dt);
     state = body.dataset.state || 'offline';
@@ -3078,14 +2778,7 @@ if (host && renderer) {
     head.rotation.x = pose.headPitch;
     head.rotation.z = damp(head.rotation.z, (off ? 0.10 : unknown ? 0.12 : error ? -0.05 : 0) + thinkTilt, 6, dt);
 
-    // ---- 天线：忙碌抖得快、空闲慢摇、出错乱颤，顶端小球跟着状态灯变色
-    antennaTipMat.emissive.copy(tint);
-    const antennaFreq = off ? 1.2 : error ? 16 : busy ? 6.5 : waiting ? 4.5 : 2.6;
-    const antennaAmp = off ? 0.008 : error ? 0.09 : busy ? 0.055 : idle || unknown ? 0.032 : 0.02;
-    antenna.rotation.z = Math.sin(t * antennaFreq) * antennaAmp;
-    antenna.rotation.x = -0.16 + Math.sin(t * 2.2) * 0.035;
-    antennaTipMat.emissiveIntensity = off ? 0.25 : (error ? 1.9 : 1.1 + Math.sin(t * antennaFreq) * 0.4);
-
+    updateAntenna(off, error, busy, waiting, idle, unknown, t);
     // ---- eyes: a blink is a squint, which is what these eyes can do
     let eye = 1;
     if (off) eye = 0.05;
@@ -3147,164 +2840,8 @@ if (host && renderer) {
       e.brow.position.y = damp(e.brow.position.y, 0.30 + browLift, 10, dt);
     }
 
-    // ---- 流泪：error 时泪滴沿镜筒下方滑落、淡出，双眼错开循环 ----------------
-    for (let i = 0; i < tearMeshes.length; i++) {
-      const tm = tearMeshes[i];
-      // error 是大哭（快、浓）；waiting 是焦急含泪（慢、淡、单滴）。
-      if ((error || waiting) && !reduceMotion) {
-        tm.visible = true;
-        const speed = error ? 0.55 : 0.26;
-        const phase = (t * speed + i * 0.5) % 1;
-        tm.position.y = -0.30 - phase * 0.42;
-        tm.material.opacity = (error ? 1.0 : 0.8) * (1 - phase * 0.75);
-        tm.scale.setScalar((error ? 1.4 : 1.1) * (1 - phase * 0.35));
-      } else {
-        tm.visible = false;
-      }
-    }
-
-    // the lit iris ring: the same colour as the chest lamp, a quarter of the
-    // brightness — enough to say "awake", never enough to compete with the lamp
-    eyeGlowMat.emissive.copy(tint);
-    eyeGlowMat.emissiveIntensity = damp(eyeGlowMat.emissiveIntensity,
-      (off ? 0.02
-        : waiting ? 1.15 + Math.sin(t * 6.4) * 0.4
-          : error ? 0.9 + (Math.sin(t * 19) > 0 ? 0.7 : 0)
-            : busy ? 1.0 + Math.sin(t * 3.4) * 0.22
-              : greeting ? 1.6
-                : 0.55) * brightness, 10, dt);
-
-    // error 时虹膜发红（怒目）：内圈从冷黑变成暗红发光，配合头顶火焰。
-    M.irisInner.emissive.setHex(error ? 0xff1a00 : 0x000000);
-    M.irisInner.emissiveIntensity = error ? (0.75 + Math.sin(t * 19) * 0.25) * brightness : 0;
-
-    // ---- arms
-    // Each state gets its own silhouette, not just a different tilt:
-    //   working  — both booms down and pumping, fingers pinching
-    //   waiting  — the right arm up and waving, left hand held out flat
-    //   failed   — both arms clamped in and trembling
-    //   idle     — hanging still
-    //   greeting — both up and waving (double click)
-    // One raised arm reads as "over here"; two raised arms reads as a cheer,
-    // and a status light that cheers is noise.
-    // 手臂与手爪：拟人化手势，左右臂不对称、节奏有快慢——
-    //   error   = 双臂环抱胸前 + 颤抖 + 握拳（抱臂生气）
-    //   waiting = 右臂举手挥手，左臂托下巴（思考）
-    //   busy    = 双臂前伸交替泵动 + 手指交替张合（像敲键盘）
-    //   done    = 双臂向两侧微张摊开（「完成了」）
-    //   idle    = 自然垂放 + 偶尔轻晃
-    // motionScale 已在上面（自主动作之前）声明。
-    // 当前状态的手势（用户可配置），从手势库取参数。
-    const poseName = statePoses[state] || statePoses.idle || '垂放';
-    const armPose = ARM_POSES[poseName] || ARM_POSES['垂放'];
-    const wave = armPose.fx === 'wave' && !reduceMotion ? Math.sin(t * 6.0) * 0.16 * motionScale : 0;
-    // 手指张合：运行态随泵动一起开合（像敲键盘），出错态保持握拳，其余按手势基值。
-    let curl = armPose.curl;
-    if (armPose.fx === 'pump' && !reduceMotion) curl += Math.sin(t * 3.2) * 0.22 * motionScale;
-    for (const a of arms) {
-      const isRight = a.side > 0;
-      const phase = isRight ? 0 : Math.PI;   // 左右臂相位错开，交替动作更拟人
-      const raised = greeting ? greetRise : 0;
-
-      // 抛接抬臂：phase 在本循环里已算好，提前声明到这里避免 TDZ。
-      const juggleLift = juggle ? Math.max(0, Math.sin((t - idleActionAt) * 5.5 + phase)) * 0.5 : 0;
-
-      // 手臂上下摆（rotation.z）
-      let zTarget;
-      if (greeting) {
-        zTarget = a.side * (0.30 + greetRise * 0.55 + Math.sin(t * 9) * 0.07 * greetRise);
-      } else {
-        let z = armPose.z;
-        if (armPose.fx === 'tremble') z += reduceMotion ? 0 : Math.sin(t * 24) * 0.09 * motionScale;
-        if (armPose.fx === 'pump') z += reduceMotion ? 0 : Math.sin(t * 3.2 + phase) * 0.18 * motionScale;
-        if (armPose.fx === 'wave' && isRight) z += wave;
-        if (idle) z += idleStretch * (isRight ? 1 : 0.7) * motionScale;   // 伸懒腰：双臂抬一下
-        if (juggle) z += juggleLift * motionScale;                        // 抛接：双手交替接球
-        if (idleLookHand && isRight) z += idleLookHand * 1.05 * motionScale;  // 抬起右手端详
-        if (dragging && !reduceMotion) z += Math.sin(t * 28 + phase) * 0.10 * motionScale;  // 拖拽挣扎
-        zTarget = z * a.side;
-      }
-      // 颤抖要用更高的阻尼速率，否则 24Hz 的高频被慢阻尼平滑成「静止」。
-      a.group.rotation.z = damp(a.group.rotation.z, zTarget, armPose.fx === 'tremble' ? 20 : greeting ? 12 : 9, dt);
-
-      // 手臂前后摆（rotation.x）
-      let xTarget;
-      if (greeting) xTarget = -0.34 * raised;
-      else {
-        let x = armPose.x;
-        if (armPose.fx === 'tremble') x += reduceMotion ? 0 : Math.sin(t * 24) * 0.05 * motionScale;
-        if (armPose.fx === 'pump') x += reduceMotion ? 0 : Math.sin(t * 3.2 + phase) * 0.30 * motionScale;
-        // 前后摆也要镜像：左右臂的本地坐标相同，同一个 x 会让两条胳膊朝同一方向
-        // 摆（比如「环抱」变成两条臂平行前伸，而不是在胸前交叉）。乘 side 才对。
-        xTarget = x * a.side;
-      }
-      a.group.rotation.x = damp(a.group.rotation.x, xTarget, armPose.fx === 'tremble' ? 20 : 8, dt);
-
-      // 肘部弯曲（bend.rotation.z）
-      let bendTarget;
-      if (greeting) bendTarget = a.side * 1.20 * greetRise;
-      else bendTarget = a.side * armPose.bend;
-      a.bend.rotation.z = damp(a.bend.rotation.z, bendTarget, 10, dt);
-
-      // the accent line on the boom carries the state colour at a brightness
-      // that follows the lamp: working pulses, waiting holds, failed is steady
-      a.accent.emissive.copy(tint);
-      a.accent.emissiveIntensity = damp(a.accent.emissiveIntensity,
-        (off ? 0.05
-          : waiting ? 1.5
-            : error ? 1.9
-              : busy ? 2.3 + Math.sin(t * 3.4) * 0.8
-                : greeting ? 2.6 : 0.9) * brightness, 8, dt);
-
-      // each finger opens along its own dir, so the pair spreads apart and the
-      // thumb opposes them: base + curl*dir is "open" for every digit
-      const handHover = hoverPart === 'hand' && !reduceMotion;
-      const open = greeting ? 0.36 * greetRise + 0.02 : handHover ? 0.55 : curl;
-      for (const f of a.fingers) {
-        f.rotation.z = damp(f.rotation.z, (f.userData.base || 0) + open * (f.userData.dir || 1), 14, dt);
-      }
-    }
-
-    // ---- motion cues: treads and sprockets
-    const crazyRun = crazy >= 0 && crazy < 2.2;
-    const speed = crazyRun ? 5 : busy ? 1.55 : waiting ? 0 : error ? 0 : 0.12;
-    // Forward drives every belt the same way; a turn drives the two belts
-    // opposite ways (one runs forward, the other back), which is what a tracked
-    // machine does when it steers. The steer term is folded in here so forward
-    // motion and steering share one phase and can never fight over it.
-    wheelSpin -= dt * speed * 2.2 + yawDelta * 3.2;
-    for (const w of wheels) w.rotation.z = wheelSpin;
-    for (const l of lugs) {
-      // The double modulo keeps the phase in [0,1) even when steering makes the
-      // net term negative — a negative phase would index profile[-N] and throw.
-      l.phase = ((l.phase + dt * speed * 0.22 - yawDelta * 0.9 * l.side) % 1 + 1) % 1;
-      updateLugs(l, l.phase);
-    }
-
-    // ---- track marquee: a chase along each belt in the state colour ---------
-    // busy drives a fast chase, waiting a slow breath, error a hard strobe,
-    // done/idle a lazy drift — the belt is never dark while the machine is on.
-    // A long tail and high peak make the chase read as a smooth flow around the
-    // belt, not a lone dot hopping between sparse LEDs.
-    const trackHead = (busy ? t * 3.5 : waiting ? t * 1.2 : error ? 0 : t * 0.8);
-    for (const tl of trackLeds) {
-      let lvl = 0;
-      if (!off) {
-        if (error) {
-          lvl = (Math.floor(t * 10) + tl.index) % 2 ? 1 : 0.1;
-        } else {
-          const head = trackHead % tl.total;
-          const d = Math.min(Math.abs(tl.index - head), tl.total - Math.abs(tl.index - head));
-          // 所有 LED 保留一个基础亮度，只有 head 附近更亮——否则整条灯带看起来
-          // 是「一个点在跳」，大部分灯熄灭，跑马灯就缺了一段。
-          lvl = Math.max(0.22, 1 - d / 6.0);
-        }
-        if (reduceMotion) lvl = 0.4;
-      }
-      tl.mat.emissive.copy(tint);
-      tl.mat.emissiveIntensity = lvl * 6.5 * brightness;
-    }
-
+    updateTears(error, waiting, t, off, busy, greeting, dt);
+    updateArms(t, motionScale, greeting, greetRise, juggle, idle, idleStretch, idleLookHand, dt, off, waiting, error, busy, yawDelta, crazy);
     // ---- lamp, glow, bubble
     // 空闲时灯光缓慢「呼吸」（1.1Hz），像在安静地待命，而不是死板的常亮。
     let lamp = off ? 0.02 : idle ? 0.66 + Math.sin(t * 1.1) * 0.16 : unknown ? 0.5 : 2.7;
@@ -3327,6 +2864,112 @@ if (host && renderer) {
     lampLight.color.copy(tint);
     lampLight.intensity = damp(lampLight.intensity, (off ? 0 : lamp * 0.62) * brightness, 12, dt);
 
+    updateStatusStrip(t, dt, busy, waiting, error, finished, idle, unknown, off);
+    updateBaseRing(t, dt, off);
+    updateSceneParticles(t, dt, error, waiting, off);
+    updateSign(t, dt, off);
+    updateBeaconMast(t, dt, waiting, error, busy, off);
+    updateNameplate();
+    updateDust(dt, busy, waiting);
+    updateFlame(t, error);
+    updateSparkles(done);
+    updatePowerDown(dead);
+  }
+
+  function updateBeaconMast(t, dt, waiting, error, busy, off) {
+    // ---- beacon mast -------------------------------------------------------
+    // Same colour as the lamp, but visible over the shoulder and from behind,
+    // which is the whole point of putting it up there. It blinks only while
+    // something needs you: a lamp that blinks all day is a lamp nobody reads.
+    bulbMat.emissive.copy(tint);
+    bulbMat.emissiveIntensity = damp(bulbMat.emissiveIntensity,
+      (off ? 0.02
+        : waiting ? 2.4 + Math.sin(t * 6.4) * 1.6
+          : error ? (Math.sin(t * 12) > 0 ? 3.2 : 0.4)
+            : busy ? 2.2 + Math.sin(t * 3.4) * 0.8
+              : 1.3) * brightness, 12, dt);
+  }
+
+  function updateNameplate() {
+    // ---- nameplate: always names the software the main lamp is about --------
+    // The lamp aggregates "the worst"; the plate under it says WHICH software.
+    // No cycling — attribution must be readable without waiting for the next
+    // name to come round. Each software's own name still lives in its pill.
+    // If the user typed their own text, that wins over the software name.
+    const plateText = (nameplateText || String(theme.agent || '')).slice(0, 16);
+    if (plateText !== nameShown) {
+      nameShown = plateText;
+      drawName(plateText);
+    }
+  }
+
+  function updateDust(dt, busy, waiting) {
+    // ---- dust behind the treads while it works
+    for (const d of dust) {
+      d.t = (d.t + dt * (busy ? 0.55 : 0.12)) % 1;
+      const k = d.t;
+      d.sprite.position.set(d.side * (1.1 + k * 0.55), 0.10 + k * 0.5, -0.35 - k * 0.35);
+      d.sprite.scale.setScalar(0.06 + k * 0.20);
+      d.sprite.material.opacity = (busy || waiting) && !reduceMotion && !perf.lite
+        ? (1 - k) * (busy ? 0.5 : 0.24) : 0;
+      d.sprite.material.color.copy(tint);
+    }
+  }
+
+  function updateFlame(t, error) {
+    // ---- 生气火焰：error 时头顶 5 簇火苗跳动 / 摇摆 / 闪烁 / 错峰
+    for (const f of fires) {
+      // 火焰是 error 的核心表情，不随性能降级关掉；只有「减少动效」才停。
+      const on = error && !reduceMotion;
+      f.sprite.visible = on;
+      if (!on) { f.mat.opacity = 0; continue; }
+      const ph = t * 5.0 + f.i * 0.8;
+      f.sprite.position.set(
+        (f.i - 2) * 0.17 + Math.sin(ph * 0.7) * 0.035,
+        3.34 + Math.abs(Math.sin(ph)) * 0.12,
+        0.10,
+      );
+      f.sprite.scale.set(
+        0.16 + Math.sin(ph * 1.3) * 0.03,
+        0.26 + Math.abs(Math.sin(ph)) * 0.10,
+        1,
+      );
+      f.mat.opacity = (0.55 + Math.abs(Math.sin(ph * 1.7)) * 0.45) * brightness;
+    }
+  }
+
+  function updateSparkles(done) {
+    // ---- 完成庆祝：done 瞬间头顶金色星点向外向上散开并淡出
+    for (const st of stars) {
+      const on = !reduceMotion && done >= 0 && done < 1.4;
+      st.sprite.visible = on;
+      if (!on) { st.mat.opacity = 0; continue; }
+      const ph = (done / 1.4) + st.i * 0.07;
+      const ang = st.i * (Math.PI * 2 / 8) + 0.4;
+      const rad = 0.12 + ph * 0.42;
+      // y 控制在画面内：头顶 ~3.4，再往上就出画了
+      st.sprite.position.set(Math.cos(ang) * rad, 3.05 + ph * 0.45, 0.24);
+      st.sprite.scale.setScalar(0.13 + Math.sin(Math.min(1, ph) * Math.PI) * 0.09);
+      st.mat.opacity = Math.min(1, 1.1 * (1 - ph / 1.6)) * brightness;
+    }
+  }
+
+  function updatePowerDown(dead) {
+    // ---- light power-down, the way the CSS filter powers the flat one down
+    const dim = dead ? 0.16 : 1;
+    key.intensity = 2.7 * dim;
+    fill.intensity = 1.0 * dim;
+    rim.intensity = 2.0 * dim;
+    if (dead) {
+      lampMat.emissiveIntensity = 0.02;
+      lampLight.intensity = 0.0;
+      poolMat.opacity = 0;
+      auraMat.opacity = 0;
+      bubbleMat.opacity = 0;
+    }
+  }
+
+  function updateStatusStrip(t, dt, busy, waiting, error, finished, idle, unknown, off) {
     // ---- status strip: four rhythms, four states, no ambiguity
     for (let i = 0; i < strip.length; i++) {
       let level = 0;
@@ -3360,6 +3003,9 @@ if (host && renderer) {
     auraMat.color.copy(tint);
     auraMat.opacity = damp(auraMat.opacity, glow * 1.10 * brightness, 8, dt);
 
+  }
+
+  function updateBaseRing(t, dt, off) {
     // ---- base ring: one arc per software, each animating to ITS OWN state ----
     // The ring is four lamps at once, not a second copy of the aggregate lamp.
     // Every arc reads its own software's state and plays that state's rhythm,
@@ -3449,12 +3095,18 @@ if (host && renderer) {
       haloB.opacity = damp(haloB.opacity, (off ? 0 : 0.42 + (reduceMotion ? 0 : 0.10 * Math.sin(hueT * 1.7 + 1))) * brightness, 6, dt);
     }
 
+  }
+
+  function updateSceneParticles(t, dt, error, waiting, off) {
     // ---- 场景粒子动画：雪花飘落、草/沙摇曳、星闪烁 --------------------------
     const partKind = SCENES[sceneType] && SCENES[sceneType].particle;
     if (partKind && !reduceMotion) {
       const pos = particleGeo.attributes.position.array;
       // 动效强度真正减少粒子：省电少更新/隐藏粒子，华丽用满，标准按比例。
-      const visibleCount = Math.max(0, Math.floor(PARTICLE_N * (MOTION_LEVELS[motionLevel] || 1.0)));
+      // 上界必须夹住：「华丽」是 1.3 倍，180 × 1.3 = 234 > PARTICLE_N，越界读写
+      // Float32Array 会被静默丢弃，等于这一档什么也没多做，还白跑一圈空循环。
+      const visibleCount = Math.min(PARTICLE_N,
+        Math.max(0, Math.floor(PARTICLE_N * (MOTION_LEVELS[motionLevel] || 1.0))));
       for (let i = visibleCount; i < PARTICLE_N; i++) pos[i * 3 + 1] = -100;  // 移出视野
       if (partKind === 'petal') {
         // 花瓣：轻、慢、飘摇——像纸片一样左右大幅摆动、前后翻转、缓缓落下。
@@ -3483,8 +3135,9 @@ if (host && renderer) {
           }
         }
         if (partKind === 'firefly') {
-          // 萤火虫一明一暗地闪烁
-          particleMat.opacity = (0.3 + 0.55 * (0.5 + 0.5 * Math.sin(t * 1.7))) * (MOTION_LEVELS[motionLevel] || 1.0);
+          // 萤火虫一明一暗地闪烁（同样要听亮度滑杆的）
+          particleMat.opacity = (0.3 + 0.55 * (0.5 + 0.5 * Math.sin(t * 1.7)))
+            * (MOTION_LEVELS[motionLevel] || 1.0) * brightness;
         }
       } else if (partKind === 'grass') {
         for (let i = 0; i < visibleCount; i++) {
@@ -3496,7 +3149,11 @@ if (host && renderer) {
           pos[i * 3 + 1] = 0.05 + Math.abs(Math.sin(t * 1.2 + i)) * 0.1;
         }
       } else if (partKind === 'star') {
-        particleMat.opacity = 0.35 + 0.45 * (0.5 + 0.5 * Math.sin(t * 2.0));
+        // 星星的闪烁必须跟着「亮度」和「动效强度」走。写死 0.35–0.8 会把
+        // applyScene 设好的值整个盖掉，于是亮度滑杆对星空毫无作用 —— 而那是
+        // 用户调夜景的唯一一个旋钮。
+        const ms = MOTION_LEVELS[motionLevel] || 1.0;
+        particleMat.opacity = (0.35 + 0.45 * (0.5 + 0.5 * Math.sin(t * 2.0))) * ms * brightness;
       }
       particleGeo.attributes.position.needsUpdate = true;
     }
@@ -3519,7 +3176,6 @@ if (host && renderer) {
       sceneGround.material.emissiveIntensity = 0.18 + 0.16 * (0.5 + 0.5 * Math.sin(t * 1.4)) + 0.06 * Math.sin(t * 3.7);
     }
 
-    const urgent = !dead && (waiting || error);
     // 气泡说人话：出错 / 需要你 / 临时提示（切模型等）。文字变化时才重绘纹理。
     let bubbleWord = off ? '' : error ? '出错啦' : waiting ? '需要你' : '';
     if (!bubbleWord && !off && noticeText && (t - noticeAt) < 2.2) bubbleWord = noticeText;
@@ -3533,18 +3189,19 @@ if (host && renderer) {
       1,
     );
 
+  }
+
+  function updateSign(t, dt, off) {
     // ---- 今日时长广告牌：按模式显示某个软件的时长，带辉光 + 弹出动画
     const fmt = (m) => (m < 60 ? `${m} 分钟` : `${Math.floor(m / 60)} 时 ${m % 60} 分`);
-    let statsByAgent = {};
-    try { statsByAgent = JSON.parse(body.dataset.stats || '{}'); } catch { /* 坏数据就当作没有 */ }
+    const statsByAgent = datasetJson('stats');
     let signLabel = '';
     if (signMode !== 'off' && !off) {
       const entries = Object.entries(statsByAgent);
       if (entries.length) {
         const sorted = [...entries].sort((a, b) => b[1] - a[1]);
         if (signMode === 'total') {
-          let ev = null;
-          try { ev = JSON.parse(body.dataset.events || '{}'); } catch { /* 无战绩数据 */ }
+          const ev = datasetJson('events');
           const bits = [];
           if (ev && ev.done) bits.push(`完成 ${ev.done}`);
           if (ev && ev.error) bits.push(`出错 ${ev.error}`);
@@ -3572,96 +3229,207 @@ if (host && renderer) {
     signGlow.opacity = damp(signGlow.opacity, signLabel ? 0.35 + Math.sin(t * 3.2) * 0.15 : 0, 8, dt);
     signGlow.position.set(sign.position.x, sign.position.y - 0.02, sign.position.z);
 
-    // ---- beacon mast -------------------------------------------------------
-    // Same colour as the lamp, but visible over the shoulder and from behind,
-    // which is the whole point of putting it up there. It blinks only while
-    // something needs you: a lamp that blinks all day is a lamp nobody reads.
-    bulbMat.emissive.copy(tint);
-    bulbMat.emissiveIntensity = damp(bulbMat.emissiveIntensity,
-      (off ? 0.02
-        : waiting ? 2.4 + Math.sin(t * 6.4) * 1.6
-          : error ? (Math.sin(t * 12) > 0 ? 3.2 : 0.4)
-            : busy ? 2.2 + Math.sin(t * 3.4) * 0.8
-              : 1.3) * brightness, 12, dt);
-
-    // ---- nameplate: always names the software the main lamp is about --------
-    // The lamp aggregates "the worst"; the plate under it says WHICH software.
-    // No cycling — attribution must be readable without waiting for the next
-    // name to come round. Each software's own name still lives in its pill.
-    // If the user typed their own text, that wins over the software name.
-    const plateText = (nameplateText || String(theme.agent || '')).slice(0, 16);
-    if (plateText !== nameShown) {
-      nameShown = plateText;
-      drawName(plateText);
-    }
-
-    // ---- dust behind the treads while it works
-    for (const d of dust) {
-      d.t = (d.t + dt * (busy ? 0.55 : 0.12)) % 1;
-      const k = d.t;
-      d.sprite.position.set(d.side * (1.1 + k * 0.55), 0.10 + k * 0.5, -0.35 - k * 0.35);
-      d.sprite.scale.setScalar(0.06 + k * 0.20);
-      d.sprite.material.opacity = (busy || waiting) && !reduceMotion && !perf.lite
-        ? (1 - k) * (busy ? 0.5 : 0.24) : 0;
-      d.sprite.material.color.copy(tint);
-    }
-
-    // ---- 生气火焰：error 时头顶 5 簇火苗跳动 / 摇摆 / 闪烁 / 错峰
-    for (const f of fires) {
-      // 火焰是 error 的核心表情，不随性能降级关掉；只有「减少动效」才停。
-      const on = error && !reduceMotion;
-      f.sprite.visible = on;
-      if (!on) { f.mat.opacity = 0; continue; }
-      const ph = t * 5.0 + f.i * 0.8;
-      f.sprite.position.set(
-        (f.i - 2) * 0.17 + Math.sin(ph * 0.7) * 0.035,
-        3.34 + Math.abs(Math.sin(ph)) * 0.12,
-        0.10,
-      );
-      f.sprite.scale.set(
-        0.16 + Math.sin(ph * 1.3) * 0.03,
-        0.26 + Math.abs(Math.sin(ph)) * 0.10,
-        1,
-      );
-      f.mat.opacity = (0.55 + Math.abs(Math.sin(ph * 1.7)) * 0.45) * brightness;
-    }
-
-    // ---- 完成庆祝：done 瞬间头顶金色星点向外向上散开并淡出
-    for (const st of stars) {
-      const on = !reduceMotion && done >= 0 && done < 1.4;
-      st.sprite.visible = on;
-      if (!on) { st.mat.opacity = 0; continue; }
-      const ph = (done / 1.4) + st.i * 0.07;
-      const ang = st.i * (Math.PI * 2 / 8) + 0.4;
-      const rad = 0.12 + ph * 0.42;
-      // y 控制在画面内：头顶 ~3.4，再往上就出画了
-      st.sprite.position.set(Math.cos(ang) * rad, 3.05 + ph * 0.45, 0.24);
-      st.sprite.scale.setScalar(0.13 + Math.sin(Math.min(1, ph) * Math.PI) * 0.09);
-      st.mat.opacity = Math.min(1, 1.1 * (1 - ph / 1.6)) * brightness;
-    }
-
-    // ---- light power-down, the way the CSS filter powers the flat one down
-    const dim = dead ? 0.16 : 1;
-    key.intensity = 2.7 * dim;
-    fill.intensity = 1.0 * dim;
-    rim.intensity = 2.0 * dim;
-    if (dead) {
-      lampMat.emissiveIntensity = 0.02;
-      lampLight.intensity = 0.0;
-      poolMat.opacity = 0;
-      auraMat.opacity = 0;
-      bubbleMat.opacity = 0;
-    }
   }
+
+  function updateMotionCues(dt, yawDelta, crazy, busy, waiting, error) {
+    // ---- motion cues: treads and sprockets
+    const crazyRun = crazy >= 0 && crazy < 2.2;
+    const speed = crazyRun ? 5 : busy ? 1.55 : waiting ? 0 : error ? 0 : 0.12;
+    // Forward drives every belt the same way; a turn drives the two belts
+    // opposite ways (one runs forward, the other back), which is what a tracked
+    // machine does when it steers. The steer term is folded in here so forward
+    // motion and steering share one phase and can never fight over it.
+    wheelSpin -= dt * speed * 2.2 + yawDelta * 3.2;
+    for (const w of wheels) w.rotation.z = wheelSpin;
+    for (const l of lugs) {
+      // The double modulo keeps the phase in [0,1) even when steering makes the
+      // net term negative — a negative phase would index profile[-N] and throw.
+      l.phase = ((l.phase + dt * speed * 0.22 - yawDelta * 0.9 * l.side) % 1 + 1) % 1;
+      updateLugs(l, l.phase);
+    }
+
+  }
+
+  function updateTrackMarquee(t, dt, busy, waiting, error, off) {
+    // ---- track marquee: a chase along each belt in the state colour ---------
+    // busy drives a fast chase, waiting a slow breath, error a hard strobe,
+    // done/idle a lazy drift — the belt is never dark while the machine is on.
+    // A long tail and high peak make the chase read as a smooth flow around the
+    // belt, not a lone dot hopping between sparse LEDs.
+    const trackHead = (busy ? t * 3.5 : waiting ? t * 1.2 : error ? 0 : t * 0.8);
+    for (const tl of trackLeds) {
+      let lvl = 0;
+      if (!off) {
+        if (error) {
+          lvl = (Math.floor(t * 10) + tl.index) % 2 ? 1 : 0.1;
+        } else {
+          const head = trackHead % tl.total;
+          const d = Math.min(Math.abs(tl.index - head), tl.total - Math.abs(tl.index - head));
+          // 所有 LED 保留一个基础亮度，只有 head 附近更亮——否则整条灯带看起来
+          // 是「一个点在跳」，大部分灯熄灭，跑马灯就缺了一段。
+          lvl = Math.max(0.22, 1 - d / 6.0);
+        }
+        if (reduceMotion) lvl = 0.4;
+      }
+      tl.mat.emissive.copy(tint);
+      tl.mat.emissiveIntensity = lvl * 6.5 * brightness;
+    }
+
+  }
+
+  function updateAntenna(off, error, busy, waiting, idle, unknown, t) {
+    // ---- 天线：忙碌抖得快、空闲慢摇、出错乱颤，顶端小球跟着状态灯变色
+    antennaTipMat.emissive.copy(tint);
+    const antennaFreq = off ? 1.2 : error ? 16 : busy ? 6.5 : waiting ? 4.5 : 2.6;
+    const antennaAmp = off ? 0.008 : error ? 0.09 : busy ? 0.055 : idle || unknown ? 0.032 : 0.02;
+    antenna.rotation.z = Math.sin(t * antennaFreq) * antennaAmp;
+    antenna.rotation.x = -0.16 + Math.sin(t * 2.2) * 0.035;
+    antennaTipMat.emissiveIntensity = off ? 0.25 : (error ? 1.9 : 1.1 + Math.sin(t * antennaFreq) * 0.4);
+
+  }
+
+  function updateTears(error, waiting, t, off, busy, greeting, dt) {
+    // ---- 流泪：error 时泪滴沿镜筒下方滑落、淡出，双眼错开循环 ----------------
+    for (let i = 0; i < tearMeshes.length; i++) {
+      const tm = tearMeshes[i];
+      // error 是大哭（快、浓）；waiting 是焦急含泪（慢、淡、单滴）。
+      if ((error || waiting) && !reduceMotion) {
+        tm.visible = true;
+        const speed = error ? 0.55 : 0.26;
+        const phase = (t * speed + i * 0.5) % 1;
+        tm.position.y = -0.30 - phase * 0.42;
+        tm.material.opacity = (error ? 1.0 : 0.8) * (1 - phase * 0.75);
+        tm.scale.setScalar((error ? 1.4 : 1.1) * (1 - phase * 0.35));
+      } else {
+        tm.visible = false;
+      }
+    }
+
+    // the lit iris ring: the same colour as the chest lamp, a quarter of the
+    // brightness — enough to say "awake", never enough to compete with the lamp
+    eyeGlowMat.emissive.copy(tint);
+    eyeGlowMat.emissiveIntensity = damp(eyeGlowMat.emissiveIntensity,
+      (off ? 0.02
+        : waiting ? 1.15 + Math.sin(t * 6.4) * 0.4
+          : error ? 0.9 + (Math.sin(t * 19) > 0 ? 0.7 : 0)
+            : busy ? 1.0 + Math.sin(t * 3.4) * 0.22
+              : greeting ? 1.6
+                : 0.55) * brightness, 10, dt);
+
+    // error 时虹膜发红（怒目）：内圈从冷黑变成暗红发光，配合头顶火焰。
+    M.irisInner.emissive.setHex(error ? 0xff1a00 : 0x000000);
+    M.irisInner.emissiveIntensity = error ? (0.75 + Math.sin(t * 19) * 0.25) * brightness : 0;
+
+  }
+
+  function updateArms(t, motionScale, greeting, greetRise, juggle, idle, idleStretch, idleLookHand, dt, off, waiting, error, busy, yawDelta, crazy) {
+    // ---- arms
+    // Each state gets its own silhouette, not just a different tilt:
+    //   working  — both booms down and pumping, fingers pinching
+    //   waiting  — the right arm up and waving, left hand held out flat
+    //   failed   — both arms clamped in and trembling
+    //   idle     — hanging still
+    //   greeting — both up and waving (double click)
+    // One raised arm reads as "over here"; two raised arms reads as a cheer,
+    // and a status light that cheers is noise.
+    // 手臂与手爪：拟人化手势，左右臂不对称、节奏有快慢——
+    //   error   = 双臂环抱胸前 + 颤抖 + 握拳（抱臂生气）
+    //   waiting = 右臂举手挥手，左臂托下巴（思考）
+    //   busy    = 双臂前伸交替泵动 + 手指交替张合（像敲键盘）
+    //   done    = 双臂向两侧微张摊开（「完成了」）
+    //   idle    = 自然垂放 + 偶尔轻晃
+    // motionScale 已在上面（自主动作之前）声明。
+    // 当前状态的手势（用户可配置），从手势库取参数。
+    const poseName = statePoses[state] || statePoses.idle || '垂放';
+    const armPose = ARM_POSES[poseName] || ARM_POSES['垂放'];
+    const wave = armPose.fx === 'wave' && !reduceMotion ? Math.sin(t * 6.0) * 0.16 * motionScale : 0;
+    // 手指张合：运行态随泵动一起开合（像敲键盘），出错态保持握拳，其余按手势基值。
+    let curl = armPose.curl;
+    if (armPose.fx === 'pump' && !reduceMotion) curl += Math.sin(t * 3.2) * 0.22 * motionScale;
+    for (const a of arms) {
+      const isRight = a.side > 0;
+      const phase = isRight ? 0 : Math.PI;   // 左右臂相位错开，交替动作更拟人
+      const raised = greeting ? greetRise : 0;
+
+      // 抛接抬臂：phase 在本循环里已算好，提前声明到这里避免 TDZ。
+      const juggleLift = juggle ? Math.max(0, Math.sin((t - idleActionAt) * 5.5 + phase)) * 0.5 : 0;
+
+      // 手臂上下摆（rotation.z）
+      let zTarget;
+      if (greeting) {
+        zTarget = a.side * (0.30 + greetRise * 0.55 + Math.sin(t * 9) * 0.07 * greetRise);
+      } else {
+        let z = armPose.z;
+        if (armPose.fx === 'tremble') z += reduceMotion ? 0 : Math.sin(t * 24) * 0.09 * motionScale;
+        if (armPose.fx === 'pump') z += reduceMotion ? 0 : Math.sin(t * 3.2 + phase) * 0.18 * motionScale;
+        if (armPose.fx === 'wave' && isRight) z += wave;
+        if (idle) z += idleStretch * (isRight ? 1 : 0.7) * motionScale;   // 伸懒腰：双臂抬一下
+        if (juggle) z += juggleLift * motionScale;                        // 抛接：双手交替接球
+        if (idleLookHand && isRight) z += idleLookHand * 1.05 * motionScale;  // 抬起右手端详
+        if (dragging && !reduceMotion) z += Math.sin(t * 28 + phase) * 0.10 * motionScale;  // 拖拽挣扎
+        zTarget = z * a.side;
+      }
+      // 颤抖要用更高的阻尼速率，否则 24Hz 的高频被慢阻尼平滑成「静止」。
+      a.group.rotation.z = damp(a.group.rotation.z, zTarget, armPose.fx === 'tremble' ? 20 : greeting ? 12 : 9, dt);
+
+      // 手臂前后摆（rotation.x）
+      let xTarget;
+      if (greeting) xTarget = -0.34 * raised;
+      else {
+        let x = armPose.x;
+        if (armPose.fx === 'tremble') x += reduceMotion ? 0 : Math.sin(t * 24) * 0.05 * motionScale;
+        if (armPose.fx === 'pump') x += reduceMotion ? 0 : Math.sin(t * 3.2 + phase) * 0.30 * motionScale;
+        // 前后摆也要镜像：左右臂的本地坐标相同，同一个 x 会让两条胳膊朝同一方向
+        // 摆（比如「环抱」变成两条臂平行前伸，而不是在胸前交叉）。乘 side 才对。
+        xTarget = x * a.side;
+      }
+      a.group.rotation.x = damp(a.group.rotation.x, xTarget, armPose.fx === 'tremble' ? 20 : 8, dt);
+
+      // 肘部弯曲（bend.rotation.z）
+      let bendTarget;
+      if (greeting) bendTarget = a.side * 1.20 * greetRise;
+      else bendTarget = a.side * armPose.bend;
+      a.bend.rotation.z = damp(a.bend.rotation.z, bendTarget, 10, dt);
+
+      // the accent line on the boom carries the state colour at a brightness
+      // that follows the lamp: working pulses, waiting holds, failed is steady
+      a.accent.emissive.copy(tint);
+      a.accent.emissiveIntensity = damp(a.accent.emissiveIntensity,
+        (off ? 0.05
+          : waiting ? 1.5
+            : error ? 1.9
+              : busy ? 2.3 + Math.sin(t * 3.4) * 0.8
+                : greeting ? 2.6 : 0.9) * brightness, 8, dt);
+
+      // each finger opens along its own dir, so the pair spreads apart and the
+      // thumb opposes them: base + curl*dir is "open" for every digit
+      const handHover = hoverPart === 'hand' && !reduceMotion;
+      const open = greeting ? 0.36 * greetRise + 0.02 : handHover ? 0.55 : curl;
+      for (const f of a.fingers) {
+        f.rotation.z = damp(f.rotation.z, (f.userData.base || 0) + open * (f.userData.dir || 1), 14, dt);
+      }
+    }
+
+    updateMotionCues(dt, yawDelta, crazy, busy, waiting, error);
+    updateTrackMarquee(t, dt, busy, waiting, error, off);
+  }
+
+  // 履带齿每帧都在动，所以这几个临时对象放在函数外面复用。每帧新建 5 个对象
+  // 不会让画面出错，只会让 GC 在后台定期抖一下 —— 一个常驻窗口不该有这种底噪。
+  const LUG_MATRIX = new THREE.Matrix4();
+  const LUG_QUAT = new THREE.Quaternion();
+  const LUG_POS = new THREE.Vector3();
+  const LUG_SCALE = new THREE.Vector3(1, 1, 1);
+  const LUG_AXIS = new THREE.Vector3(0, 0, 1);
 
   function updateLugs(lug, phase) {
     const { profile, count, mesh: inst } = lug;
     const total = profile.length - 1;
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
-    const pos = new THREE.Vector3();
-    const scale = new THREE.Vector3(1, 1, 1);
-    const axis = new THREE.Vector3(0, 0, 1);
+    const m = LUG_MATRIX;
+    const q = LUG_QUAT;
+    const pos = LUG_POS;
+    const scale = LUG_SCALE;
+    const axis = LUG_AXIS;
     for (let i = 0; i < count; i++) {
       const s = ((i / count) + phase) % 1;
       const f = s * total;
@@ -3685,7 +3453,10 @@ if (host && renderer) {
     requestAnimationFrame(frame);
     if (document.hidden) return;
 
-    const dt = Math.min(0.05, Math.max(0.001, (now - clock.last) / 1000));
+    // 上限必须覆盖最低的那一档：15fps 的间隔是 66.7ms，8fps 是 125ms，夹到 50ms
+    // 会让动画时钟比真实时间慢 25%–60%，于是眨眼间隔、打哈欠的 600 秒、戳一下
+    // 的 0.85 秒窗口全都跟着被拉长。夹到 200ms 只是为了挡住「窗口藏了很久」。
+    const dt = Math.min(0.2, Math.max(0.001, (now - clock.last) / 1000));
     // States that do not move much do not need 60 frames a second. This is a
     // window that is always on someone's desktop; it should not cost a fan.
     // 离线且没在演自主动作时，画面几乎是静止的，15fps 足够 —— 这窗口是常驻的，
@@ -3703,15 +3474,28 @@ if (host && renderer) {
     // Measured, not assumed: the target above is a cadence, this is what the
     // GPU actually managed. One downgrade only — oscillating between quality
     // levels is more distracting than either level.
+    // 一秒里混了 60fps 的工作段和 15fps 的空闲段时，measured 会把「这一档本来
+    // 就慢」误读成「机器跑不动」。切档就重新起一个统计窗口，数字才只描述一档。
+    if (fps !== perf.tier) { perf.tier = fps; perf.frames = 0; perf.since = now; }
     perf.frames += 1;
     if (now - perf.since >= 1000) {
       const measured = Math.round((perf.frames * 1000) / (now - perf.since));
       perf.frames = 0;
       perf.since = now;
       host.dataset.fps = String(measured);
-      if (!perf.lite && measured > 0 && measured < 24) {
+      // 降级只在「真的在跑 60fps 档位、并且已经过了预热」时判定。
+      //
+      // 原来写死 `measured < 24`：空闲档位本来就只跑 15fps，会被当成「这台机器
+      // 跑不动 60fps」，一次启动就永久降到 1.25 倍分辨率；开头两秒的着色器编译
+      // 同样会触发它。机器从来没问题，是判断基准和时机错了。
+      const judge = !perf.lite && now >= perf.warmupUntil && fps >= 60
+        && measured > 0 && measured < 24;
+      if (judge) {
         perf.lite = true;
-        perf.cap = 1.25;
+        // 1x，不是 1.25x：这一档的意义就是「这台机器跑不动」，留 25% 的余量
+        // 等于没降。文档里写的也是 drops to 1x。
+        perf.cap = 1;
+        host.dataset.quality = 'lite';
         resize();
       }
     }
@@ -3736,6 +3520,18 @@ if (host && renderer) {
 
   if (window.ResizeObserver) new ResizeObserver(resize).observe(host);
   else window.addEventListener('resize', resize);
+
+  // 窗口被拖到另一块缩放比例不同的显示器上时，CSS 尺寸没变、devicePixelRatio
+  // 变了 —— ResizeObserver 不会触发，画面就一直按旧比例采样（糊或者过度采样）。
+  // 每换一档 DPR 重新挂一次监听。
+  function watchDpr() {
+    if (!window.matchMedia) return;
+    const mq = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+    const onChange = () => { resize(); watchDpr(); };
+    if (mq.addEventListener) mq.addEventListener('change', onChange, { once: true });
+    else if (mq.addListener) mq.addListener(onChange);
+  }
+  watchDpr();
 
   resize();
   drawName('');

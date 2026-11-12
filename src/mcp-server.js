@@ -24,6 +24,7 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { z } = require('zod');
 const config = require('./config');
+const auth = require('./auth');
 
 const PORT = Number(process.env.BAOANLIGHT_PORT) || config.port() || 4747;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -36,7 +37,8 @@ const AGENTS = ['claude', 'codex', 'deepseek', 'workbuddy'];
 async function postJson(path, body) {
   const res = await fetch(BASE + path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    // 写接口要证明「我在这台机器上」：token 与钩子读的是同一个文件。
+    headers: { 'content-type': 'application/json', 'x-bao-token': auth.token() },
     body: JSON.stringify(body || {}),
   });
   if (!res.ok) throw new Error(`robot replied ${res.status}`);

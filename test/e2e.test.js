@@ -16,14 +16,22 @@ const HOOK = path.join(__dirname, '..', 'src', 'hooks', 'claude.js');
 // on someone else's machine.
 let server;
 let PORT;
+let TOKEN;
 before(async () => {
-  ({ server } = await start({ port: 0 }));
+  const r = await start({ port: 0 });
+  server = r.server;
+  TOKEN = r.token;
   PORT = server.address().port;
 });
 after(() => server && server.close());
 
+// Writes are token-gated; reads are not. The hooks go through `src/client.js`,
+// which reads the same token file, so this helper only matters for direct calls.
 const api = async (p, init) => {
-  const r = await fetch(`http://127.0.0.1:${PORT}${p}`, init);
+  const r = await fetch(`http://127.0.0.1:${PORT}${p}`, {
+    ...(init || {}),
+    headers: { 'x-bao-token': TOKEN, ...((init && init.headers) || {}) },
+  });
   return r.json();
 };
 
@@ -199,10 +207,10 @@ test('the generic hook works for an agent with no adapter', async () => {
 test('a bad state is rejected, not silently accepted', async () => {
   const r = await fetch(`http://127.0.0.1:${PORT}/state`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-bao-token': TOKEN },
     body: JSON.stringify({ session: 'z', state: 'chartreuse' }),
   });
-  assert.equal(r.status, 400);
+  assert.equal(r.status, 400, 'authorised, and still nonsense');
 });
 
 test('the overlay page is served for browser mode', async () => {
@@ -391,4 +399,46 @@ test('the dsh watcher follows a session projection through a whole turn', async 
     else process.env.BAOANLIGHT_PORT = previousPort;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// `bao mcp` reports over POST /set/<state> with a JSON body. The handler used to
+// read only the query string, so every MCP report landed as agent="agent" with
+// no detail and no cwd — the whole route silently lied about who was busy.
+test('a write may carry its fields in the body, not only in the query string', async () => {
+  await api('/set/busy', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      agent: 'codex', session: 'mcp:codex', detail: 'from the body', cwd: '/tmp/body',
+    }),
+  });
+  const snap = await api('/state');
+  const s = snap.sessions.find((x) => x.session === 'mcp:codex');
+  assert.ok(s, 'the session named in the body exists');
+  assert.equal(s.agent, 'codex');
+  assert.equal(s.state, 'busy');
+  assert.equal(s.detail, 'from the body');
+  assert.equal(s.cwd, '/tmp/body');
+
+  await api('/set/offline', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session: 'mcp:codex' }),
+  });
+});
+
+test('the path still decides the state, and the query string still works', async () => {
+  await api('/set/busy?agent=deepseek&session=q:1&detail=from%20query', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ state: 'error', agent: 'codex', detail: 'from the body' }),
+  });
+  const snap = await api('/state');
+  const s = snap.sessions.find((x) => x.session === 'q:1');
+  assert.ok(s, 'the query string still names the session');
+  assert.equal(s.state, 'busy', 'the path wins over a state in the body');
+  assert.equal(s.agent, 'deepseek', 'the query wins over the body');
+  assert.equal(s.detail, 'from query');
+
+  await api('/set/offline?session=q:1', { method: 'GET' });
 });

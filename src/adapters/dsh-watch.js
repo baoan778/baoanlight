@@ -25,6 +25,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { setState } = require('../client');
+const { keepAliveWith } = require('./watchdog');
 
 function appDataDir() {
   if (process.platform === 'win32') {
@@ -200,8 +201,10 @@ function run(opts = {}) {
   scan();
   const timer = setInterval(scan, pollMs);
 
+  let watchServer = null;
   const stop = () => {
     clearInterval(timer);
+    if (watchServer) clearInterval(watchServer);
     for (const t of tracked.values()) {
       if (t.state === 'busy' || t.state === 'waiting') {
         setState({ session: `deepseek:${t.session}`, agent: 'deepseek', state: 'offline' });
@@ -211,6 +214,8 @@ function run(opts = {}) {
     if (!opts.manual) process.exit(0);
   };
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, stop);
+  // 机器人退了就收摊：这个 watcher 原来没有这条守护，`bao stop` 之后会一直轮询。
+  watchServer = keepAliveWith(stop);
 
   return { stop, tracked, dir };
 }

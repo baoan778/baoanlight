@@ -15,7 +15,7 @@
 | WorkBuddy | ★★★☆☆ 四态（任务板）/ ★★★★★（钩子） | 任务板 / 钩子 | `bao watch workbuddy` 或 `bao hook --agent workbuddy` |
 | Gemini / Aider / 其他 CLI | ★★★☆☆（猜） | 伪终端包装 | `bao wrap -- <命令>` |
 | 任意能执行命令的工具 | ★★★★★ | 通用钩子 | `bao hook --agent <name>` |
-| 任意能发 HTTP 的工具 | ★★★★★ | HTTP | `curl http://127.0.0.1:4747/set/busy?...` |
+| 任意能发 HTTP 的工具 | ★★★★★ | HTTP（写入带 token） | `curl -H "x-bao-token: $(bao token)" http://127.0.0.1:4747/set/busy?...` |
 
 ---
 
@@ -96,11 +96,16 @@ bao wrap -- aider --model sonnet
 bao hook --agent my-bot        # {"state":"busy"} 或 {"event":"task_complete"}
 ```
 
-能发 HTTP → 一行：
+能发 HTTP → 一行（写入要带本机 token，它只存在 `~/.baoanlight/token`，`bao token` 打印）：
 
 ```bash
-curl -s "http://127.0.0.1:4747/set/busy?agent=my-bot&detail=thinking"
+curl -s -H "x-bao-token: $(bao token)" \
+  "http://127.0.0.1:4747/set/busy?agent=my-bot&detail=thinking"
 ```
+
+> 为什么不是随便发？任何网页都能往 `127.0.0.1` 发请求，没有 token 的话，
+> 一个 `<img src="http://127.0.0.1:4747/set/busy">` 就能替你点灯。
+> 读接口（`/state`、`/events`、`/health`）仍然免 token。
 
 ---
 

@@ -2,6 +2,9 @@
 Type=Application
 Name=baoanlight
 Comment=A desktop robot that shows what your AI coding agents are doing
+# 这一行会被 scripts/install-linux-autostart.sh 改写成绝对路径的 node + cli.js；
+# 如果你手动把这个文件复制到 ~/.config/autostart，请自己换成绝对路径（登录时
+# 的 PATH 里通常没有 nvm/volta 装的那个 node）。
 Exec=bao start
 Icon=utilities-terminal
 Terminal=false

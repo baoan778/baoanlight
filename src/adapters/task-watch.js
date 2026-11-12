@@ -21,6 +21,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { setState } = require('../client');
+const { keepAliveWith } = require('./watchdog');
 
 function taskDirs() {
   const out = [];
@@ -131,8 +132,10 @@ function run(opts = {}) {
   scan();
   const timer = setInterval(scan, pollMs);
 
+  let watchServer = null;
   const stop = () => {
     clearInterval(timer);
+    if (watchServer) clearInterval(watchServer);
     for (const [folder, t] of tracked) {
       if (t.state === 'busy') {
         setState({ session: `workbuddy:${path.basename(folder)}`, agent: 'workbuddy', state: 'offline' });
@@ -141,6 +144,8 @@ function run(opts = {}) {
     if (!opts.manual) process.exit(0);
   };
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, stop);
+  // 机器人退了就收摊，避免留下一个永远轮询的孤儿进程。
+  watchServer = keepAliveWith(stop);
 
   return { stop, tracked, dir };
 }

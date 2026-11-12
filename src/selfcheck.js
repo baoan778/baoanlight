@@ -10,13 +10,10 @@
 // 底部提示「自检发现问题」，CLI 也在启动后打印摘要。
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const config = require('./config');
 const install = require('./adapters/install');
 const agents = require('./adapters/agents');
-
-const ROOT = path.resolve(__dirname, '..');
 
 function exists(p) {
   try { return !!p && fs.existsSync(p); } catch { return false; }

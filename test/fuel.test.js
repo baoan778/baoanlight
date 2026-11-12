@@ -149,11 +149,13 @@ test('glow headroom is symmetric, so the bloom is never clipped in any mode', ()
 // Guards a reported bug: the label vanished the moment the light went green,
 // because the visibility rule required a non-empty `detail` and idle clears it.
 test('a single session is labelled in every state, green included', () => {
-  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay', 'index.html'), 'utf8');
-  const rule = html.match(/const showPills\s*=[^;]+;/)[0];
+  // The label logic lives in ui.js since the UI was split out for CSP; the
+  // markup and CSS stayed in index.html.
+  const js = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay', 'ui.js'), 'utf8');
+  const rule = js.match(/const showPills\s*=[^;]+;/)[0];
   assert.doesNotMatch(rule, /\.detail/,
     `pill visibility must not depend on detail, got: ${rule}`);
-  assert.match(html, /VERB\s*=\s*\{[^}]*idle:\s*'[^']+'/,
+  assert.match(js, /VERB\s*=\s*\{[^}]*idle:\s*'[^']+'/,
     'idle needs a fallback label to show instead of the empty detail');
 });
 
@@ -161,12 +163,13 @@ test('a single session is labelled in every state, green included', () => {
 // one of them, the same three colours carry two meanings on one small widget.
 test('the fuel gauge does not borrow the lamp colours at normal levels', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay', 'index.html'), 'utf8');
+  const js = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay', 'ui.js'), 'utf8');
   const fill = html.match(/#fuel b\s*\{[^}]*\}/)[0];
   assert.doesNotMatch(fill, /var\(--(green|red|amber)\)/,
     `the default fill must be neutral, got: ${fill}`);
   // Colour is reserved for warnings, and those bands stay narrow.
-  const low = Number(html.match(/pct <= (\d+) \? 'low'/)[1]);
-  const mid = Number(html.match(/pct <= (\d+) \? 'mid'/)[1]);
+  const low = Number(js.match(/pct <= (\d+) \? 'low'/)[1]);
+  const mid = Number(js.match(/pct <= (\d+) \? 'mid'/)[1]);
   assert.ok(low <= 15, `low band ${low}% should mean "act now"`);
   assert.ok(mid <= 30 && mid > low, `mid band ${mid}% should be a narrow warning, not most of the range`);
 });

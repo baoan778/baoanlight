@@ -1,6 +1,6 @@
 # 桌面瓦力状态灯 — 设计与交互说明
 
-这份文档对应 overlay 的实现（`src/overlay/robot3d.js` + `src/overlay/index.html`），
+这份文档对应 overlay 的实现（`src/overlay/robot3d.js` + `src/overlay/ui.js` + `src/overlay/index.html`），
 说明"一个机器人怎么同时表达多个软件的状态"，以及每条灯效、动作和交互的触发条件。
 它同时也是验收清单：每一条都可以照着看一遍。
 
@@ -19,7 +19,7 @@
 | 仪表舱 | 舱内 8 条发光 bar | 每个软件一行，固定槽位 | `AGENT_ORDER`，与 DOM `#slot0..7` 一一对应 |
 | 铭牌 | 舱下刻字 | 这是谁的舱？ | 有多个软件时每 4 秒轮播一次 |
 
-主灯、灯环、状态条、仪表舱用的是**同一张颜色表**（`index.html` 的 `COLOR` / `HEX`），
+主灯、灯环、状态条、仪表舱用的是**同一张颜色表**（`ui.js` 的 `COLOR` / `HEX`），
 所以机器人不可能和自己身上的 DOM 镜像说法不一致。
 
 ---
@@ -155,9 +155,40 @@
 
 ## 7. 验收清单
 
-### 7.1 自动化（`npx playwright test`，32 条全绿）
+### 7.1 自动化（`npx playwright test`，59 条全绿）
 
-新增的三条：
+3D 拆解台（2026-11-12，`test-ui/teardown.spec.js`，页面在 `/teardown/`）：
+
+- 零件清单与阶段数逐一对账（51 件 / 6 阶段，几何与面板同源）。
+- 三段式（整机 → 依次拆解 → 全部零件）与滑块驱动同一个 `amount` 输入。
+- 点选零件的标注带引线、朝外推、距边缘 ≥ 60px，不遮零件。
+- 页面零控制台错误。
+
+槽位由服务端下发（2026-11-12）：
+
+- `a software the server adds shows up without touching the front end` —— 服务端多
+  接一个软件，设置里的顺序表自动出现它，位置在已知软件之后。
+
+颜色之外的第二条通道（2026-11-12）：
+
+- `state changes are spoken, not only coloured` —— `#live` 以 `aria-live="polite"`
+  念出「Claude Code 需要你」，且视觉上只有 1px，不参与布局。
+
+性能预算（2026-11-12，`test-ui/perf.spec.js`）：
+
+- `an idle robot draws at a fraction of the working rate` —— 空闲档位必须真的降到 15fps。
+- `"reduce motion" slows the whole scene down` —— 系统「减少动态效果」下整场 ≤12fps。
+- `the idle tier is not mistaken for a machine that cannot cope` —— 低帧率档位不得触发永久降级。
+- `nothing rewrites the DOM while nothing changes` —— 状态不变时 `#labels` 零变更。
+
+本地信任（2026-11-12）：
+
+- `a write without the local token is refused` —— 没有 token 的写入 401，且灯不动。
+- `a cross-origin page can neither drive nor read the robot` —— 跨源读写 403，且不回 CORS。
+- `an agent name is shown as text, never as markup` —— 服务端字符串按文本渲染，不执行。
+- `the page runs under the strict policy with no violations` —— CSP 下零违规，注入不执行。
+
+更早的三条：
 
 - `the scene is told which software owns which light, worst first` —— 聚合顺序与颜色契约。
 - `right-click opens the size bar, and it scales the whole machine` —— 右键尺寸条 + 整体缩放。

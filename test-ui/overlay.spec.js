@@ -15,6 +15,7 @@ const path = require('node:path');
 const GUTTER = 16;             // minimum clear space around the robot
 let server;
 let base;
+let token;                     // writes need it; reads do not (see src/auth.js)
 let ccSwitchHome;
 
 test.beforeAll(async () => {
@@ -25,6 +26,7 @@ test.beforeAll(async () => {
   process.env.BAOANLIGHT_CCSWITCH_HOME = ccSwitchHome;
   const r = await start({ port: 0, idleTtlMs: 600_000 });
   server = r.server;
+  token = r.token;
   base = `http://127.0.0.1:${server.address().port}`;
 });
 
@@ -37,7 +39,7 @@ test.afterAll(() => {
 const api = (path, body) =>
   fetch(base + path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-bao-token': token },
     body: JSON.stringify(body),
   });
 
@@ -627,4 +629,124 @@ test('the offline robot performs an autonomous action on its own', async ({ page
 
   const action = () => page.evaluate(() => document.getElementById('bot').dataset.idle || '');
   await expect.poll(action, { timeout: 20000 }).not.toBe('');
+});
+
+// ------------------------------------------------------------- slot table
+
+// 槽位表由服务端下发：多接一个软件，界面自动多一行、多一段灯环，前端不需要
+// 改一行代码。这条用「设置里的软件顺序」当观察点 —— 它读的就是这份表。
+test('a software the server adds shows up without touching the front end', async ({ page }) => {
+  await api('/state', { session: 'd1', agent: 'deploy', state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+
+  await expect.poll(
+    () => page.evaluate(() => [...document.querySelectorAll('#m-order .row span')].map((el) => el.textContent)),
+    { timeout: 4000 }
+  ).toContain('deploy');
+
+  // 而且它排在四个已知软件之后，位置由服务端决定。
+  const order = await page.evaluate(() => [...document.querySelectorAll('#m-order .row span')].map((el) => el.textContent));
+  expect(order[order.length - 1]).toBe('deploy');
+});
+
+// ---------------------------------------------------------------- spoken
+
+// 这个工具的主输出是颜色，而颜色对看不见屏幕的人没有信息量。状态必须还有一条
+// 文字通道，并且它得真的隐形 —— 一个 1px 的区域也不能把机器人或灯挤歪。
+test('state changes are spoken, not only coloured', async ({ page }) => {
+  await api('/state', { session: 'a', agent: 'claude', state: 'waiting' });
+  await settled(page, () => document.body.dataset.state).toBe('waiting');
+
+  const live = () => page.evaluate(() => document.getElementById('live').textContent);
+  await expect.poll(live).toContain('需要你');
+  expect(await live(), 'it must name the software too').toContain('Claude Code');
+
+  const box = await page.evaluate(() => {
+    const el = document.getElementById('live');
+    const r = el.getBoundingClientRect();
+    return {
+      w: r.width, h: r.height,
+      role: el.getAttribute('role'), polite: el.getAttribute('aria-live'),
+    };
+  });
+  expect(box.role).toBe('status');
+  expect(box.polite).toBe('polite');
+  expect(box.w, 'visually hidden, still audible').toBeLessThanOrEqual(1);
+  expect(box.h).toBeLessThanOrEqual(1);
+
+  await api('/state', { session: 'a', agent: 'claude', state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+  await expect.poll(live).toContain('运行中');
+});
+
+// ------------------------------------------------------------- local trust
+
+// three 的颜色管理对 `#rrggbb` 和 0xrrggbb 做同样的 sRGB→linear 转换，所以把
+// 材质色从十六进制数换成 palette 里的 CSS 字符串不会改变画面。这条断言把那个
+// 假设钉住 —— 将来升级 three 时如果改了转换策略，这里会先红，而不是等用户发现
+// 机器人颜色变了。
+test('a CSS hex and a packed hex resolve to the same colour', async ({ page }) => {
+  const same = await page.evaluate(async () => {
+    const THREE = await import('/vendor/three.module.js');
+    return new THREE.Color('#c9a238').getHexString() === new THREE.Color(0xc9a238).getHexString();
+  });
+  expect(same).toBe(true);
+});
+
+// CSP 是「注入也执行不了」的最后一道闸。它一旦配错（漏了 img-src、把模块挡在
+// script-src 外），页面会照样画出一半，只在控制台里留一条违规 —— 所以断言这里
+// 一条都不能有。
+test('the page runs under the strict policy with no violations', async ({ page }) => {
+  const violations = [];
+  page.on('console', (m) => {
+    if (/Content Security Policy/i.test(m.text())) violations.push(m.text());
+  });
+  await page.goto(base + '/');
+  await page.waitForFunction(() => document.body.dataset.state !== undefined);
+  // 等首帧 3D 与纹理都跑过一遍：被 CSP 挡掉的资源才会出现在控制台。
+  await expect.poll(() => page.evaluate(() => !!document.querySelector('#bot canvas')), { timeout: 8000 }).toBe(true);
+  await page.waitForTimeout(500);
+  expect(violations).toEqual([]);
+});
+
+// 这个服务活在 127.0.0.1 上，而浏览器对「本机地址」没有额外敬畏：任何网页都能
+// 往这个端口发请求。一个 <img src="…/set/busy"> 就能让机器人替别人的网站举手，
+// 而这套设计唯一的承诺就是灯不说谎。所以写入必须带本机 token。
+test('a write without the local token is refused', async () => {
+  const res = await fetch(`${base}/state`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session: 'untrusted', agent: 'claude', state: 'waiting' }),
+  });
+  expect(res.status, 'no token, no write').toBe(401);
+
+  const snap = await (await fetch(base + '/state')).json();
+  expect(snap.sessions.some((s) => s.session === 'untrusted'), 'nothing was recorded').toBe(false);
+});
+
+// 带 token 也不行：另一个源的页面连读都不该读到（cwd 里有你的项目路径），
+// 更不用说写。这就是 Host/Origin 两道检查存在的原因。
+test('a cross-origin page can neither drive nor read the robot', async () => {
+  const write = await fetch(`${base}/set/busy?agent=claude`, { headers: { origin: 'https://evil.example' } });
+  expect(write.status, 'a foreign origin cannot move the lamp').toBe(403);
+
+  const read = await fetch(base + '/state', { headers: { origin: 'https://evil.example' } });
+  expect(read.status).toBe(403);
+  expect(read.headers.get('access-control-allow-origin'), 'and gets no CORS pass').toBeNull();
+});
+
+// agent 名是服务端字符串，必须当文本处理。它曾经被拼进 innerHTML，于是
+// `bao set busy --agent '<img onerror=…>'` 能在页面里执行脚本 —— 而页面手里
+// 有 preload 暴露的通知、开终端、退出。
+test('an agent name is shown as text, never as markup', async ({ page }) => {
+  const name = '<img src=x onerror="window.__pwned=1">';
+  // 第一次出现只记「已知」，不算一次状态变化；第二次才是要渲染到「最近动态」的那条。
+  await api('/state', { session: 'xss', agent: name, state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+  await api('/state', { session: 'xss', agent: name, state: 'waiting' });
+  await settled(page, () => document.body.dataset.state).toBe('waiting');
+
+  expect(await page.evaluate(() => document.getElementById('m-recent').innerHTML)).not.toContain('<img');
+  expect(await page.evaluate(() => window.__pwned)).toBeUndefined();
+  expect(await page.evaluate(() => document.getElementById('m-recent').textContent)).toContain('onerror');
 });

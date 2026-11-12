@@ -96,7 +96,16 @@ async function main() {
   // "does nothing" and no way to learn why, so the fact is reported separately
   // from the state and shown as a question mark, never as a colour.
   if (!Object.prototype.hasOwnProperty.call(EVENT_STATE, name)) {
-    log(`UNKNOWN event=${JSON.stringify(name)} parsed=${parsed} keys=${Object.keys(evt).join(',')} raw=${raw.slice(0, 200)}`);
+    // 只记「结构」，绝不记内容：这些载荷里常带 prompt、tool_input 和完整路径，
+    // 而 hook-events.log 是明文的，默认就在 ~/.baoanlight/ 下。排查「是我们没
+    // 认出来还是对方换了词汇」时，字段名 + 长度已经足够了。
+    const shape = Object.keys(evt).map((k) => {
+      const v = evt[k];
+      const size = typeof v === 'string' ? v.length
+        : (v && typeof v === 'object' ? Object.keys(v).length : 0);
+      return `${k}:${typeof v}(${size})`;
+    }).join(' ');
+    log(`UNKNOWN event=${JSON.stringify(name)} parsed=${parsed} ${shape}`);
     await noteUnknown({ event: String(name || '(no event name)'), session: sid });
     return;
   }

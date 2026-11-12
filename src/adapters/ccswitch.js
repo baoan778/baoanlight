@@ -58,17 +58,25 @@ function claudeModel(home = ccSwitchHome()) {
 
 // Codex keeps `model = "…"` in config.toml. A one-line regex is enough and
 // avoids pulling a TOML parser in for a single field.
-function codexModel(home = ccSwitchHome()) {
-  const toml = readText(path.join(process.env.CODEX_HOME || path.join(home, '.codex'), 'config.toml'));
+// 显式传 home 时（测试、或调用方指定了别的目录）不能被 CODEX_HOME 顶掉：
+// 否则「读我给你的那个 home」变成「读开发机上真实的那份」，测试会串味。
+function codexModel(home) {
+  const dir = home
+    ? path.join(home, '.codex')
+    : (process.env.CODEX_HOME || path.join(ccSwitchHome(), '.codex'));
+  const toml = readText(path.join(dir, 'config.toml'));
   const m = toml.match(/^\s*model\s*=\s*"([^"]+)"/m);
   return m ? m[1] : null;
 }
 
 // Read the whole picture. Returns `{ claude: {...}, codex: {...} }` where each
 // entry may be `{}` when cc-switch is absent.
-function readCcSwitch({ home = ccSwitchHome() } = {}) {
-  const live = readJson(path.join(home, '.cc-switch', 'live-state.json')) || {};
-  const settings = readJson(path.join(home, '.cc-switch', 'settings.json')) || {};
+function readCcSwitch({ home } = {}) {
+  // 没有显式指定时才落到默认家目录；同时把「有没有指定」这件事继续传给
+  // codexModel —— 那里靠它决定要不要看 CODEX_HOME。
+  const root = home || ccSwitchHome();
+  const live = readJson(path.join(root, '.cc-switch', 'live-state.json')) || {};
+  const settings = readJson(path.join(root, '.cc-switch', 'settings.json')) || {};
   const apps = live.apps || {};
 
   const entry = (agent, providerKey) => {
@@ -82,7 +90,7 @@ function readCcSwitch({ home = ccSwitchHome() } = {}) {
 
   const out = {};
   const claude = entry('claude', 'currentProviderClaude');
-  const cm = claudeModel(home);
+  const cm = claudeModel(root);
   if (Object.keys(claude).some((k) => claude[k])) out.claude = { ...claude, model: cm };
   const codex = entry('codex', 'currentProviderCodex');
   const xm = codexModel(home);
