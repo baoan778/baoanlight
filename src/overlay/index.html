@@ -283,6 +283,7 @@
     font: inherit; font-size: 10.5px; cursor: pointer; white-space: nowrap;
   }
   #preview button:hover { background: rgba(255,255,255,.2); }
+  #preview button.active { background: rgba(255,255,255,.28); box-shadow: 0 0 0 1px rgba(255,255,255,.45); }
   #preview button[data-st="busy"] { color: #7ae0a0; }
   #preview button[data-st="waiting"] { color: #ffd54a; }
   #preview button[data-st="error"] { color: #ff6b61; }
@@ -354,7 +355,14 @@
   /* 最近动态：一条条状态变化，谁、干了什么、多久前。 */
   #m-recent { display: flex; flex-direction: column; gap: 2px; margin: 1px 0 6px; }
   #m-recent .recent { display: grid; grid-template-columns: auto 1fr auto; gap: 6px; align-items: baseline; font-size: 10px; color: #cfd5dc; }
-  #m-recent .recent b { font-weight: 600; color: #e9edf2; }
+  #m-recent .recent b { font-weight: 600; color: #e9edf2; display: inline-flex; align-items: center; gap: 5px; }
+  /* 最近动态前的状态色小圆点：一眼看出这条是「运行/等待/出错/完成」。 */
+  .rdot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--grey); }
+  .rdot[data-color="red"] { background: var(--red); box-shadow: 0 0 5px var(--red); }
+  .rdot[data-color="amber"] { background: var(--amber); box-shadow: 0 0 5px var(--amber); }
+  .rdot[data-color="green"] { background: var(--green); box-shadow: 0 0 5px var(--green); }
+  .rdot[data-color="done"] { background: var(--done); box-shadow: 0 0 5px var(--done); }
+  .rdot[data-color="white"] { background: var(--white); }
   #m-recent .recent span { opacity: .7; }
   #m-recent .recent em { opacity: .45; font-style: normal; white-space: nowrap; }
   /* 今日战绩：每个软件今天干了多久 + 完成/出错几次。复用 recent 的网格样式。 */
@@ -741,6 +749,12 @@
   // Which state's alert has been silenced by a poke. Cleared when the lamp
   // moves, so the next incident is allowed to speak again.
   let mutedFor = null;
+  // 预览状态时置 true：预览只改画面，不触发真实的通知/声音/语音，也不让任何
+  // 后台刷新把预览状态覆盖掉；预览结束再恢复真实状态。
+  let previewing = false;
+  // 上一次「真实」状态（不含预览）。通知/提示音按它判断变化，避免预览结束后
+  // 把「真实状态」误当成一次新变化又弹一次。
+  let lastRealState = '';
 
   // ---------------------------------------------------------------- layout
   // Every size the window has to agree with the page on: the visible stage
@@ -1009,7 +1023,7 @@
       const agoText = ago < 60 ? `${ago} 秒前` : ago < 3600 ? `${Math.round(ago / 60)} 分前` : `${Math.round(ago / 3600)} 时前`;
       const row = document.createElement('div');
       row.className = 'recent';
-      row.innerHTML = `<b>${displayName(r.agent)}</b><span>${RECENT_VERB[r.state] || r.state}</span><em>${agoText}</em>`;
+      row.innerHTML = `<b><i class="rdot" data-color="${COLOR[r.state] || 'grey'}"></i>${displayName(r.agent)}</b><span>${RECENT_VERB[r.state] || r.state}</span><em>${agoText}</em>`;
       box.appendChild(row);
     }
   }
@@ -1197,7 +1211,7 @@
   function render(snap) {
     lastSnap = snap;
     let overall = snap.overall || 'offline';
-    announce(overall);
+    if (!previewing) announce(overall);
     const sessions = snap.sessions || [];
     // 托盘 tooltip 跟着整体状态走（hover 托盘图标能看到现在在干什么）。
     if (inElectron && bridge.trayStatus) bridge.trayStatus({ overall, count: sessions.length });
@@ -1219,8 +1233,10 @@
       else focusedAgent = null;
     }
 
-    const previous = document.body.dataset.state;
-    document.body.dataset.state = displayState;
+    // 只有「真实状态」变化才算一次事件；预览不算，预览结束后也不补一次。
+    const realChanged = displayState !== lastRealState;
+    lastRealState = displayState;
+    if (!previewing) document.body.dataset.state = displayState;
     // 主灯代表的软件（状态最要紧的那个）：机器人待机时会瞄一眼它的槽位。
     const mainPriority = { error: 6, waiting: 5, busy: 4, done: 3, unknown: 2, idle: 1, offline: 0 };
     let mainSlotIdx = 0;
@@ -1229,9 +1245,9 @@
     }
     document.body.dataset.mainSlot = String(mainSlotIdx);
     // A new incident earns its chime back: poking silenced this one, not the
-    // next one.
-    if (previous !== displayState) mutedFor = null;
-    if (previous !== displayState) cue(displayState);
+    // next one. 预览期间不响铃、不改「静音解除」。
+    if (!previewing && realChanged) mutedFor = null;
+    if (!previewing && realChanged) cue(displayState);
 
     const color = COLOR[displayState] || null;
     led.dataset.color = color || 'red';
@@ -1239,7 +1255,7 @@
 
     renderSlots(slots);
     announceDone(sessions);
-    checkStuck(sessions);
+    if (!previewing) checkStuck(sessions);
     announceCC(snap);
     // 每个软件的今日时长（用短名）传给 3D 广告牌。
     const stats = {};
@@ -1282,9 +1298,9 @@
     const agentLabel = top ? displayName(top.agent) : '';
     const worstKey = top ? top.agent : '';
 
-    if (previous !== displayState) notifyState(displayState, agentLabel);
+    if (!previewing && realChanged) notifyState(displayState, agentLabel);
     renderFuel(snap.fuel);
-    notifyFuel(snap.fuel);
+    if (!previewing) notifyFuel(snap.fuel);
     // sessions arrive newest-first, so [0] is the software that spoke last
     const liveTop = sessions[0];
     publish(displayState, color, slots, agentLabel,
@@ -1450,9 +1466,14 @@
   // 预览某状态 3 秒：直接改 body.dataset.state，CSS 颜色和 3D 机器人一起变，
   // 结束后用最后一份快照还原真实状态。
   function previewState(state) {
+    previewing = true;
     document.body.dataset.state = state;
+    // 高亮当前正在预览的那个按钮，一眼知道「我现在看的是哪个状态」。
+    preview.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.st === state));
     clearTimeout(previewTimer);
     previewTimer = setTimeout(() => {
+      previewing = false;
+      preview.querySelectorAll('button').forEach((b) => b.classList.remove('active'));
       if (lastSnap) render(lastSnap);
     }, 3000);
   }
