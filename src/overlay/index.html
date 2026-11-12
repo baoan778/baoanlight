@@ -1151,29 +1151,31 @@
   }
 
   // 卡住检测（分级）：busy 会话 5 分钟无上报 → 提醒；15 分钟仍无上报 → 升级提醒。
-  // 每个会话每级只提醒一次；恢复上报就重置，下次再卡仍会提醒。
-  const stuckNotified = new Set();
+  // 按「软件」去重（不是按会话）：一个软件开三个窗口都卡了，只提醒一次，不刷屏。
+  // 该软件不再有卡住的会话就重置，下次再卡仍会提醒。
+  const stuckNotified = new Set();   // keyed by agent
   const stuckEscalated = new Set();
   function checkStuck(sessions) {
+    const stuckAgents = new Set();
     for (const s of sessions) {
       if (s.state === 'busy' && s.quiet && s.quietFor > 5 * 60 * 1000) {
-        if (!stuckNotified.has(s.session)) {
-          stuckNotified.add(s.session);
+        stuckAgents.add(s.agent);
+        if (!stuckNotified.has(s.agent)) {
+          stuckNotified.add(s.agent);
           if (inElectron && bridge.notify) {
             bridge.notify(`${displayName(s.agent)} 好像卡住了`, '已经 5 分钟没有任何动静了，去看看');
           }
         }
-        if (s.quietFor > 15 * 60 * 1000 && !stuckEscalated.has(s.session)) {
-          stuckEscalated.add(s.session);
+        if (s.quietFor > 15 * 60 * 1000 && !stuckEscalated.has(s.agent)) {
+          stuckEscalated.add(s.agent);
           if (inElectron && bridge.notify) {
             bridge.notify(`${displayName(s.agent)} 大概率卡死了`, '15 分钟完全没动静，建议去终端看看');
           }
         }
-      } else {
-        stuckNotified.delete(s.session);
-        stuckEscalated.delete(s.session);
       }
     }
+    for (const a of [...stuckNotified]) if (!stuckAgents.has(a)) stuckNotified.delete(a);
+    for (const a of [...stuckEscalated]) if (!stuckAgents.has(a)) stuckEscalated.delete(a);
   }
 
   // 点击聚焦：点某软件通道 = 聚焦它（主灯切到它）；再点同一个 = 取消聚焦回聚合。
@@ -1661,7 +1663,7 @@
   const SCENE_COLORS = {
     '无': '#4a5058', '雪地': '#d8e2ec', '草原': '#6a8a4a', '沙漠': '#c9a562',
     '星空': '#14162a', '岩浆': '#1a0e0a', '樱花': '#f0dcd8', '海洋': '#1a4a6a', '森林': '#2c4a24',
-    '雨夜': '#1c2530', '工厂': '#2e3238', '雪夜': '#1a2230',
+    '雨夜': '#1c2530', '工厂': '#2e3238', '雪夜': '#1a2230', '黄昏': '#8a4a3a',
   };
   // 瞳色 / 履带 / 配件 的代表色（与 robot3d.js 的 EYE_STYLES / TRACK_SKINS / ARM_SKINS 对应）。
   const EYE_COLORS = {
@@ -1847,7 +1849,7 @@
   });
 
   // 场景。
-  const SCENE_NAMES = ['无', '雪地', '草原', '沙漠', '星空', '岩浆', '樱花', '海洋', '森林', '雨夜', '工厂', '雪夜'];
+  const SCENE_NAMES = ['无', '雪地', '草原', '沙漠', '星空', '岩浆', '樱花', '海洋', '森林', '雨夜', '工厂', '雪夜', '黄昏'];
   const sceneSel = document.getElementById('m-scene');
   for (const n of SCENE_NAMES) {
     const o = document.createElement('option');

@@ -118,7 +118,7 @@ function canvasTexture(w, h, draw) {
 
 // 场景地表纹理：程序化生成的噪声/颗粒/波纹，让地面读作真实地表而不是纯色。
 function sceneTexture(type) {
-  const seedMap = { 雪地: 11, 草原: 22, 沙漠: 33, 星空: 44, 岩浆: 55, 樱花: 66, 海洋: 77, 森林: 88, 雨夜: 99, 工厂: 111, 雪夜: 123 };
+  const seedMap = { 雪地: 11, 草原: 22, 沙漠: 33, 星空: 44, 岩浆: 55, 樱花: 66, 海洋: 77, 森林: 88, 雨夜: 99, 工厂: 111, 雪夜: 123, 黄昏: 135 };
   return canvasTexture(512, 512, (g, w, h) => {
     const r = rng(seedMap[type] || 1);
     const blob = (x, y, rad, rgb, a) => {
@@ -173,6 +173,12 @@ function sceneTexture(type) {
       for (let i = 0; i < 70; i++) blob(r() * w, r() * h, 12 + r() * 40, '38,50,70', 0.3 + r() * 0.4);
       speck('225,235,248', () => 0.35 + r() * 0.5, 260, 2.4);
       for (let i = 0; i < 24; i++) blob(r() * w, r() * h, 8 + r() * 22, '210,225,245', 0.15 + r() * 0.2);
+    } else if (type === '黄昏') {
+      // 黄昏：暖橙到紫的地面，落日的余晖洒在地上，带一点紫红的晚霞色调。
+      g.fillStyle = '#8a4a3a'; g.fillRect(0, 0, w, h);
+      for (let i = 0; i < 90; i++) blob(r() * w, r() * h, 12 + r() * 44, '200,110,70', 0.25 + r() * 0.35);
+      for (let i = 0; i < 60; i++) blob(r() * w, r() * h, 10 + r() * 30, '120,60,90', 0.2 + r() * 0.3);
+      speck('255,205,150', () => 0.3 + r() * 0.4, 120, 2.2);
     } else if (type === '工厂') {
       // 车间钢板地面：深灰底 + 钢板拼缝 + 铆钉点，像真正的车间地坪。
       g.fillStyle = '#2e3238'; g.fillRect(0, 0, w, h);
@@ -496,6 +502,7 @@ const SCENES = {
   '雨夜': { texture: '雨夜', props: '水洼', particle: 'rain', fog: 0x1c2530 },
   '工厂': { texture: '工厂', props: '货箱', particle: 'ember', fog: 0x2a2e34 },
   '雪夜': { texture: '雪夜', props: '松树', particle: 'snow', fog: 0x1c2434 },
+  '黄昏': { texture: '黄昏', props: '灯笼', particle: 'ember', fog: 0x6a3a2e },
 };
 let sceneType = '无';
 
@@ -905,6 +912,19 @@ if (host && renderer) {
           g.add(hoop);
         }
         place(g, x, z, 0.75 + r() * 0.55);
+      } else if (type === '灯笼') {
+        // 黄昏的小灯笼：一根木杆挑起一盏暖橙色的灯，傍晚亮起来。
+        const g = new THREE.Group();
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.024, 0.42, 8),
+          new THREE.MeshStandardMaterial({ color: 0x5a3f2a, roughness: 0.9 }));
+        post.position.y = 0.21;
+        g.add(post);
+        const lantern = new THREE.Mesh(new THREE.SphereGeometry(0.095, 14, 10),
+          new THREE.MeshStandardMaterial({ color: 0xffb060, emissive: 0xff7a20, emissiveIntensity: 1.7, roughness: 0.55 }));
+        lantern.scale.y = 1.15;
+        lantern.position.y = 0.45;
+        g.add(lantern);
+        place(g, x, z, 0.9 + r() * 0.5);
       }
     }
   }
