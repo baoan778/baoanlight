@@ -3045,6 +3045,9 @@ if (host && renderer) {
       const p = (t - blinkAt) / 0.28;
       eye = p < 0.45 ? 1 - (p / 0.45) * 0.92 : ((p - 0.45) / 0.55) * 0.92;
     }
+    // 开机动画：加载后约 1.1 秒内从「闭眼」缓缓睁眼，像个刚通电的机器。
+    const boot = Math.max(0, 1 - t / 1.1);
+    if (boot > 0) eye *= (1 - boot * 0.95);
     pose.eye = damp(pose.eye, eye, eye < pose.eye ? 26 : 12, dt);
 
     let focus = 1;
@@ -3241,6 +3244,8 @@ if (host && renderer) {
     // ---- lamp, glow, bubble
     // 空闲时灯光缓慢「呼吸」（1.1Hz），像在安静地待命，而不是死板的常亮。
     let lamp = off ? 0.02 : idle ? 0.66 + Math.sin(t * 1.1) * 0.16 : unknown ? 0.5 : 2.7;
+    // 开机时灯光从暗到亮，和睁眼同步。
+    if (boot > 0) lamp *= (1 - boot * 0.92);
     if (busy) lamp = 2.9 + Math.sin(t * 3.4) * 0.75;
     if (waiting) lamp = 1.6 + Math.sin(t * 6.4) * 1.5;
     if (error) lamp = 0.9 + (Math.sin(t * 19) > 0 ? 3.4 : 0.3);
