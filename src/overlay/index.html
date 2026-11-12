@@ -1623,7 +1623,7 @@
   const SCENE_COLORS = {
     '无': '#4a5058', '雪地': '#d8e2ec', '草原': '#6a8a4a', '沙漠': '#c9a562',
     '星空': '#14162a', '岩浆': '#1a0e0a', '樱花': '#f0dcd8', '海洋': '#1a4a6a', '森林': '#2c4a24',
-    '雨夜': '#1c2530', '工厂': '#2e3238',
+    '雨夜': '#1c2530', '工厂': '#2e3238', '雪夜': '#1a2230',
   };
   // 瞳色 / 履带 / 配件 的代表色（与 robot3d.js 的 EYE_STYLES / TRACK_SKINS / ARM_SKINS 对应）。
   const EYE_COLORS = {
@@ -1779,8 +1779,8 @@
     o.value = n; o.textContent = n; headtypeSel.appendChild(o);
   }
 
-  // 头部装饰（无/天线/安全帽/皇冠/眼镜/墨镜/围巾/背包/礼帽）。
-  const DECORATION_NAMES = ['无', '天线', '安全帽', '皇冠', '眼镜', '墨镜', '围巾', '背包', '礼帽'];
+  // 头部装饰（无/天线/安全帽/皇冠/眼镜/墨镜/围巾/背包/礼帽/领结）。
+  const DECORATION_NAMES = ['无', '天线', '安全帽', '皇冠', '眼镜', '墨镜', '围巾', '背包', '礼帽', '领结'];
   const decorationSel = document.getElementById('m-decoration');
   for (const n of DECORATION_NAMES) {
     const o = document.createElement('option');
@@ -1809,7 +1809,7 @@
   });
 
   // 场景。
-  const SCENE_NAMES = ['无', '雪地', '草原', '沙漠', '星空', '岩浆', '樱花', '海洋', '森林', '雨夜', '工厂'];
+  const SCENE_NAMES = ['无', '雪地', '草原', '沙漠', '星空', '岩浆', '樱花', '海洋', '森林', '雨夜', '工厂', '雪夜'];
   const sceneSel = document.getElementById('m-scene');
   for (const n of SCENE_NAMES) {
     const o = document.createElement('option');
