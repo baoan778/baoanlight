@@ -1822,8 +1822,8 @@
     o.value = n; o.textContent = n; headtypeSel.appendChild(o);
   }
 
-  // 头部装饰（无/天线/安全帽/皇冠/眼镜/墨镜/围巾/背包/礼帽/领结）。
-  const DECORATION_NAMES = ['无', '天线', '安全帽', '皇冠', '眼镜', '墨镜', '围巾', '背包', '礼帽', '领结'];
+  // 头部装饰（无/天线/安全帽/皇冠/眼镜/墨镜/围巾/背包/礼帽/领结/勋章）。
+  const DECORATION_NAMES = ['无', '天线', '安全帽', '皇冠', '眼镜', '墨镜', '围巾', '背包', '礼帽', '领结', '勋章'];
   const decorationSel = document.getElementById('m-decoration');
   for (const n of DECORATION_NAMES) {
     const o = document.createElement('option');
@@ -2190,8 +2190,13 @@
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = 'bao-config.json'; a.click();
-    URL.revokeObjectURL(url);
+    a.href = url; a.download = 'bao-config.json';
+    // 必须挂进 DOM 才 click，且 revoke 要延后——同步 revoke 会在下载真正开始前
+    // 把 blob URL 作废，导致导出的文件是空的/下载失败。
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   document.getElementById('m-import').onclick = () => document.getElementById('m-import-file').click();
   document.getElementById('m-import-file').addEventListener('change', (e) => {
@@ -2201,8 +2206,11 @@
     reader.onload = () => {
       try {
         const data = JSON.parse(String(reader.result));
-        Object.assign(cfg, data);
-        if (inElectron) bridge.saveConfig(data);
+        // 只接受已知的外观键：挡住 __proto__ / window 之类的脏键，避免污染配置。
+        const clean = {};
+        for (const k of EXPORT_KEYS) if (data[k] !== undefined) clean[k] = data[k];
+        Object.assign(cfg, clean);
+        if (inElectron) bridge.saveConfig(clean);
         location.reload();   // 重新加载，getConfig 会按新配置逐项应用
       } catch { /* 坏文件：静默忽略 */ }
     };

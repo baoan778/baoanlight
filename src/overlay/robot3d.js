@@ -1766,8 +1766,23 @@ if (host && renderer) {
   const bowtieKnot = mesh(new THREE.BoxGeometry(0.075, 0.10, 0.07), bowtieMat);
   bowtie.add(bowtieKnot);
 
-  // 装饰：无 / 天线 / 安全帽 / 皇冠 / 眼镜 / 墨镜 / 围巾 / 背包 / 礼帽 / 领结。一次只显示一个。
-  const DECORATIONS = ['无', '天线', '安全帽', '皇冠', '眼镜', '墨镜', '围巾', '背包', '礼帽', '领结'];
+  // ---- 勋章：左胸一枚金色勋章（蓝缎带 + 圆章），像个立过功的老兵 ---------------
+  const medal = new THREE.Group();
+  medal.position.set(-0.42, 1.82, frontOf(hull, 0.012));
+  bodyGroup.add(medal);
+  const medalGold = new THREE.MeshStandardMaterial({ color: 0xe0b23a, roughness: 0.3, metalness: 0.85 });
+  const medalRibbon = mesh(new THREE.BoxGeometry(0.13, 0.15, 0.012), new THREE.MeshStandardMaterial({ color: 0x2f6bd9, roughness: 0.7 }));
+  medalRibbon.position.y = 0.085;
+  medal.add(medalRibbon);
+  const medalDisc = mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.014, 22), medalGold);
+  medalDisc.rotation.x = Math.PI / 2;
+  medal.add(medalDisc);
+  const medalStar = mesh(new THREE.TorusGeometry(0.03, 0.008, 6, 5), medalGold);
+  medalStar.position.z = 0.012;
+  medal.add(medalStar);
+
+  // 装饰：无 / 天线 / 安全帽 / 皇冠 / 眼镜 / 墨镜 / 围巾 / 背包 / 礼帽 / 领结 / 勋章。
+  const DECORATIONS = ['无', '天线', '安全帽', '皇冠', '眼镜', '墨镜', '围巾', '背包', '礼帽', '领结', '勋章'];
   let decoration = '无';
   function setDecoration(name) {
     decoration = name;
@@ -1780,6 +1795,7 @@ if (host && renderer) {
     backpack.visible = name === '背包';
     tophat.visible = name === '礼帽';
     bowtie.visible = name === '领结';
+    medal.visible = name === '勋章';
   }
   setDecoration('无');
   window.addEventListener('bao:decoration', (e) => {
