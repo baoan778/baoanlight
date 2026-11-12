@@ -143,9 +143,12 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
       }
 
       // Static: the same overlay UI Electron loads, so a plain browser tab works too.
+      // 用 resolve + 严格前缀（含分隔符）校验，堵住 `../overlay-evil/x` 这种同前缀
+      // 兄弟目录穿越（老的 startsWith(OVERLAY_DIR) 会被这种路径骗过）。
       const file = p === '/' ? 'index.html' : p.replace(/^\/+/, '');
-      const abs = path.join(OVERLAY_DIR, file);
-      if (abs.startsWith(OVERLAY_DIR) && fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+      const abs = path.resolve(OVERLAY_DIR, file);
+      const insideOverlay = abs === OVERLAY_DIR || abs.startsWith(OVERLAY_DIR + path.sep);
+      if (insideOverlay && fs.existsSync(abs) && fs.statSync(abs).isFile()) {
         res.writeHead(200, { 'content-type': MIME[path.extname(abs)] || 'application/octet-stream' });
         return fs.createReadStream(abs).pipe(res);
       }
