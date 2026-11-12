@@ -1781,8 +1781,21 @@ if (host && renderer) {
   medalStar.position.z = 0.012;
   medal.add(medalStar);
 
-  // 装饰：无 / 天线 / 安全帽 / 皇冠 / 眼镜 / 墨镜 / 围巾 / 背包 / 礼帽 / 领结 / 勋章。
-  const DECORATIONS = ['无', '天线', '安全帽', '皇冠', '眼镜', '墨镜', '围巾', '背包', '礼帽', '领结', '勋章'];
+  // ---- 贝雷帽：一顶歪戴的软帽，顶上一个小揪，很有艺术家的味道 ------------------
+  const beret = new THREE.Group();
+  beret.position.set(0.06, 0.47, 0.02);
+  beret.rotation.z = 0.22;
+  head.add(beret);
+  const beretMat = new THREE.MeshStandardMaterial({ color: 0x2a3a5a, roughness: 0.85 });
+  const beretDome = mesh(new THREE.SphereGeometry(0.37, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2), beretMat);
+  beretDome.scale.set(1, 0.46, 1);
+  beret.add(beretDome);
+  const beretNub = mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.055, 8), beretMat);
+  beretNub.position.y = 0.16;
+  beret.add(beretNub);
+
+  // 装饰：无 / 天线 / 安全帽 / 皇冠 / 眼镜 / 墨镜 / 围巾 / 背包 / 礼帽 / 领结 / 勋章 / 贝雷帽。
+  const DECORATIONS = ['无', '天线', '安全帽', '皇冠', '眼镜', '墨镜', '围巾', '背包', '礼帽', '领结', '勋章', '贝雷帽'];
   let decoration = '无';
   function setDecoration(name) {
     decoration = name;
@@ -1796,6 +1809,7 @@ if (host && renderer) {
     tophat.visible = name === '礼帽';
     bowtie.visible = name === '领结';
     medal.visible = name === '勋章';
+    beret.visible = name === '贝雷帽';
   }
   setDecoration('无');
   window.addEventListener('bao:decoration', (e) => {
