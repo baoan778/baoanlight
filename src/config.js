@@ -35,6 +35,8 @@ const DEFAULTS = {
   sound: false,
   // 语音播报：状态变成 waiting/error/done 时用系统 TTS 说一句，默认关。
   voice: false,
+  // 静音截止时间戳（ms）。大于当前时间则暂停通知/提示音/语音。
+  mutedUntil: 0,
   // 今日时长广告牌显示谁：top 最多 / total 合计 / cycle 轮播 / off 关闭。
   signMode: 'top',
   // 广告牌位置：right 右侧 / left 左侧。
@@ -42,7 +44,7 @@ const DEFAULTS = {
   // 广告牌颜色（描边/图标/辉光）与形状（圆角/胶囊/方正）。
   signColor: '#ffd54a',
   signShape: '圆角',
-  // 头部装饰：无 / 天线 / 安全帽。
+  // 头部装饰：无 / 天线 / 安全帽 / 皇冠 / 眼镜 / 墨镜 / 围巾 / 背包 / 礼帽 / 领结。
   decoration: '无',
   // 人格种子：首次启动随机固定一个（活泼/沉稳/话痨/害羞），决定动作频率与语气。
   personality: null,

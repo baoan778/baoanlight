@@ -558,6 +558,7 @@
         <select id="m-soundstyle"></select>
       </div>
       <label class="row"><input id="m-voice" type="checkbox" /> 语音播报</label>
+      <button id="m-mute">静音 1 小时（暂停通知/提示音）</button>
       <label class="row"><input id="m-click" type="checkbox" checked /> 点击穿透</label>
       <label class="row"><input id="m-labels" type="checkbox" checked /> 软件列表</label>
       <label class="row"><input id="m-offline" type="checkbox" checked /> 显示未运行软件</label>
@@ -846,6 +847,7 @@
   };
   function cue(kind) {
     if (!cfg.sound) return;
+    if (typeof isMuted === 'function' && isMuted()) return;
     if (mutedFor === kind) return;
     const now = Date.now();
     if (now - lastCue < 2500) return;      // one cue per incident, not per event
@@ -1195,6 +1197,7 @@
   };
   function announce(state) {
     if (!cfg.voice) return;
+    if (typeof isMuted === 'function' && isMuted()) return;
     if (state === lastAnnounced) return;
     lastAnnounced = state;
     const msg = state === 'waiting' ? '需要你处理'
@@ -1211,12 +1214,17 @@
     } catch { /* 没有语音引擎就静默 */ }
   }
 
+  // 静音：一段时间内暂停所有通知/提示音/语音（开会时用）。状态显示照常。
+  let mutedUntil = 0;
+  const isMuted = () => Date.now() < mutedUntil;
+
   // 原生系统通知：等待/出错/完成时弹一次。同一状态 6 秒内只弹一次（防抖动），
   // 但换成别的状态要能立刻弹。
   let lastNotifiedState = '';
   let lastNotifiedAt = 0;
   function notifyState(state, agentLabel) {
     if (!inElectron || !bridge.notify) return;
+    if (isMuted()) return;
     if (!(state === 'waiting' || state === 'error' || state === 'done')) return;
     const now = Date.now();
     if (state === lastNotifiedState && now - lastNotifiedAt < 6000) return;
@@ -1230,6 +1238,7 @@
   let lastFuelLow = false;
   function notifyFuel(f) {
     if (!inElectron || !bridge.notify) return;
+    if (isMuted()) return;
     const low = !!(f && typeof f.remaining === 'number' && f.remaining <= 5);
     if (low && !lastFuelLow) {
       bridge.notify('额度快用完了', `${f.agent ? displayName(f.agent) + ' ' : ''}只剩 ${Math.round(f.remaining)}%`);
@@ -1972,6 +1981,29 @@
     if (cfg.voice) announce('waiting');
   });
 
+  // 静音 1 小时：开会/专注时一键暂停通知、提示音、语音；再点一次立即恢复。
+  const muteBtn = document.getElementById('m-mute');
+  let muteResetTimer = null;
+  function refreshMuteButton() {
+    const on = isMuted();
+    muteBtn.textContent = on ? '已静音 · 点击恢复' : '静音 1 小时（暂停通知/提示音）';
+    muteBtn.classList.toggle('danger', false);
+    muteBtn.style.opacity = on ? '0.7' : '';
+    clearTimeout(muteResetTimer);
+    if (on) {
+      muteResetTimer = setTimeout(refreshMuteButton, Math.max(0, mutedUntil - Date.now()) + 500);
+    }
+  }
+  muteBtn.addEventListener('click', () => {
+    if (isMuted()) {
+      mutedUntil = 0;
+    } else {
+      mutedUntil = Date.now() + 60 * 60 * 1000;
+    }
+    if (inElectron) bridge.saveConfig({ mutedUntil });
+    refreshMuteButton();
+  });
+
 
   // 提示音风格（清脆叮咚 / 低沉机械 / 电子脉冲）。
   const soundstyleSel = document.getElementById('m-soundstyle');
@@ -2270,6 +2302,8 @@
       setCollapsed(!!cfg.collapsed);
       document.getElementById('m-sound').checked = !!cfg.sound;
       document.getElementById('m-voice').checked = !!cfg.voice;
+      mutedUntil = Number(cfg.mutedUntil) || 0;
+      refreshMuteButton();
       if (SOUND_STYLES[cfg.soundStyle]) soundstyleSel.value = cfg.soundStyle;
       document.getElementById('m-click').checked = cfg.clickThrough !== false;
       document.getElementById('m-labels').checked = cfg.showLabels !== false;
