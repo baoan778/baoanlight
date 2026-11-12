@@ -118,7 +118,7 @@ function canvasTexture(w, h, draw) {
 
 // 场景地表纹理：程序化生成的噪声/颗粒/波纹，让地面读作真实地表而不是纯色。
 function sceneTexture(type) {
-  const seedMap = { 雪地: 11, 草原: 22, 沙漠: 33, 星空: 44, 岩浆: 55, 樱花: 66, 海洋: 77, 森林: 88, 雨夜: 99, 工厂: 111, 雪夜: 123, 黄昏: 135 };
+  const seedMap = { 雪地: 11, 草原: 22, 沙漠: 33, 星空: 44, 岩浆: 55, 樱花: 66, 海洋: 77, 森林: 88, 雨夜: 99, 工厂: 111, 雪夜: 123, 黄昏: 135, 极光: 147 };
   return canvasTexture(512, 512, (g, w, h) => {
     const r = rng(seedMap[type] || 1);
     const blob = (x, y, rad, rgb, a) => {
@@ -179,6 +179,19 @@ function sceneTexture(type) {
       for (let i = 0; i < 90; i++) blob(r() * w, r() * h, 12 + r() * 44, '200,110,70', 0.25 + r() * 0.35);
       for (let i = 0; i < 60; i++) blob(r() * w, r() * h, 10 + r() * 30, '120,60,90', 0.2 + r() * 0.3);
       speck('255,205,150', () => 0.3 + r() * 0.4, 120, 2.2);
+    } else if (type === '极光') {
+      // 极光：深色冰原 + 几条斜向的绿/紫光带，像头顶的极光映在地上。
+      g.fillStyle = '#0a1418'; g.fillRect(0, 0, w, h);
+      for (let i = 0; i < 9; i++) {
+        const y0 = r() * h;
+        const grad = g.createLinearGradient(0, y0, w, y0 + 90);
+        grad.addColorStop(0, 'rgba(60,255,180,0)');
+        grad.addColorStop(0.4, `rgba(${40 + r() * 40},${200 + r() * 55},${140 + r() * 60},${0.5 + r() * 0.3})`);
+        grad.addColorStop(0.7, `rgba(${130 + r() * 60},${80 + r() * 60},230,${0.4 + r() * 0.25})`);
+        grad.addColorStop(1, 'rgba(60,255,180,0)');
+        g.fillStyle = grad; g.fillRect(0, y0 - 45, w, 135);
+      }
+      speck('200,255,230', () => 0.35 + r() * 0.5, 160, 2);
     } else if (type === '工厂') {
       // 车间钢板地面：深灰底 + 钢板拼缝 + 铆钉点，像真正的车间地坪。
       g.fillStyle = '#2e3238'; g.fillRect(0, 0, w, h);
@@ -503,6 +516,7 @@ const SCENES = {
   '工厂': { texture: '工厂', props: '货箱', particle: 'ember', fog: 0x2a2e34 },
   '雪夜': { texture: '雪夜', props: '松树', particle: 'snow', fog: 0x1c2434 },
   '黄昏': { texture: '黄昏', props: '灯笼', particle: 'ember', fog: 0x6a3a2e },
+  '极光': { texture: '极光', props: '松树', particle: 'star', fog: 0x0a1418 },
 };
 let sceneType = '无';
 

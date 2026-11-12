@@ -1338,7 +1338,10 @@
     const agentLabel = top ? displayName(top.agent) : '';
     const worstKey = top ? top.agent : '';
 
-    if (!previewing && realChanged) notifyState(displayState, agentLabel);
+    // 聚焦某个软件时，通知要说「被聚焦的那个」，而不是聚合里的最坏者——
+    // 否则会弹出「Claude 出错了」但其实是你在盯的 Codex 出错。
+    const notifyLabel = focusedAgent ? displayName(focusedAgent) : agentLabel;
+    if (!previewing && realChanged) notifyState(displayState, notifyLabel);
     renderFuel(snap.fuel);
     if (!previewing) notifyFuel(snap.fuel);
     // sessions arrive newest-first, so [0] is the software that spoke last
@@ -1663,7 +1666,7 @@
   const SCENE_COLORS = {
     '无': '#4a5058', '雪地': '#d8e2ec', '草原': '#6a8a4a', '沙漠': '#c9a562',
     '星空': '#14162a', '岩浆': '#1a0e0a', '樱花': '#f0dcd8', '海洋': '#1a4a6a', '森林': '#2c4a24',
-    '雨夜': '#1c2530', '工厂': '#2e3238', '雪夜': '#1a2230', '黄昏': '#8a4a3a',
+    '雨夜': '#1c2530', '工厂': '#2e3238', '雪夜': '#1a2230', '黄昏': '#8a4a3a', '极光': '#0a1418',
   };
   // 瞳色 / 履带 / 配件 的代表色（与 robot3d.js 的 EYE_STYLES / TRACK_SKINS / ARM_SKINS 对应）。
   const EYE_COLORS = {
@@ -1849,7 +1852,7 @@
   });
 
   // 场景。
-  const SCENE_NAMES = ['无', '雪地', '草原', '沙漠', '星空', '岩浆', '樱花', '海洋', '森林', '雨夜', '工厂', '雪夜', '黄昏'];
+  const SCENE_NAMES = ['无', '雪地', '草原', '沙漠', '星空', '岩浆', '樱花', '海洋', '森林', '雨夜', '工厂', '雪夜', '黄昏', '极光'];
   const sceneSel = document.getElementById('m-scene');
   for (const n of SCENE_NAMES) {
     const o = document.createElement('option');
