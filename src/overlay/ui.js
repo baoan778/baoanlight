@@ -99,6 +99,7 @@ import {
   const fuel    = document.getElementById('fuel');
   const fuelFill = fuel.querySelector('b');
   const led     = document.getElementById('status-led');
+  const botEl   = document.getElementById('bot');
   const note    = document.getElementById('note');
   const liveEl  = document.getElementById('live');
   const slotEls = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => document.getElementById('slot' + i));
@@ -274,14 +275,24 @@ import {
     flashNote('已静音提示 60 秒');
   });
 
-  // 一行短提示，1.6 秒后收回；和 `note`（长驻的连接/自检提示）互不覆盖内容。
+  // 一行短提示，1.6 秒后收回。
+  //
+  // 它和常驻的 `note`（连接/自检提示）共用同一个节点，所以「当前该显示谁」必须
+  // 由状态决定，而不是谁最后写谁赢：原来 render() 每帧无条件 `note.textContent = text`，
+  // 任何一帧 SSE 都会把刚弹出来的提示冲掉（忙碌时几乎立刻就没了）。
   let flashTimer = 0;
+  let flashText = '';
+  let flashUntil = 0;
   function flashNote(text) {
+    flashText = text;
+    flashUntil = Date.now() + 1600;
     note.textContent = text;
     note.hidden = false;
     note.classList.add('on');
     clearTimeout(flashTimer);
     flashTimer = setTimeout(() => {
+      flashText = '';
+      flashUntil = 0;
       if (lastSnap) render(lastSnap);
       else { note.textContent = ''; note.hidden = true; note.classList.remove('on'); }
     }, 1600);
@@ -577,18 +588,21 @@ import {
   const stuckEscalated = new Set();
   function checkStuck(sessions) {
     const stuckAgents = new Set();
+    // 「静音 1 小时」必须对所有出口生效。原来这里直接调 bridge.notify，是
+    // 唯一漏掉 isMuted() 的一条 —— 开会时最不该弹的恰好是它（卡住提醒）。
+    const canNotify = inElectron && bridge.notify && !isMuted();
     for (const s of sessions) {
       if (s.state === 'busy' && s.quiet && s.quietFor > 5 * 60 * 1000) {
         stuckAgents.add(s.agent);
         if (!stuckNotified.has(s.agent)) {
           stuckNotified.add(s.agent);
-          if (inElectron && bridge.notify) {
+          if (canNotify) {
             bridge.notify(`${displayName(s.agent)} 好像卡住了`, '已经 5 分钟没有任何动静了，去看看');
           }
         }
         if (s.quietFor > 15 * 60 * 1000 && !stuckEscalated.has(s.agent)) {
           stuckEscalated.add(s.agent);
-          if (inElectron && bridge.notify) {
+          if (canNotify) {
             bridge.notify(`${displayName(s.agent)} 大概率卡死了`, '15 分钟完全没动静，建议去终端看看');
           }
         }
@@ -637,8 +651,11 @@ import {
     const msg = state === 'waiting' ? '需要你处理'
       : state === 'error' ? '出错了'
         : state === 'done' ? '完成了' : '';
-    if (!msg) return;
+    // 先记账再判断要不要出声：busy/idle 这些「不值得念」的状态也要把上一次
+    // 的 waiting 清掉，否则同一状态第二次出现（waiting → busy → waiting）
+    // 会被当成「和上次一样」永远不播 —— 而第二次「需要你」往往才是真的。
     lastAnnounced = state;
+    if (!msg) return;
     say(msg);
   }
 
@@ -646,20 +663,32 @@ import {
   let mutedUntil = 0;
   const isMuted = () => Date.now() < mutedUntil;
 
-  // 原生系统通知：等待/出错/完成时弹一次。同一状态 6 秒内只弹一次（防抖动），
-  // 但换成别的状态要能立刻弹。
-  let lastNotifiedState = '';
-  let lastNotifiedAt = 0;
-  function notifyState(state, agentLabel) {
+  // 原生系统通知：某个软件**进入** waiting / error / done 时弹一次。
+  //
+  // 去重键必须是「软件 + 状态」，不能是聚合状态。第二个软件也进入「需要你」时
+  // 聚合状态没变，原来会被当成重复而吞掉 —— 而它恰恰是用户最需要知道的那一条。
+  // 每个软件 6 秒内只弹一次（防抖动，也让 waiting→busy→waiting 的两次都能响）。
+  // 第一次见到某个软件只记账不通知：启动瞬间四行都是 waiting，不该一次弹四条。
+  const slotSeen = new Map();        // agent -> 上一次看到的状态
+  const slotNotifiedAt = new Map();  // agent -> 上次通知的时间
+  const NOTIFY_TEXT = { waiting: '需要你处理', error: '出错了', done: '完成了' };
+
+  function notifySlots(slots) {
     if (!inElectron || !bridge.notify) return;
-    if (isMuted()) return;
-    if (!(state === 'waiting' || state === 'error' || state === 'done')) return;
-    const now = Date.now();
-    if (state === lastNotifiedState && now - lastNotifiedAt < 6000) return;
-    lastNotifiedState = state;
-    lastNotifiedAt = now;
-    const text = state === 'waiting' ? '需要你处理' : state === 'error' ? '出错了' : '完成了';
-    bridge.notify(agentLabel ? `${agentLabel} ${text}` : text, '');
+    for (const s of slots || []) {
+      if (!s || !s.count) continue;
+      const prev = slotSeen.get(s.agent);
+      slotSeen.set(s.agent, s.state);
+      if (prev === undefined || prev === s.state) continue;
+      const text = NOTIFY_TEXT[s.state];
+      if (!text) continue;
+      const now = Date.now();
+      if (now - (slotNotifiedAt.get(s.agent) || 0) < 6000) continue;
+      // 静音期间不弹，也不记时间戳：解除静音后如果状态还在，下一次变化自然会提醒。
+      if (isMuted()) continue;
+      slotNotifiedAt.set(s.agent, now);
+      bridge.notify(`${displayName(s.agent)} ${text}`, '');
+    }
   }
 
   // 额度见底提醒：剩余额度从 >5% 掉到 ≤5% 时弹一次。
@@ -918,8 +947,8 @@ import {
 
     // 聚焦某个软件时，通知要说「被聚焦的那个」，而不是聚合里的最坏者——
     // 否则会弹出「Claude 出错了」但其实是你在盯的 Codex 出错。
-    const notifyLabel = focusedAgent ? displayName(focusedAgent) : agentLabel;
-    if (!previewing && realChanged) notifyState(displayState, notifyLabel);
+    // 逐软件检测「进入」边沿：聚合状态没变时，也要能提醒第二个需要你的软件。
+    if (!previewing) notifySlots(slots);
     renderFuel(snap.fuel);
     if (!previewing) notifyFuel(snap.fuel);
     // sessions arrive newest-first, so [0] is the software that spoke last
@@ -1002,9 +1031,11 @@ import {
         text = `自检发现 ${fails.length} 个问题 — ${fails[0].name}（运行 bao doctor 看详情）`;
       }
     }
-    note.textContent = text;
-    note.hidden = !text;
-    note.classList.toggle('on', !!text);
+    // 正在显示的短提示优先；它过期后这里自然换回常驻文案。
+    const noteShown = (Date.now() < flashUntil && flashText) ? flashText : text;
+    note.textContent = noteShown;
+    note.hidden = !noteShown;
+    note.classList.toggle('on', !!noteShown);
 
     fit();
   }
@@ -1705,7 +1736,7 @@ import {
     return cfg;
   }
 
-  function renderPresetList() {
+  function renderPresetList(keep = presetList.value) {
     presetList.innerHTML = '';
     for (const name of Object.keys(cfg.presets || {})) {
       const o = document.createElement('option');
@@ -1713,6 +1744,9 @@ import {
       o.textContent = name;
       presetList.appendChild(o);
     }
+    // 重建后把选中项还回去。否则列表会跳回第一项，连点两次「删除」删掉的是
+    // 另一个方案 —— 而屏幕上那个名字已经换了，用户很难把两件事对上。
+    if (keep && Object.prototype.hasOwnProperty.call(cfg.presets || {}, keep)) presetList.value = keep;
   }
   document.getElementById('m-preset-save').onclick = () => {
     const name = presetName.value.trim().slice(0, 12);
@@ -1735,7 +1769,8 @@ import {
     delete presets[name];
     cfg.presets = presets;
     if (inElectron) saveConfig({ presets });
-    renderPresetList();
+    // 删掉的那一项已经不在了，这里传空让浏览器落到剩下的第一项（合理）。
+    renderPresetList('');
   };
 
   // 尺寸快捷键：Ctrl/⌘+Shift + = / - / 0。
@@ -2008,6 +2043,10 @@ import {
     // 每个都会触发两条 IPC + 一次 setBounds。只关心真正改变布局的那几个容器。
     window.addEventListener('transitionend', (e) => {
       const t = e.target;
+      // #bot 的 width 有 220ms 过渡（收起 150px / mini 210px）。不过滤它就等于
+      // 在过渡起点量一次尺寸：窗口和点击热区停在收起前的大小，多出来的透明
+      // 区域会继续吃桌面点击，直到下一次 fit 才有机会纠正。
+      if (t === botEl && e.propertyName === 'width') { fit(); return; }
       if (e.propertyName !== 'opacity') return;
       if (t !== bar && t !== menu && t !== labels && t !== sizer) return;
       fit();

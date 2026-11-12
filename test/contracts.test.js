@@ -194,3 +194,29 @@ test('installing hooks keeps every key it does not own', () => {
     assert.equal(hooks, 9, 'all nine lifecycle hooks are wired');
   });
 });
+
+// ------------------------------------------------------------ stylesheet traps
+
+// `#menu button { width: 100% }` 是给整宽按钮（导出/退出）用的，但它的特异性
+// 和 `#m-order button` 相同、定义却在后面：排序行两个箭头会被撑满一行、
+// 「保存 / 应用 / 删除」会把旁边的输入框和下拉压成 0 宽 —— 方案名根本输不进去。
+// 这类覆盖不会报错，只会让一个功能整块失效，所以用一条断言钉住前缀。
+test('the generic menu button width cannot override the inline controls', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'src', 'overlay', 'index.html'), 'utf8');
+  assert.match(html, /#menu #m-order button\s*\{/, 'the order arrows keep their own specificity');
+  assert.match(html, /#menu #m-preset-save/, 'and so do the preset buttons');
+});
+
+// ------------------------------------------------------------ docs drift
+
+// 文档里的清单最容易和代码走散：加一个场景、改一次皮肤，README 不会跟着变。
+test('every scene in the picker is named in the README', () => {
+  const js = fs.readFileSync(path.join(ROOT, 'src', 'overlay', 'ui.js'), 'utf8');
+  const list = js.match(/const SCENE_NAMES = \[([^\]]+)\]/);
+  assert.ok(list, 'the scene picker still declares its names in one place');
+  const names = list[1].split(',').map((s) => s.trim().replace(/^'|'$/g, '')).filter(Boolean);
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  for (const name of names) {
+    assert.ok(readme.includes(name), `README never mentions the "${name}" scene`);
+  }
+});

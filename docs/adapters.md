@@ -16,7 +16,8 @@
 
 ## 1. 事件词表（钩子/日志共用）
 
-`src/adapters/patterns.js` 的 `classify()` 是唯一的事件→状态映射：
+`src/adapters/log-watch.js` 的 `classify()` 是唯一的事件→状态映射（`hooks/event.js`
+也 require 同一个函数）；`patterns.js` 只管伪终端包装器用的屏幕正则，别把事件名加错地方：
 
 - **busy**：`task_started` `turn_started` `run_started` `step_started` `tool_call_start` `message_start` `reasoning_started` `generating` `thinking` `working` `in_progress`
 - **done**（紫）：`task_complete(d)` `turn_complete(d)` `run_complete(d)` `finished` `success` `succeeded`

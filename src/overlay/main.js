@@ -21,6 +21,9 @@ let tray = null;
 let saveTimer = null;
 let cursorTimer = null;
 let clickThroughEnabled = true;
+// 最近一次「我们自己」改窗口大小/位置的时间。`moved` 在程序化 setBounds 时也会
+// 触发，不区分的话每开一次菜单都会把 clamp 后的位置当成用户拖拽保存下来。
+let boundsAppliedAt = 0;
 
 function waitForServer(tries = 40) {
   return new Promise((resolve, reject) => {
@@ -46,14 +49,22 @@ function defaultPosition(w, h) {
   };
 }
 
+// 拔掉外接显示器之后，存下来的坐标可能落在任何一块屏幕之外。窗口会照常创建、
+// 照设置置顶，但用户看不见它 —— 只能靠托盘「显示/隐藏」碰运气捞回来。
+function isOnAnyDisplay(x, y, w, h) {
+  return screen.getAllDisplays().some(({ workArea: a }) => (
+    x + w > a.x && x < a.x + a.width && y + h > a.y && y < a.y + a.height
+  ));
+}
+
 function createWindow() {
   const cfg = config.load();
   const width = 340;
   const height = 520;
   const saved = cfg.window || {};
-  const pos = Number.isFinite(saved.x) && Number.isFinite(saved.y)
-    ? { x: saved.x, y: saved.y }
-    : defaultPosition(width, height);
+  const remembered = Number.isFinite(saved.x) && Number.isFinite(saved.y)
+    && isOnAnyDisplay(saved.x, saved.y, width, height);
+  const pos = remembered ? { x: saved.x, y: saved.y } : defaultPosition(width, height);
 
   win = new BrowserWindow({
     title: 'baoanlight',
@@ -109,6 +120,10 @@ function createWindow() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       if (!win || win.isDestroyed()) return;
+      // 程序化改尺寸（菜单打开、机器人变大）同样会发出 moved。用户没碰窗口，
+      // 只是点了一下齿轮，不该把被屏幕边界 clamp 过的位置记成「他喜欢的位置」——
+      // 否则在屏幕边缘每开一次菜单，机器人就往里挪一点，关掉也不回来。
+      if (Date.now() - boundsAppliedAt < 500) return;
       const [x, y] = win.getPosition();
       config.save({ window: { x, y } });
     }, 400);
@@ -262,6 +277,8 @@ ipcMain.on('window:size', (_e, { w, h, scale: s, anchor } = {}) => {
     width,
     height,
   });
+  // 记下来：这次移动是我们自己做的，别让 moved 处理器当成用户拖拽。
+  boundsAppliedAt = Date.now();
 });
 
 // Dragging is driven from the main process rather than a CSS drag region: a

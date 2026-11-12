@@ -363,7 +363,9 @@
   #menu .row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
   /* 行标签用 <label for>，屏幕阅读器才念得出「体型，组合框，标准」而不是光念
      「组合框」。样式跟着 span 走，两种写法看起来必须一样。 */
-  #menu .row > span, #menu .row > label { flex: none; width: 46px; opacity: .72; }
+  /* 56px 而不是 46px：11px 字号下「提示音风格」「履带配色」这类 5 字标签需要
+     约 55px，少了它就会折成两行，行高与相邻行对不齐。 */
+  #menu .row > span, #menu .row > label { flex: none; width: 56px; opacity: .72; }
   #menu input[type="range"] { flex: 1; min-width: 0; height: 16px; accent-color: var(--state); cursor: pointer; }
   /* 皮肤/场景旁的小色块：下拉里放不了图，用一块颜色让挑选更直观。 */
   #menu .swatch { flex: none; width: 12px; height: 12px; border-radius: 3px; background: #4a5058;
@@ -403,12 +405,19 @@
   #menu input[type="text"] { flex: 1; min-width: 0; height: 20px; padding: 0 7px; background: rgba(255,255,255,.08);
     color: #e9edf2; border: 0; border-radius: 6px; font: inherit; font-size: 10.5px; }
   #menu output { flex: none; width: 34px; text-align: right; font-variant-numeric: tabular-nums; opacity: .8; }
-  #m-order button { flex: none; width: 22px; height: 20px; padding: 0; background: rgba(255,255,255,.1);
+  /* 注意特异性：下面 `#menu button` 的 width:100% 和这些规则同特异性且定义在后，
+     不加 `#menu` 前缀就会被整行宽度盖掉 —— 排序箭头会撑满一行、把 ↑↓ 挤出容器，
+     「保存 / 应用 / 删除」会把旁边的输入框和下拉压成 0 宽。 */
+  #menu #m-order button { flex: none; width: 22px; height: 20px; padding: 0; background: rgba(255,255,255,.1);
     color: #e9edf2; border: 0; border-radius: 5px; font: inherit; font-size: 11px; cursor: pointer; }
-  #m-order button:disabled { opacity: .3; cursor: default; }
-  #m-order button:not(:disabled):hover { background: rgba(255,255,255,.22); }
+  #menu #m-order button:disabled { opacity: .3; cursor: default; }
+  #menu #m-order button:not(:disabled):hover { background: rgba(255,255,255,.22); }
   #m-order .row { justify-content: flex-start; }
   #m-order .row > span { flex: 1; }
+  /* 行内按钮只是输入框/下拉的陪衬，宽度随内容走，高度与同一行的控件对齐。 */
+  #menu #m-preset-save, #menu #m-preset-apply, #menu #m-preset-del {
+    flex: none; width: auto; min-width: 42px; height: 20px; margin-top: 0; padding: 0 8px; }
+  #menu #m-preset-save { font-size: 10.5px; }
   #m-export, #m-import { flex: 1; height: 22px; padding: 0; background: rgba(255,255,255,.1);
     color: #e9edf2; border: 0; border-radius: 6px; font: inherit; font-size: 11px; cursor: pointer; }
   #m-export:hover, #m-import:hover { background: rgba(255,255,255,.22); }
@@ -441,12 +450,20 @@
      规则把 display 一起夺回来，所以两个开关永远指向同一个事实。 */
   #disconnected[hidden] { display: none; }
   body.disconnected #disconnected { display: block; opacity: 1; }
-  #note { bottom: 20px; color: #9aa6b4; opacity: 0; }
+  /* 常驻提示里会出现可执行指令（「请执行：bao connect claude」）。nowrap + 省略号
+     会把最该看的那半句剪掉，所以允许折行、最多两行。 */
+  #note {
+    bottom: 20px; color: #9aa6b4; opacity: 0;
+    white-space: normal; text-align: center; line-height: 1.3;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  }
   #note.on { opacity: 1; }
   #note[hidden] { display: none; }
 
   @media (prefers-reduced-motion: reduce) {
     #bot, #bot * { animation: none !important; }
+    /* 低电量的持续闪烁也算动效：关掉它，靠颜色本身说明问题。 */
+    #fuel[data-level="low"] b { animation: none !important; }
   }
 </style>
 </head>
