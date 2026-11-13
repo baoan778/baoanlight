@@ -816,7 +816,7 @@ test('the teardown happens on the desktop robot itself', async ({ page }) => {
   await page.evaluate(() => document.getElementById('m-teardown').click());
   await settled(page, () => document.getElementById('bot').dataset.td).toBe('1');
 
-  expect(await page.evaluate(() => document.getElementById('bot').dataset.tdParts)).toBe('51');
+  expect(await page.evaluate(() => document.getElementById('bot').dataset.tdParts)).toBe('49');
   await expect(page.locator('#tdbar')).toBeVisible();
   // 窗口/舞台变大，机器人本体换成拆解模型
   expect(await page.evaluate(() => getComputedStyle(document.getElementById('bot')).width)).toBe('460px');

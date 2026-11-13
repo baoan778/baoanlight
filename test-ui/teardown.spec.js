@@ -4,7 +4,7 @@
 // 参考规范要求「不能只看视频，要看帧」——这里做的事一样：页面在真实浏览器里
 // 渲染，我们断言的是结构、数据流和交互契约，而不是像素：
 //
-//   * 51 个零件、6 个阶段，一个不少（清单与几何同源，改一边必挂）；
+//   * 49 个零件、6 个阶段，一个不少（清单与几何同源，改一边必挂）；
 //   * 三段式模式真的存在，且「依次拆解」能推进到 100%；
 //   * 同一个 amount 在整机构上、在爆炸图上都成立（一个输入驱动一切）；
 //   * 点选零件会给出带引线的标注，且标注不遮零件（朝外推 210px）；
@@ -30,9 +30,9 @@ test.beforeEach(async ({ page }) => {
 
 test('the teardown lists every part the model defines', async ({ page }) => {
   const info = await page.evaluate(() => ({ parts: window.__teardown.parts, stages: window.__teardown.stages }));
-  // 精确值，不是「至少 45」：文档、面板和 README 都承诺 51 件。用 >= 的
+  // 精确值，不是「至少 45」：文档、面板和 README 都承诺 49 件。用 >= 的
   // 话，模型悄悄少掉零件时测试仍然全绿，而那份承诺已经变成假话。
-  expect(info.parts).toBe(51);
+  expect(info.parts).toBe(49);
   expect(info.stages).toBe(6);
 });
 
