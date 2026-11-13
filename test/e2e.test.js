@@ -470,13 +470,18 @@ test('codex notify reports a finished turn as done, like the log watcher does', 
   assert.doesNotMatch(body, /return 'idle'/);
 });
 
-// 拆解台和主窗口共用 preload（通知、开终端、退出都在上面），所以它也需要
-// 和主窗口一样的导航守卫，否则就是同一栋楼里一扇没锁的侧门。
-test('the teardown window refuses to navigate away from the local server', () => {
+// 拆解必须是桌面上的同一台机器人：不开网页、不开第二个窗口。这条曾经
+// 反着写过（独立窗口 + 导航守卫），现在守的是新契约：菜单事件由场景接住，
+// 模型从 teardown/inline.js 装进同一个 scene。
+test('teardown happens inside the overlay, not in a second window', () => {
   const main = srcFile('overlay', 'main.js');
-  const at = main.indexOf('teardownWin.loadURL');
-  assert.ok(at > 0);
-  assert.match(main.slice(at, at + 1200), /will-navigate/);
+  const preload = srcFile('overlay', 'preload.js');
+  const scene = srcFile('overlay', 'robot3d.js');
+
+  assert.doesNotMatch(main, /teardown:open/, 'no separate teardown window');
+  assert.doesNotMatch(preload, /openTeardown/, 'and no IPC bridge for it');
+  assert.match(scene, /bao:teardown-open/, 'the scene owns the menu action');
+  assert.match(scene, /teardown\/inline\.js/, 'and mounts the real model in place');
 });
 
 // 开机自启在 Windows 上跑「机器人 + watch all」，macOS/Linux 曾经只跑机器人：

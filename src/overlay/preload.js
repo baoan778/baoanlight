@@ -48,6 +48,5 @@ contextBridge.exposeInMainWorld('bao', {
   trayStatus: (s) => ipcRenderer.send('tray:status', s),
   notify: (title, body) => ipcRenderer.send('notify:show', { title, body }),
   openTerminal: (cwd) => ipcRenderer.send('shell:open', { cwd }),
-  openTeardown: () => ipcRenderer.send('teardown:open'),
   quit: () => ipcRenderer.send('app:quit'),
 });

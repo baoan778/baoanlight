@@ -784,3 +784,79 @@ test('the two advisory lines are announced, not only drawn', async ({ page }) =>
     await expect(page.locator('#' + id)).toHaveAttribute('aria-live', 'polite');
   }
 });
+
+// ------------------------------------------------------------ system panel
+
+// CPU / 内存面板：数字来自 /sys，开关要真的生效，而且它是中性色 ——
+// 红黄绿已经被代理状态占满。
+test('the system panel shows real numbers and can be turned off', async ({ page }) => {
+  await expect(page.locator('#sys')).toBeVisible();
+  await expect(page.locator('#sys-cpu')).toHaveText(/^\d+%$/);
+  await expect(page.locator('#sys-mem')).toHaveText(/^\d+%$/);
+
+  await page.evaluate(() => {
+    const el = document.getElementById('m-sys');
+    el.checked = false;
+    el.dispatchEvent(new Event('change'));
+  });
+  await expect(page.locator('#sys')).toBeHidden();
+
+  await page.evaluate(() => {
+    const el = document.getElementById('m-sys');
+    el.checked = true;
+    el.dispatchEvent(new Event('change'));
+  });
+  await expect(page.locator('#sys')).toBeVisible();
+});
+
+// ------------------------------------------------------------ desktop teardown
+
+// 拆解必须在桌面上完成：同一个浮层、同一台机器人，不跳网页、不开第二个窗口。
+test('the teardown happens on the desktop robot itself', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('m-teardown').click());
+  await settled(page, () => document.getElementById('bot').dataset.td).toBe('1');
+
+  expect(await page.evaluate(() => document.getElementById('bot').dataset.tdParts)).toBe('51');
+  await expect(page.locator('#tdbar')).toBeVisible();
+  // 窗口/舞台变大，机器人本体换成拆解模型
+  expect(await page.evaluate(() => getComputedStyle(document.getElementById('bot')).width)).toBe('460px');
+
+  await page.locator('#tdbar button[data-td="explode"]').click();
+  await expect.poll(
+    () => page.evaluate(() => Number(document.getElementById('bot').dataset.tdAmount)),
+    { timeout: 8000 }
+  ).toBe(100);
+  await expect(page.locator('#td-pct')).toHaveText('100%');
+
+  // 悬停标签的接线：零件名和说明都写进控制条下方
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('bao:teardown-hover', {
+    detail: { label: '主壳体', note: '1.5 mm 冷轧钢板' },
+  })));
+  await expect(page.locator('#td-tag')).toContainText('主壳体');
+  await expect(page.locator('#td-tag')).toContainText('冷轧钢板');
+
+  // Esc 收起：回到普通机器人，控制条消失
+  await page.keyboard.press('Escape');
+  await settled(page, () => document.getElementById('bot').dataset.td).toBe('0');
+  await expect(page.locator('#tdbar')).toBeHidden();
+  expect(await page.evaluate(() => getComputedStyle(document.getElementById('bot')).width)).toBe('300px');
+});
+
+// 广告牌曾经挂在会被体型缩放的机器人组上：默认体型顶边正好贴边，Q 版直接
+// 出画。现在它挂在场景里，任何一种体型下四角都必须留在画面内。
+test('the scoreboard stays inside the frame in every body type', async ({ page }) => {
+  await expect.poll(() => page.evaluate(() => Number(document.getElementById('bot').dataset.signEdge)))
+    .toBeLessThan(0.98);
+
+  for (const body of ['Q版', '修长', '标准']) {
+    await page.evaluate((b) => {
+      const s = document.getElementById('m-body');
+      s.value = b;
+      s.dispatchEvent(new Event('change'));
+    }, body);
+    await expect.poll(
+      () => page.evaluate(() => Number(document.getElementById('bot').dataset.signEdge)),
+      { timeout: 4000 }
+    ).toBeLessThan(0.98);
+  }
+});

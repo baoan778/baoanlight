@@ -160,6 +160,18 @@ test('the overlay page has no inline script left to bypass the CSP', () => {
   assert.equal(inline.length, 0, `inline <script> found: ${inline.map((m) => m[0]).join(', ')}`);
 });
 
+// 系统面板走独立的读接口：它和代理状态无关，也不该混进 SSE 状态帧。
+test('the system panel endpoint is readable and tells the truth', async () => {
+  const res = await raw({ path: '/sys' });
+  assert.equal(res.status, 200);
+  const s = JSON.parse(res.body);
+  assert.ok(s.cpu >= 0 && s.cpu <= 100, `cpu out of range: ${s.cpu}`);
+  assert.ok(s.mem.total > 0, 'total memory is known');
+  assert.ok(s.mem.used >= 0 && s.mem.used <= s.mem.total);
+  assert.ok(s.mem.percent >= 0 && s.mem.percent <= 100);
+  assert.ok(s.cores >= 1);
+});
+
 // 预检请求不带 token，也不可能带：把它算成写操作会让每个跨源 CORS 预检都
 // 401，而 server 里那套 CORS 头永远没有机会发出去。
 test('a preflight is answered, not rejected for a missing token', async () => {

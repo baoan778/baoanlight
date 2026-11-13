@@ -2002,20 +2002,23 @@ if (host && renderer) {
   }
 
   // ---- 今日时长广告牌：一块带金边、时钟图标、辉光的立式招牌 -----------------
-  // 招牌的两条尺寸约束：
-  //   1. 屏幕上要读得清。它只有 1.15 世界单位宽（约 85px），却要放「DeepSeek Harness
-  //      12 时 30 分」这么长一句 —— 尺寸和清晰度都得给够；
-  //   2. 不能出画。相机在 300px 宽的画面里横向视野约 4.1u（半宽 2.07u），
-  //      mini 模式只有 1.45u，所以中心 + 半宽必须留在 1.55u 以内。
-  // 一块挂在机器人**右上方空处**的牌子，不压在它身上：
-  //   左边缘 = 1.3 - 0.75 = 0.55u，正好在双筒右沿（0.5）之外 —— 眼睛和头顶
-  //   那根细天线都在它左边，不会被盖住；
-  //   右边缘 = 2.05u，仍在相机横向视野半宽（2.07u）之内，不出画；
-  //   底边 = 3.60 - 0.225 = 3.375u，高过双筒顶（约 3.05）与装饰（约 3.4）。
+  // 招牌的位置必须按**相机画面**算，而不是按机器人体型算。
+  //
+  // 原来它挂在 `robot` 组上，而体型（Q版/修长）会缩放这个组：Q版 x=1.14、
+  // y=0.86，牌子的中心和尺寸一起被放大 —— 右边缘被推出画面，顶边更是在默认
+  // 体型下就已经贴到 y=1.00（正好被裁掉一条边）。「把牌子做大」于是变成
+  // 「换个体型就出画」。
+  //
+  // 现在它挂在场景上（不跟随机身缩放、转身、点头），位置取到画面内仍有余量
+  // 的一组值。按当前相机（fov 26，340×330）投影四个角：
+  //   右 0.85 / 左 -0.85 / 上 0.86 / 下 0.64（NDC，±1 为画面边缘）
+  // 弹跳动画再放大 10% 也只有 0.89，两边都留得住。
+  //   左边缘 = 1.18 - 0.75 = 0.43u，在双筒右沿（0.5）之外，不压眼睛；
+  //   底边 = 3.30 - 0.225 = 3.075u，高过双筒顶（约 3.05）与装饰（约 3.4）之上。
   const SIGN_W = 1.5;
   const SIGN_H = 0.45;
-  const SIGN_X = 1.3;
-  const SIGN_Y = 3.60;
+  const SIGN_X = 1.18;
+  const SIGN_Y = 3.30;
   // 2 倍超采样：170% 缩放 + HiDPI 时这块招牌占约 260 设备像素，320px 的纹理
   // 只够 1:1，稍微一放大就靠插值撑开，字边全是毛的。坐标仍然按 320×96 的旧
   // 逻辑写，靠 drawSign 里的 setTransform 整体放大，布局一个像素都不用动。
@@ -2039,7 +2042,7 @@ if (host && renderer) {
   }));
   signGlow.scale.set(SIGN_W + 0.5, SIGN_H + 0.32, 1);
   signGlow.position.copy(sign.position);
-  robot.add(signGlow);
+  scene.add(signGlow);
 
   // 位置和尺寸都不再跟着窗口模式变：牌子挂在机器人右上方那片空处，左边缘
   // 落在双筒右沿（0.5）之外、头顶之上，所以既不压眼睛也不压那根细天线。
@@ -2538,7 +2541,7 @@ if (host && renderer) {
 
   // A click on the machine is a poke, not a command: it looks up, blinks and
   // hops once, then goes back to whatever it was doing.
-  window.addEventListener('bao:poke', () => { pokeAt = clock.t; });
+  window.addEventListener('bao:poke', () => { if (tdOpen) return; pokeAt = clock.t; });
   // A double click is a greeting: both arms come up and wave for two seconds,
   // which is the only interaction here that is purely for the human.
   window.addEventListener('bao:greet', () => { greetAt = clock.t; });
@@ -2565,6 +2568,61 @@ if (host && renderer) {
 
   const pose = { bob: 0, roll: 0, yaw: 0, lean: 0, headYaw: 0, headPitch: 0, eye: 1, focus: 1 };
 
+  // ---------------------------------------------------------- desktop teardown
+  // 菜单里的「3D 拆解」不再打开网页或第二个窗口：它把桌面上的这台机器人
+  // 换成可拆解的零件模型，在原地爆炸、装回。模块按需加载，落地页那份渲染
+  // 代码不会因为这段功能多下载一个文件。
+  let td = null;
+  let tdOpen = false;
+  let tdLoading = false;
+  const tdHide = [robot, sign, signGlow];
+
+  const tdEmit = (s) => {
+    host.dataset.td = s.on ? '1' : '0';
+    host.dataset.tdAmount = String(Math.round(s.amount * 100));
+    host.dataset.tdParts = String(s.parts);
+    window.dispatchEvent(new CustomEvent('bao:teardown-state', { detail: s }));
+  };
+  const tdHover = (part) => {
+    window.dispatchEvent(new CustomEvent('bao:teardown-hover', { detail: part }));
+  };
+
+  async function openTeardown() {
+    if (tdOpen || tdLoading) return;
+    tdLoading = true;
+    try {
+      const mod = await import('./teardown/inline.js');
+      td = td || mod.createInlineTeardown({
+        scene, camera, hide: tdHide, onState: tdEmit, onHover: tdHover,
+      });
+      td.open();
+      tdOpen = true;
+    } catch (err) {
+      // 模型加载失败也必须说出来：菜单点下去什么都不发生，是最难排查的一种。
+      const message = String((err && err.message) || err);
+      tdHover({ label: '拆解模型加载失败', note: message });
+      window.dispatchEvent(new CustomEvent('bao:teardown-failed', { detail: { message } }));
+    } finally {
+      tdLoading = false;
+    }
+  }
+
+  function closeTeardown() {
+    if (!tdOpen || !td) return;
+    td.close();
+    tdOpen = false;
+    tdHover(null);
+  }
+
+  window.addEventListener('bao:teardown-open', openTeardown);
+  window.addEventListener('bao:teardown-close', closeTeardown);
+  window.addEventListener('bao:teardown-mode', (e) => {
+    if (td && td.isOpen()) td.setMode(e.detail && e.detail.mode);
+  });
+  window.addEventListener('bao:teardown-amount', (e) => {
+    if (td && td.isOpen()) td.setAmount(e.detail && e.detail.amount);
+  });
+
   function damp(current, target, rate, dt) {
     return current + (target - current) * (1 - Math.exp(-rate * dt));
   }
@@ -2582,6 +2640,17 @@ if (host && renderer) {
   // 这里，免得下一个人再来试一次。
   function update(dt) {
     const t = (clock.t += dt);
+
+    // 拆解模式接管整个画面：普通机器人的姿态、灯效、广告牌都停在这一帧，
+    // 算力留给 51 个零件和相机。关闭时相机在模块里复位。
+    if (tdOpen && td) {
+      td.update(dt, pointer);
+      const tdState = td.state();
+      host.dataset.tdMode = tdState.mode;
+      host.dataset.tdTarget = String(Math.round(tdState.target * 100));
+      return;
+    }
+
     state = body.dataset.state || 'offline';
     dead = body.classList.contains('disconnected');
 
@@ -3301,6 +3370,21 @@ if (host && renderer) {
     signGlow.opacity = damp(signGlow.opacity, signLabel ? 0.35 + Math.sin(t * 3.2) * 0.15 : 0, 8, dt);
     signGlow.position.set(sign.position.x, sign.position.y - 0.02, sign.position.z);
 
+    // 给测试与排查用的观测点：招牌四角在画面里的最大 NDC 绝对值。
+    // > 1 就是出画；这条曾经在 Q 版体型下真实发生过（牌子挂在会被缩放的
+    // 机器人组上），而现在牌子在场景里，位置不该再随体型变化。
+    let edge = 0;
+    const hw = (SIGN_W * popScale) / 2;
+    const hh = (SIGN_H * popScale) / 2;
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        const p = new THREE.Vector3(
+          sign.position.x + sx * hw, sign.position.y + sy * hh, sign.position.z
+        ).project(camera);
+        edge = Math.max(edge, Math.abs(p.x), Math.abs(p.y));
+      }
+    }
+    host.dataset.signEdge = edge.toFixed(3);
   }
 
   function updateMotionCues(dt, yawDelta, crazy, busy, waiting, error) {
@@ -3536,7 +3620,8 @@ if (host && renderer) {
     // reduce-motion 必须排在最前：系统说「少动一点」时，忙碌状态下也不该
     // 以 60fps 继续跑（README 与文档承诺的是整场降到 8fps）。原来的顺序让
     // active 先命中，8fps 分支在 busy/waiting/error 时永远到不了。
-    const active = state === 'busy' || state === 'waiting' || state === 'error';
+    // 拆解模式按 60fps 走：拖滑块和旋转相机都需要跟手，它不是「静止的待机」。
+    const active = state === 'busy' || state === 'waiting' || state === 'error' || tdOpen;
     const fps = reduceMotion ? 8
       : active ? 60
         : (state === 'offline' && !idlePlaying) ? 15 : 30;

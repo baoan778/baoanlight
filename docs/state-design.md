@@ -155,9 +155,13 @@
 
 ## 7. 验收清单
 
-### 7.1 自动化（`npx playwright test`，64 条全绿）
+### 7.1 自动化（`npx playwright test`，67 条全绿）
 
-3D 拆解台（2026-11-12，`test-ui/teardown.spec.js`，页面在 `/teardown/`）：
+桌面拆解（2026-11-13，`test-ui/overlay.spec.js` 的 `the teardown happens on the desktop robot itself`）：
+同一个浮层里换成可拆解的 51 件模型，窗口临时变大、相机自动后退，`Esc` 收起；
+独立的 `/teardown/` 页面仍然保留，只用于录制/演示，不再是菜单入口。
+
+独立拆解页（2026-11-12，`test-ui/teardown.spec.js`，页面在 `/teardown/`）：
 
 - 零件清单与阶段数逐一对账（51 件 / 6 阶段，几何与面板同源）。
 - 三段式（整机 → 依次拆解 → 全部零件）与滑块驱动同一个 `amount` 输入。

@@ -25,6 +25,10 @@
 //   bao:bubble / bao:nameplate / bao:brightness / bao:scale —— { text } / { text } / { brightness } / { scale }
 //   bao:greet / bao:poke / bao:drag / bao:done / bao:crazy / bao:comfort / bao:companion / bao:milestone
 //   bao:idle        { on, freq }              bao:ccswitch  { agent, model }
+//   bao:teardown-open / bao:teardown-close
+//   bao:teardown-mode   { mode }              bao:teardown-amount { amount }
+//   bao:teardown-state  { on, amount, mode, stage, stageLabel, parts }
+//   bao:teardown-hover  { label, note }       bao:teardown-failed { message }
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -38,7 +42,10 @@ const robot = read('robot3d.js');
 
 const uniq = (xs) => [...new Set(xs)].sort();
 
-const emitted = uniq([...ui.matchAll(/new CustomEvent\('(bao:[^']+)'/g)].map((m) => m[1]));
+// 两边都会发事件：设置面板（ui）发皮肤/尺寸/拆解控制，场景（robot3d）发
+// 拆解进度与悬停标注。契约是「发的人 ↔ 听的人」，不是「只有 ui 能发」。
+const emitted = uniq([ui, robot].flatMap((src) =>
+  [...src.matchAll(/new CustomEvent\('(bao:[^']+)'/g)].map((m) => m[1])));
 const listensIn = (src) => uniq([...src.matchAll(/addEventListener\('(bao:[^']+)'/g)].map((m) => m[1]));
 const listened = uniq([...listensIn(robot), ...listensIn(ui)]);
 

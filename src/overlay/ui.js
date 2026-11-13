@@ -103,8 +103,20 @@ import {
   const note    = document.getElementById('note');
   const liveEl  = document.getElementById('live');
   const slotEls = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => document.getElementById('slot' + i));
+  const tdbar   = document.getElementById('tdbar');
+  const tdRange = document.getElementById('td-range');
+  const tdPct   = document.getElementById('td-pct');
+  const tdTag   = document.getElementById('td-tag');
+  const sysEl   = document.getElementById('sys');
+  const sysCpu  = document.getElementById('sys-cpu');
+  const sysMem  = document.getElementById('sys-mem');
+  const sysCpuBar = document.getElementById('sys-cpu-bar');
+  const sysMemBar = document.getElementById('sys-mem-bar');
 
-  let cfg = { showLabels: true, theme: 'full', collapsed: false, scale: 1, clickThrough: true, sound: false };
+  let cfg = {
+    showLabels: true, theme: 'full', collapsed: false, scale: 1,
+    clickThrough: true, sound: false, showSys: true,
+  };
   let collapsed = false;
   let scale = 1;
   let menuOpen = false;
@@ -156,6 +168,8 @@ import {
       if (labels && labels.children.length) boxes.push(labels.getBoundingClientRect());
       if (!menu.hidden) boxes.push(menu.getBoundingClientRect());
       if (!sizer.hidden) boxes.push(sizer.getBoundingClientRect());
+      // 拆解控制条同样要进热区：它是拆解模式下唯一的操作入口。
+      if (!tdbar.hidden) boxes.push(tdbar.getBoundingClientRect());
       // 状态速览面板也要进热区：不然它在点击穿透区里，六个按钮全点不了。
       const pv = document.getElementById('preview');
       if (pv && !pv.hidden) boxes.push(pv.getBoundingClientRect());
@@ -1674,6 +1688,46 @@ import {
     if (lastSnap) render(lastSnap);
   });
 
+  // ---- 本机资源面板 ------------------------------------------------------
+  // 和代理状态无关：每 2 秒单独取一次 /sys。混进 SSE 快照会让「CPU 占用」
+  // 变成「代理状态变化」的副产品 —— 忙碌时每秒好几帧，闲置时一动不动。
+  const fmtGB = (bytes) => `${(Number(bytes || 0) / 1073741824).toFixed(1)}G`;
+  function renderSys(data) {
+    const on = cfg.showSys !== false && !!data;
+    const was = sysEl.hidden;
+    sysEl.hidden = !on;
+    if (!on) {
+      if (was !== sysEl.hidden) fit();
+      return;
+    }
+    const cpu = Math.max(0, Math.min(100, Math.round(data.cpu || 0)));
+    const mem = data.mem || {};
+    const mp = Math.max(0, Math.min(100, Math.round(mem.percent || 0)));
+    sysCpu.textContent = `${cpu}%`;
+    sysMem.textContent = `${mp}%`;
+    sysCpuBar.style.width = `${cpu}%`;
+    sysMemBar.style.width = `${mp}%`;
+    const memTitle = `已用 ${fmtGB(mem.used)} / 共 ${fmtGB(mem.total)}`;
+    sysMem.title = memTitle;
+    sysMem.parentElement.title = memTitle;
+    if (was !== sysEl.hidden) fit();
+  }
+  async function pollSys() {
+    if (cfg.showSys === false || document.hidden) return;
+    try {
+      const base = inElectron ? bridge.serverUrl : location.origin;
+      const r = await fetch(`${base}/sys`, { cache: 'no-store' });
+      if (r.ok) renderSys(await r.json());
+    } catch { /* 读不到就保留上一次读数，不把面板清空 */ }
+  }
+  setInterval(pollSys, 2000);
+  pollSys();
+  document.getElementById('m-sys').addEventListener('change', (e) => {
+    cfg.showSys = e.target.checked;
+    if (inElectron) saveConfig({ showSys: cfg.showSys });
+    if (cfg.showSys) pollSys(); else renderSys(null);
+  });
+
   // 一键重置外观：只恢复外观与动作，不碰尺寸、位置、声音和系统开关。
   const LOOK_DEFAULTS = {
     skin: '做旧黄', eyestyle: '默认黑', eyeshape: '圆', trackstyle: '黑', tracktype: '圆角矩形',
@@ -1807,7 +1861,10 @@ import {
   // 关掉浮层。Esc 关菜单/尺寸条，Ctrl/⌘+, 开设置（和大多数应用的偏好设置一致）。
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      if (menuOpen) { e.preventDefault(); setMenu(false); }
+      if (document.body.classList.contains('teardown')) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('bao:teardown-close'));
+      } else if (menuOpen) { e.preventDefault(); setMenu(false); }
       else if (sizerOpen) { e.preventDefault(); setSizer(false); }
       return;
     }
@@ -1879,11 +1936,52 @@ import {
   });
   document.getElementById('m-quit').onclick = () => (inElectron ? bridge.quit() : window.close());
 
-  // 3D 拆解台：Electron 里开一个独立的应用窗口（不是系统浏览器标签），
-  // 纯浏览器模式（bao start --browser）下退回新标签。
+  // 3D 拆解：不再开网页/第二个窗口，直接在桌面上把这台机器人拆开。
+  // 真正的模型与相机在 robot3d.js 里，这里只负责开关和控制条。
   document.getElementById('m-teardown').onclick = () => {
-    if (inElectron && bridge.openTeardown) bridge.openTeardown();
-    else window.open(`${location.origin}/teardown/`, '_blank', 'noopener');
+    setMenu(false);
+    window.dispatchEvent(new CustomEvent('bao:teardown-open'));
+  };
+
+  const tdButtons = [...tdbar.querySelectorAll('button[data-td]')];
+  function syncTeardown(s) {
+    const on = !!(s && s.on);
+    document.body.classList.toggle('teardown', on);
+    tdbar.hidden = !on;
+    if (!on) tdTag.textContent = '';
+    if (on && s) {
+      const pct = Math.round((s.amount || 0) * 100);
+      const raw = String(pct * 10);
+      if (tdRange.value !== raw) tdRange.value = raw;
+      tdPct.textContent = `${pct}%`;
+      for (const b of tdButtons) b.setAttribute('aria-pressed', String(b.dataset.td === s.mode));
+    }
+    fit();
+    if (lastSnap) render(lastSnap);
+  }
+  window.addEventListener('bao:teardown-state', (e) => syncTeardown(e.detail));
+  window.addEventListener('bao:teardown-failed', (e) => {
+    const msg = (e.detail && e.detail.message) || '未知错误';
+    flashNote(`拆解模型加载失败：${String(msg).slice(0, 60)}`);
+  });
+  window.addEventListener('bao:teardown-hover', (e) => {
+    const d = e.detail;
+    tdTag.textContent = '';
+    if (!d) return;
+    const b = document.createElement('b');
+    b.textContent = d.label || '';
+    const span = document.createElement('span');
+    span.textContent = d.note || '';
+    tdTag.append(b, span);
+  });
+  for (const b of tdButtons) {
+    b.onclick = () => window.dispatchEvent(new CustomEvent('bao:teardown-mode', { detail: { mode: b.dataset.td } }));
+  }
+  tdRange.addEventListener('input', () => {
+    window.dispatchEvent(new CustomEvent('bao:teardown-amount', { detail: { amount: Number(tdRange.value) / 1000 } }));
+  });
+  document.getElementById('td-close').onclick = () => {
+    window.dispatchEvent(new CustomEvent('bao:teardown-close'));
   };
 
   // ---------------------------------------------------------------- drag
@@ -2001,6 +2099,8 @@ import {
       document.getElementById('m-labels').checked = cfg.showLabels !== false;
       document.getElementById('m-offline').checked = cfg.showOffline !== false;
       document.getElementById('m-model').checked = cfg.showModel !== false;
+      document.getElementById('m-sys').checked = cfg.showSys !== false;
+      if (cfg.showSys === false) renderSys(null);
       maxrowsSel.value = String(Math.max(2, Math.min(8, Number(cfg.maxRows) || 4)));
       renderPresetList();
       nameplateInput.value = cfg.nameplate || '';

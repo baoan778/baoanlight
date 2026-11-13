@@ -7,6 +7,7 @@ const config = require('./config');
 const presence = require('./presence');
 const ccSwitch = require('./adapters/ccswitch');
 const selfcheck = require('./selfcheck');
+const sysinfo = require('./sysinfo');
 const auth = require('./auth');
 
 const OVERLAY_DIR = path.join(__dirname, 'overlay');
@@ -133,6 +134,11 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
       if (p === '/state' && req.method === 'GET') return send(res, 200, frame());
 
       if (p === '/selfcheck') return send(res, 200, currentSelfcheck());
+
+      // 本机 CPU / 内存。面板每 2 秒取一次，所以它是一条独立通道 —— 混进
+      // SSE 快照会让「资源占用」变成「代理状态变化」的副产品，忙碌时每秒
+      // 推好几帧，闲置时又完全不更新。
+      if (p === '/sys') return send(res, 200, sysinfo.sample());
 
       if (p === '/state' && req.method === 'POST') {
         const raw = await readBody(req);
@@ -279,6 +285,8 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
       const bound = server.address().port;
       try { fs.writeFileSync(config.PORT_FILE, String(bound)); } catch {}
       presence.claudeRunning().catch(() => {});
+      // 先采一次 CPU：第一次采样没有差值，早点垫上，面板打开时就有数字。
+      sysinfo.sample();
       // token 在监听之后才保证存在，钩子和 CLI 都从这里读。
       resolve({ server, store, port: bound, token: auth.token() });
     });

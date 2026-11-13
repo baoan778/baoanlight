@@ -308,40 +308,6 @@ ipcMain.on('window:drag-end', () => {
 
 ipcMain.on('app:quit', () => app.quit());
 
-// 3D 拆解台：从设置菜单打开一个**独立的普通窗口**（不是浏览器标签，也不是那个
-// 340px 的透明小窗 —— 拆解要整屏看零件和标注）。窗口是常规可缩放窗口，关掉就
-// 释放，下次再开新的。
-let teardownWin = null;
-ipcMain.on('teardown:open', () => {
-  if (teardownWin && !teardownWin.isDestroyed()) {
-    teardownWin.focus();
-    return;
-  }
-  teardownWin = new BrowserWindow({
-    width: 1440, height: 920,
-    minWidth: 900, minHeight: 620,
-    title: 'baoanlight · 拆解台',
-    backgroundColor: '#f4f1ea',
-    autoHideMenuBar: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      additionalArguments: [`--bao-port=${PORT}`],
-    },
-  });
-  teardownWin.loadURL(URL_BASE + '/teardown/');
-  teardownWin.on('closed', () => { teardownWin = null; });
-  teardownWin.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
-  // 拆解台和主窗口共用同一份 preload（通知、开终端、退出都挂在它上面）。
-  // 既然能力跟着渲染进程走，那么「这个窗口停在哪里」也是一条安全边界：
-  // 主窗口有这个守卫，拆解台没有，等于开了一扇没锁的侧门。
-  teardownWin.webContents.on('will-navigate', (e, url) => {
-    if (!url.startsWith(URL_BASE)) e.preventDefault();
-  });
-});
-
 // 原生系统通知：某个软件需要你 / 出错 / 额度见底时弹一次。
 ipcMain.on('notify:show', (_e, { title, body } = {}) => {
   if (!title) return;

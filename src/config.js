@@ -27,6 +27,9 @@ const DEFAULTS = {
   showOffline: true,
   showModel: true,
   maxRows: 4,
+  // 机器人下方那块 CPU / 内存小面板：默认开着，它是「这台机器现在忙不忙」
+  // 的旁证，和代理状态是两回事（所以用中性色，不占红黄绿）。
+  showSys: true,
   // Named look presets: { "name": { skin, eyestyle, scene, ... } }.
   presets: {},
   // Audible cue for the two states that want a human. Off by default: a desktop

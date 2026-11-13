@@ -468,6 +468,67 @@
   #note.on { opacity: 1; }
   #note[hidden] { display: none; }
 
+  /* ---------- system panel ----------
+     CPU / 内存是「这台电脑忙不忙」，和代理状态是两回事，所以它只用中性色：
+     红黄绿已经被状态占满，借来画占用率就等于让面板替机器人说谎。 */
+  #sys {
+    width: calc(100% - 20px);
+    display: grid; gap: 4px;
+    padding: 7px 10px;
+    border-radius: 10px;
+    background: rgba(16,18,22,.78);
+    box-shadow: 0 0 0 1px rgba(255,255,255,.07), 0 10px 22px -16px #000;
+    font-size: 10px; color: #aeb6c0;
+  }
+  #sys[hidden] { display: none; }
+  #sys .srow { display: flex; align-items: center; gap: 7px; }
+  #sys .srow > span:first-child { flex: none; width: 30px; opacity: .8; }
+  #sys .sbar { flex: 1; min-width: 0; height: 4px; border-radius: 999px; background: #33383f; overflow: hidden; }
+  #sys .sbar u { display: block; height: 100%; width: 0; background: #93a7bb; transition: width .45s ease; }
+  #sys b { flex: none; width: 62px; text-align: right; font-weight: 600; color: #dfe5ec; font-variant-numeric: tabular-nums; }
+
+  /* ---------- desktop teardown ----------
+     拆解不是在网页里看模型，而是在桌面上把这台机器人本身拆开。窗口因此
+     临时变大（相机同时后退，零件不会被裁掉），关闭后回到原来的尺寸与机位。 */
+  body.teardown { --stage-w: 500px; --glow-pad: 14px; }
+  body.teardown #bot { width: 460px; transition: none; }
+  body.teardown #fuel,
+  body.teardown #labels,
+  body.teardown #sys { display: none; }
+  /* 拆解时工具栏会正好压在飞散的零件上（光标就在机器人身上，它必然出现） */
+  body.teardown #bar { display: none; }
+
+  #tdbar {
+    width: calc(100% - 16px);
+    display: flex; flex-direction: column; gap: 6px;
+    padding: 8px 10px 7px;
+    border-radius: 12px;
+    background: rgba(16,18,22,.96);
+    box-shadow: 0 0 0 1px rgba(255,255,255,.10), 0 14px 30px -16px #000;
+  }
+  #tdbar[hidden] { display: none; }
+  #tdbar .tdrow { display: flex; align-items: center; gap: 6px; }
+  #tdbar button {
+    flex: 1; min-width: 0; padding: 5px 0; border: 0; border-radius: 999px;
+    background: rgba(255,255,255,.07); color: #dfe6ef;
+    font: inherit; font-size: 10.5px; cursor: pointer; white-space: nowrap;
+  }
+  #tdbar button:hover { background: rgba(255,255,255,.16); color: #fff; }
+  #tdbar button[aria-pressed="true"] {
+    background: rgba(106,165,255,.26);
+    box-shadow: inset 0 0 0 1px rgba(106,165,255,.55);
+    color: #eaf2ff;
+  }
+  #tdbar #td-close { flex: none; width: 26px; background: transparent; color: #9aa6b4; font-size: 12px; }
+  #tdbar #td-close:hover { background: rgba(208,52,44,.85); color: #fff; }
+  #tdbar input[type="range"] { flex: 1; min-width: 0; height: 18px; accent-color: #6aa5ff; cursor: ew-resize; }
+  #td-pct { flex: none; width: 38px; text-align: right; font-size: 10.5px; font-variant-numeric: tabular-nums; opacity: .85; }
+  #td-tag {
+    min-height: 14px; font-size: 10.5px; color: #cfd6df;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
+  }
+  #td-tag b { color: #fff; font-weight: 600; margin-right: 6px; }
+
   @media (prefers-reduced-motion: reduce) {
     #bot, #bot * { animation: none !important; }
     /* 低电量的持续闪烁也算动效：关掉它，靠颜色本身说明问题。 */
@@ -607,6 +668,7 @@
       <label class="row"><input id="m-labels" type="checkbox" checked /> 软件列表</label>
       <label class="row"><input id="m-offline" type="checkbox" checked /> 显示未运行软件</label>
       <label class="row"><input id="m-model" type="checkbox" checked /> 显示模型/供应商</label>
+      <label class="row"><input id="m-sys" type="checkbox" checked /> 系统占用（CPU/内存）</label>
       <div class="row">
         <label for="m-maxrows">列表行数</label>
         <select id="m-maxrows"></select>
@@ -651,7 +713,7 @@
         <button id="m-preset-del">删除</button>
       </div>
       <div class="hint">快捷键：Ctrl/⌘+Shift+= 放大，- 缩小，0 重置。</div>
-      <button id="m-teardown">打开 3D 拆解台</button>
+      <button id="m-teardown">在桌面上拆解机器人</button>
       <button id="m-quit" class="danger">退出</button>
     </details>
     <div class="title">今日战绩</div>
@@ -707,6 +769,31 @@
     </div>
 
     <div id="fuel" title=""><b></b></div>
+  </div>
+
+  <!-- 本机资源：和代理状态分开表达，颜色也分开（见上方 #sys 注释）。 -->
+  <div id="sys" hidden>
+    <div class="srow" title="CPU 使用率">
+      <span>CPU</span><span class="sbar"><u id="sys-cpu-bar"></u></span><b id="sys-cpu">—</b>
+    </div>
+    <div class="srow" title="内存占用">
+      <span>内存</span><span class="sbar"><u id="sys-mem-bar"></u></span><b id="sys-mem">—</b>
+    </div>
+  </div>
+
+  <!-- 桌面拆解控制条：只在拆解模式出现，整机 / 依次拆解 / 全部零件 + 滑块。 -->
+  <div id="tdbar" hidden>
+    <div class="tdrow">
+      <button type="button" data-td="whole">整机</button>
+      <button type="button" data-td="steps">依次拆解</button>
+      <button type="button" data-td="explode">全部零件</button>
+      <button type="button" id="td-close" title="收起拆解">✕</button>
+    </div>
+    <div class="tdrow">
+      <input id="td-range" type="range" min="0" max="1000" value="0" aria-label="拆解程度" />
+      <span id="td-pct">0%</span>
+    </div>
+    <div id="td-tag"></div>
   </div>
 
   <div id="labels"></div>
