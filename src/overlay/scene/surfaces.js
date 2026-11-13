@@ -257,3 +257,69 @@ export function paint(base, { seed = 1, amount = 1, repeat = [1, 1] } = {}) {
   tex.repeat.set(repeat[0], repeat[1]);
   return tex;
 }
+
+// 光环底圈纹理：一圈径向亮带，band 是亮带中心（0..1 归一化半径）。
+export function ringTexture(band) {
+  return canvasTexture(256, 256, (g, w, h) => {
+    const grad = g.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
+    grad.addColorStop(0, 'rgba(255,255,255,0)');
+    grad.addColorStop(Math.max(0.05, band - 0.24), 'rgba(255,255,255,0.05)');
+    grad.addColorStop(band, 'rgba(255,255,255,0.62)');
+    grad.addColorStop(Math.min(0.98, band + 0.13), 'rgba(255,255,255,0.14)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, w, h);
+  });
+}
+
+// 光环样式纹理：环形 / 圆形 / 星形 / 无（透明）。
+export function haloTexture(style) {
+  return canvasTexture(256, 256, (g, w, h) => {
+    const cx = w / 2, cy = h / 2;
+    if (style === '圆形') {
+      const grad = g.createRadialGradient(cx, cy, 0, cx, cy, w / 2);
+      grad.addColorStop(0, 'rgba(255,255,255,0.7)');
+      grad.addColorStop(0.45, 'rgba(255,255,255,0.3)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = grad; g.fillRect(0, 0, w, h);
+    } else if (style === '星形') {
+      g.translate(cx, cy);
+      const spikes = 8, outerR = w * 0.45, innerR = w * 0.12;
+      g.fillStyle = 'rgba(255,255,255,0.5)';
+      g.beginPath();
+      for (let i = 0; i < spikes * 2; i++) {
+        const r = i % 2 === 0 ? outerR : innerR;
+        const a = (i / (spikes * 2)) * Math.PI * 2 - Math.PI / 2;
+        const px = Math.cos(a) * r, py = Math.sin(a) * r;
+        if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
+      }
+      g.closePath(); g.fill();
+    } else if (style === '无') {
+      g.clearRect(0, 0, w, h);
+    } else {
+      const grad = g.createRadialGradient(cx, cy, 0, cx, cy, w / 2);
+      grad.addColorStop(0, 'rgba(255,255,255,0)');
+      grad.addColorStop(0.38, 'rgba(255,255,255,0.05)');
+      grad.addColorStop(0.62, 'rgba(255,255,255,0.62)');
+      grad.addColorStop(0.75, 'rgba(255,255,255,0.14)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = grad; g.fillRect(0, 0, w, h);
+    }
+  });
+}
+
+// 生气火焰：error 时头顶的火苗形状，线性渐变从黄到透明红。
+export function fireTexture() {
+  return canvasTexture(64, 96, (g, w, h) => {
+    const grad = g.createLinearGradient(0, h, 0, 0);
+    grad.addColorStop(0, '#ffc800');
+    grad.addColorStop(0.55, '#ff6400');
+    grad.addColorStop(1, 'rgba(200,0,0,0)');
+    g.fillStyle = grad;
+    g.beginPath();
+    g.moveTo(w / 2, 0);
+    g.quadraticCurveTo(w * 0.96, h * 0.55, w / 2, h);
+    g.quadraticCurveTo(w * 0.04, h * 0.55, w / 2, 0);
+    g.fill();
+  });
+}

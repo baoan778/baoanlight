@@ -777,6 +777,24 @@ test('the hidden toolbar reveals itself when it takes focus', async ({ page }) =
   expect(await page.evaluate(() => getComputedStyle(document.getElementById('bar')).opacity)).toBe('1');
 });
 
+// 纯键盘走查：不靠鼠标也能依序到达四个工具栏按钮，而且每聚焦一个，工具栏就现身。
+test('keyboard users can reach every toolbar control in order', async ({ page }) => {
+  const reached = new Set();
+  for (let i = 0; i < 8; i++) {
+    await page.keyboard.press('Tab');
+    const id = await page.evaluate(() => document.activeElement && document.activeElement.id);
+    if (!id) continue;
+    reached.add(id);
+    if (['btn-menu', 'btn-theme', 'btn-collapse', 'btn-quit'].includes(id)) {
+      const opacity = await page.evaluate(() => getComputedStyle(document.getElementById('bar')).opacity);
+      expect(Number(opacity), `toolbar must reveal when ${id} is focused`).toBe(1);
+    }
+  }
+  for (const id of ['btn-menu', 'btn-theme', 'btn-collapse', 'btn-quit']) {
+    expect(reached.has(id), `Tab should reach ${id}`).toBe(true);
+  }
+});
+
 // 「请执行 bao connect claude」只写在画面上，读屏用户就永远不知道该敲什么。
 test('the two advisory lines are announced, not only drawn', async ({ page }) => {
   for (const id of ['note', 'disconnected']) {

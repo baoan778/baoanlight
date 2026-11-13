@@ -40,6 +40,11 @@ const DEFAULTS = {
   voice: false,
   // 静音截止时间戳（ms）。大于当前时间则暂停通知/提示音/语音。
   mutedUntil: 0,
+  // 定时勿扰：在 [dndStart, dndEnd] 时段内静音 + 语音关闭 + 帧率降到 8fps。
+  // 支持跨午夜（22:00 → 08:00）。默认关，时间用 24 小时制 "HH:MM"。
+  doNotDisturb: false,
+  dndStart: '22:00',
+  dndEnd: '08:00',
   // 今日时长广告牌显示谁：top 最多 / total 合计 / cycle 轮播 / off 关闭。
   signMode: 'top',
   // 广告牌位置：right 右侧 / left 左侧。

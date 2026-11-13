@@ -399,12 +399,25 @@
     background-image: linear-gradient(90deg, rgba(120,190,255,.20) var(--pct, 0%), rgba(120,190,255,0) var(--pct, 0%));
   }
   #m-score .score-head { font-size: 10px; opacity: .5; letter-spacing: .02em; margin-bottom: 2px; }
+  /* 今日时长堆叠条：段宽 = 真实占比，颜色与状态色分开。 */
+  #m-score .stack { display: flex; height: 6px; border-radius: 999px; overflow: hidden; margin: 3px 0 2px; background: rgba(255,255,255,.06); }
+  #m-score .stack i { height: 100%; min-width: 2px; }
+  #m-score .stack-legend { display: flex; flex-wrap: wrap; gap: 3px 8px; font-size: 9.5px; color: #aab4c0; margin-bottom: 3px; }
+  #m-score .stack-legend span { display: inline-flex; align-items: center; gap: 4px; }
+  #m-score .stack-legend i { width: 7px; height: 7px; border-radius: 2px; flex: none; }
   /* 本周 7 天迷你柱状图：每天一根柱，今天高亮。 */
   #m-score .week-chart { display: flex; align-items: flex-end; gap: 3px; height: 26px; margin: 5px 0 1px; }
   #m-score .week-chart i { flex: 1; min-height: 2px; border-radius: 2px 2px 0 0; background: rgba(120,190,255,.32); transition: height .25s ease; }
   #m-score .week-chart i.today { background: rgba(120,190,255,.85); }
   #menu select { flex: 1; min-width: 0; height: 20px; background: rgba(255,255,255,.08); color: #e9edf2;
     border: 0; border-radius: 6px; font: inherit; font-size: 10.5px; cursor: pointer; }
+  /* 勿扰时段的两个时间输入：和下拉同一套外观，宽度收窄，中间一条短横线。 */
+  #menu input[type="time"] {
+    flex: 1; min-width: 0; height: 20px; padding: 0 4px;
+    background: rgba(255,255,255,.08); color: #e9edf2;
+    border: 0; border-radius: 6px; font: inherit; font-size: 10.5px;
+  }
+  #dnd-times .dash { opacity: .5; flex: none; }
   #menu select option { background: #1a1d22; color: #e9edf2; }
   #menu input[type="text"] { flex: 1; min-width: 0; height: 20px; padding: 0 7px; background: rgba(255,255,255,.08);
     color: #e9edf2; border: 0; border-radius: 6px; font: inherit; font-size: 10.5px; }
@@ -622,6 +635,13 @@
       </div>
       <label class="row"><input id="m-voice" type="checkbox" /> 语音播报</label>
       <button id="m-mute">静音 1 小时（暂停通知/提示音）</button>
+      <label class="row"><input id="m-dnd" type="checkbox" /> 定时勿扰（静音 + 降帧率）</label>
+      <div class="row" id="dnd-times">
+        <label for="m-dnd-start">勿扰时段</label>
+        <input id="m-dnd-start" type="time" value="22:00" />
+        <span class="dash">–</span>
+        <input id="m-dnd-end" type="time" value="08:00" />
+      </div>
       <label class="row"><input id="m-click" type="checkbox" checked /> 点击穿透</label>
       <label class="row"><input id="m-labels" type="checkbox" checked /> 软件列表</label>
       <label class="row"><input id="m-offline" type="checkbox" checked /> 显示未运行软件</label>

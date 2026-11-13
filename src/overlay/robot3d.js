@@ -17,7 +17,7 @@ import * as THREE from './vendor/three.module.js';
 import { roundedRectPoints, roundedPolygon, slab, mesh } from './scene/geometry.js';
 import {
   canvasTexture, sceneTexture, edgeFadeTexture, hazardTexture, softTexture,
-  wordmarkTexture, rng, paint,
+  wordmarkTexture, ringTexture, haloTexture, fireTexture, rng, paint,
 } from './scene/surfaces.js';
 // 外观色值的唯一真源（ui.js 的色块预览读的是同一份）。
 import {
@@ -741,54 +741,6 @@ if (host && renderer) {
   // Two overlapping rings painted on the desk: a single soft hue reads as a
   // smudge, two offset hues read as light, and together they are the colour
   // that makes the base glow rather than sit there.
-  function ringTexture(band) {
-    return canvasTexture(256, 256, (g, w, h) => {
-      const grad = g.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
-      grad.addColorStop(0, 'rgba(255,255,255,0)');
-      grad.addColorStop(Math.max(0.05, band - 0.24), 'rgba(255,255,255,0.05)');
-      grad.addColorStop(band, 'rgba(255,255,255,0.62)');
-      grad.addColorStop(Math.min(0.98, band + 0.13), 'rgba(255,255,255,0.14)');
-      grad.addColorStop(1, 'rgba(255,255,255,0)');
-      g.fillStyle = grad;
-      g.fillRect(0, 0, w, h);
-    });
-  }
-
-  // 光环样式纹理：环形 / 圆形 / 星形 / 无（透明）。
-  function haloTexture(style) {
-    return canvasTexture(256, 256, (g, w, h) => {
-      const cx = w / 2, cy = h / 2;
-      if (style === '圆形') {
-        const grad = g.createRadialGradient(cx, cy, 0, cx, cy, w / 2);
-        grad.addColorStop(0, 'rgba(255,255,255,0.7)');
-        grad.addColorStop(0.45, 'rgba(255,255,255,0.3)');
-        grad.addColorStop(1, 'rgba(255,255,255,0)');
-        g.fillStyle = grad; g.fillRect(0, 0, w, h);
-      } else if (style === '星形') {
-        g.translate(cx, cy);
-        const spikes = 8, outerR = w * 0.45, innerR = w * 0.12;
-        g.fillStyle = 'rgba(255,255,255,0.5)';
-        g.beginPath();
-        for (let i = 0; i < spikes * 2; i++) {
-          const r = i % 2 === 0 ? outerR : innerR;
-          const a = (i / (spikes * 2)) * Math.PI * 2 - Math.PI / 2;
-          const px = Math.cos(a) * r, py = Math.sin(a) * r;
-          if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
-        }
-        g.closePath(); g.fill();
-      } else if (style === '无') {
-        g.clearRect(0, 0, w, h);
-      } else {
-        const grad = g.createRadialGradient(cx, cy, 0, cx, cy, w / 2);
-        grad.addColorStop(0, 'rgba(255,255,255,0)');
-        grad.addColorStop(0.38, 'rgba(255,255,255,0.05)');
-        grad.addColorStop(0.62, 'rgba(255,255,255,0.62)');
-        grad.addColorStop(0.75, 'rgba(255,255,255,0.14)');
-        grad.addColorStop(1, 'rgba(255,255,255,0)');
-        g.fillStyle = grad; g.fillRect(0, 0, w, h);
-      }
-    });
-  }
   const HALO_STYLES = { '环形': 'ring', '圆形': 'disc', '星形': 'star', '无': 'none' };
   function applyHalo(style) {
     const tex = haloTexture(style);
@@ -1957,20 +1909,6 @@ if (host && renderer) {
   }
 
   // ---- 生气火焰：error 时头顶 5 簇火苗（跳动 / 摇摆 / 闪烁 / 错峰）---------
-  function fireTexture() {
-    return canvasTexture(64, 96, (g, w, h) => {
-      const grad = g.createLinearGradient(0, h, 0, 0);
-      grad.addColorStop(0, '#ffc800');
-      grad.addColorStop(0.55, '#ff6400');
-      grad.addColorStop(1, 'rgba(200,0,0,0)');
-      g.fillStyle = grad;
-      g.beginPath();
-      g.moveTo(w / 2, 0);
-      g.quadraticCurveTo(w * 0.96, h * 0.55, w / 2, h);
-      g.quadraticCurveTo(w * 0.04, h * 0.55, w / 2, 0);
-      g.fill();
-    });
-  }
   const fires = [];
   for (let i = 0; i < 5; i++) {
     const mat = new THREE.SpriteMaterial({
@@ -2487,6 +2425,10 @@ if (host && renderer) {
   // ------------------------------------------------------------------ loop
   const clock = { last: performance.now(), t: 0 };
   const reduceMotion = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)').matches : false;
+  // 定时勿扰：ui 在进入/离开时段时派发。效果和系统 reduced-motion 一样把
+  // 帧率压到 8fps —— 深夜里一个没人的桌面不需要 60 帧的呼吸灯。
+  let dnd = false;
+  window.addEventListener('bao:dnd', (e) => { dnd = !!(e.detail && e.detail.on); });
 
   // ---- performance guard -------------------------------------------------
   // This window is on someone's desktop all day, so it is allowed to shed
@@ -2508,6 +2450,9 @@ if (host && renderer) {
     // 和「绝不掉帧」的目标正好相反。
     cap: 2,
     lite: false,
+    // 完全静止的「离线待机」档：连自主巡游都没在演。这时候不该再为一台
+    // 什么都不做的机器人付阴影贴图 + 2x 像素的钱（见 frame() 里的 settled）。
+    settled: false,
     warmupUntil: performance.now() + 2500,
   };
 
@@ -2549,7 +2494,13 @@ if (host && renderer) {
   // quick nods acknowledge it without borrowing the green that means "still
   // working", because a working colour on an idle robot is the one lie this
   // machine exists to prevent.
-  window.addEventListener('bao:done', () => { doneAt = clock.t; });
+  window.addEventListener('bao:done', () => {
+    doneAt = clock.t;
+    // 完成任务不只是转一圈 + 连跳两下：补一句气泡，给「刚刚那件事成了」一个
+    // 文字落点。气泡和状态色一样是短命提示，几秒后自己消失。
+    noticeText = '完成啦';
+    noticeAt = clock.t;
+  });
   // 里程碑庆祝：合计工作满整小时时，复用「完成」的转圈 + 星星，并冒个气泡。
   window.addEventListener('bao:milestone', (e) => {
     doneAt = clock.t;
@@ -3556,9 +3507,22 @@ if (host && renderer) {
     // 以 60fps 继续跑（README 与文档承诺的是整场降到 8fps）。原来的顺序让
     // active 先命中，8fps 分支在 busy/waiting/error 时永远到不了。
     const active = state === 'busy' || state === 'waiting' || state === 'error';
-    const fps = reduceMotion ? 8
+    const fps = (reduceMotion || dnd) ? 8
       : active ? 60
         : (state === 'offline' && !idlePlaying) ? 15 : 30;
+
+    // 完全静止的离线待机：主动降画质（像素比 1x、关阴影），而不是等它掉帧。
+    // 一旦要演自主巡游、或代理报来任何状态，立刻回到完整画质 —— 灯效与状态
+    // 颜色从不参与降级（见 updateDust 的注释：状态灯没有「为省电而变暗」的理由）。
+    // 「静止」只认离线且没在演自主动作这一档（15fps）：idle 档仍有零星的
+    // 巡游/伸展动作，阴影值得留着。
+    const settled = state === 'offline' && !idlePlaying;
+    if (settled !== perf.settled) {
+      perf.settled = settled;
+      host.dataset.tier = settled ? 'settled' : 'full';
+      resize();
+    }
+
     if (now - clock.last < 1000 / fps - 1) return;
     clock.last = now;
 
@@ -3612,7 +3576,12 @@ if (host && renderer) {
     // 300px canvas up into a blurry 480px one. Scale the backing store with it:
     // "bigger" then means more pixels, not bigger pixels.
     const scale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--scale')) || 1;
-    renderer.setPixelRatio(Math.min(perf.cap, Math.max(1, (window.devicePixelRatio || 1) * scale)));
+    // lite（机器带不动）与 settled（离线静止）都压到 1x；其余按体型/缩放需要。
+    const cap = (perf.lite || perf.settled) ? 1 : perf.cap;
+    renderer.setPixelRatio(Math.min(cap, Math.max(1, (window.devicePixelRatio || 1) * scale)));
+    // 阴影贴图只在「机器在表现」时才有价值：离线静止时机器人已经压暗了，
+    // 再画一层桌面阴影纯粹是白费。开关是渲染器级 flag，切档时 resize 会重算。
+    renderer.shadowMap.enabled = !perf.lite && !perf.settled;
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();

@@ -122,6 +122,7 @@ ${c.b('USAGE')}
   bao onboard                  first-run guide: detect agents and connect one
   bao doctor                   check this machine is wired up correctly
   bao demo                     cycle the states to check the robot animates
+  bao log                      print recent events (state changes, refused writes)
 
 ${c.b('OPTIONS')}
   --port <n>       server port (default ${config.DEFAULTS.port})
@@ -469,6 +470,20 @@ async function cmdClear(flags) {
   const res = await client.post('/clear', {});
   if (!res) return console.error(c.dim('(no server listening)'));
   console.log('cleared all sessions');
+}
+
+// 最近事件：状态切换、被拒绝的写入、读不懂的事件。环形缓冲最多 200 条，
+// 不落盘，重启即清 —— 它回答的是「刚刚发生了什么」，不是审计日志。
+async function cmdLog() {
+  const running = await client.health();
+  if (!running) return console.log(c.dim('nothing running — start with `bao start`'));
+  const data = await client.get('/log');
+  const events = (data && data.events) || [];
+  if (!events.length) return console.log(c.dim('no events yet'));
+  for (const e of events) {
+    const t = new Date(e.at).toLocaleTimeString('zh-CN', { hour12: false });
+    console.log(`${c.dim(t)}  ${e.what}`);
+  }
 }
 
 async function cmdStatus(flags = {}) {
@@ -819,6 +834,7 @@ async function main() {
     case 'autostart':  return cmdAutostart(positional);
     case 'set':        return cmdSet(positional, flags);
     case 'status':     return cmdStatus(flags);
+    case 'log':        return cmdLog();
     case 'token':      return cmdToken();
     case 'clear':      return cmdClear(flags);
     case 'doctor':     return require('./doctor').run();

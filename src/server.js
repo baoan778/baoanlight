@@ -74,6 +74,16 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
 
   const clients = new Set();
 
+  // 轻量事件日志：环形缓冲，`bao log` 或 `/log` 读取。只记「有意义」的事 ——
+  // 状态切换、被拒绝的写入、读不懂的事件 —— 不落盘，重启即清。常驻进程里
+  // 有这一条「最近发生了什么」，排障就不用再靠猜。
+  const eventLog = [];
+  const LOG_MAX = 200;
+  const logEvent = (what) => {
+    eventLog.push({ at: Date.now(), what });
+    if (eventLog.length > LOG_MAX) eventLog.shift();
+  };
+
   // 启动自检：结果挂进快照（机器人窗口据此提示）+ 单独端点。
   //
   // 但不能只算一次：用户完全可能先启动、再 `bao connect claude` 把钩子修好，
@@ -116,7 +126,10 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
       // 请求先过 Host/Origin，写入再过 token。CORS 也不再是 `*`：只有同源的
       // 浏览器页面才拿到回显的 Origin，别的源连读都读不到。
       const verdict = auth.guard(req, url, boundPort);
-      if (!verdict.ok) return send(res, verdict.code, { error: verdict.error });
+      if (!verdict.ok) {
+        logEvent(`refused ${req.method} ${p} (${verdict.error})`);
+        return send(res, verdict.code, { error: verdict.error });
+      }
 
       if (req.headers.origin) {
         res.setHeader('access-control-allow-origin', req.headers.origin);
@@ -140,10 +153,19 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
       // 推好几帧，闲置时又完全不更新。
       if (p === '/sys') return send(res, 200, sysinfo.sample());
 
+      if (p === '/log') return send(res, 200, { events: eventLog });
+
       if (p === '/state' && req.method === 'POST') {
         const raw = await readBody(req);
         const payload = raw ? JSON.parse(raw) : {};
-        return send(res, 200, store.set(payload));
+        const session = payload.session || 'default';
+        const prev = store.sessions.get(session);
+        const result = store.set(payload);
+        const next = store.sessions.get(session);
+        if (next && (!prev || prev.state !== next.state)) {
+          logEvent(`${next.agent || 'agent'} ${session} → ${next.state}`);
+        }
+        return send(res, 200, result);
       }
 
       // An event a hook could not map. It never moves the lamp; it only lets
@@ -152,6 +174,7 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
         const raw = await readBody(req);
         const payload = raw ? JSON.parse(raw) : {};
         store.noteUnknown(payload.event, payload.session);
+        logEvent(`unknown event: ${String(payload.event || '').slice(0, 80)}`);
         return send(res, 200, { ok: true });
       }
 
@@ -179,13 +202,20 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
           const fromBody = body[key];
           return typeof fromBody === 'string' && fromBody ? fromBody : fallback;
         };
-        return send(res, 200, store.set({
+        const session = pick('session', 'default');
+        const prev = store.sessions.get(session);
+        const result = store.set({
           state,
           agent: pick('agent', 'agent'),
-          session: pick('session', 'default'),
+          session,
           detail: pick('detail', ''),
           cwd: pick('cwd', ''),
-        }));
+        });
+        const next = store.sessions.get(session);
+        if (next && (!prev || prev.state !== next.state)) {
+          logEvent(`${next.agent || 'agent'} ${session} → ${next.state}`);
+        }
+        return send(res, 200, result);
       }
 
       if (p === '/events') {

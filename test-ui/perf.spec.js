@@ -110,6 +110,19 @@ test('the idle tier is not mistaken for a machine that cannot cope', async ({ pa
   expect(quality, 'idle fps is a cadence, not a verdict on the GPU').toBe('full');
 });
 
+// 离线静止时应当主动降画质（1x + 关阴影），而不是等它掉帧才反应；一旦有代理
+// 报来状态，立刻回到完整画质。`data-tier` 是给这条观测用的档位标记。
+test('the settled offline robot drops to a low-cost tier, and recovers', async ({ page }) => {
+  await open(page);
+  await page.waitForFunction(() => document.getElementById('bot').dataset.tier === 'settled');
+
+  await api('/state', { session: 'tier', agent: 'claude', state: 'busy' });
+  await page.waitForFunction(() => document.getElementById('bot').dataset.tier === 'full');
+
+  await api('/state', { session: 'tier', state: 'offline' });
+  await page.waitForFunction(() => document.getElementById('bot').dataset.tier === 'settled');
+});
+
 // 状态不变的时候，界面必须一个节点都不动。这条挡住的是「每个 SSE 帧都重建一遍
 // pill 列表」那种写法 —— 它不会让画面出错，只会让一个一直开着的窗口持续耗电。
 test('nothing rewrites the DOM while nothing changes', async ({ page }) => {

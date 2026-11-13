@@ -73,6 +73,14 @@ import {
     deepseek: 'DeepSeek Harness',
   };
   const displayName = (agent) => LABEL[agent] || String(agent || '');
+  // 今日时长分布堆叠条里的「每个软件一种颜色」。刻意用低饱和、和状态色
+  // 分明的色相：红黄绿紫已经被状态占满，这里借用会让人误读成状态。
+  const AGENT_COLORS = ['#7ea6e0', '#e0a96d', '#7ec8b0', '#c98bb8', '#a9a6e0', '#9aa7b8'];
+  // 语音播报/系统通知跟随浏览器语言：英文环境念英文、用 en-US 的 TTS。
+  const english = String(navigator.language || 'zh-CN').toLowerCase().startsWith('en');
+  const TXT = english
+    ? { waiting: 'needs you', error: 'failed', done: 'finished', doneNotify: 'completed' }
+    : { waiting: '需要你处理', error: '出错了', done: '完成了', doneNotify: '完成了' };
 
   // cc-switch 接管某个软件后，它的名字会撒谎：Claude Code 可能实际跑在 DeepSeek
   // 上。这一行把「实际在用什么模型/供应商」说清楚；没被接管时返回 null，不显示。
@@ -119,6 +127,9 @@ import {
   let sizerOpen = false;
   let sizerTimer = 0;
   let lastSnap = null;
+  // 窗口藏起来（切屏、最小化）时 SSE 帧只更新内存里的快照、不重建 DOM；
+  // 等重新可见再一次性补画。常驻窗口在后台仍每帧重建 pill 是纯耗电。
+  let snapDirty = false;
   // 点击聚焦：null = 自动聚合（主灯显示最坏者）；非 null = 聚焦到某个软件，
   // 主灯临时显示该软件的状态，但四个通道始终各自可见。
   let focusedAgent = null;
@@ -245,6 +256,7 @@ import {
   function cue(kind) {
     if (!cfg.sound) return;
     if (isMuted()) return;
+    if (isDnd()) return;
     if (silencedState && kind === silencedState) return;
     // 先判断「这个状态有没有音效」，再占用限流窗口。反过来的话，一个
     // busy → idle（本来静默）会把 2.5 秒窗口吃掉，紧接着另一个软件报
@@ -520,6 +532,32 @@ import {
       box.appendChild(row);
       return;
     }
+    // 堆叠条：把今天的忙碌时长按软件切成一段，一眼看出「今天谁吃了时间」。
+    // 行内条形是各自按今日最长归一化的，这里的段长才是真实占比。
+    const totalMs = Object.values(byAgent).reduce((a, b) => a + (b || 0), 0);
+    if (totalMs > 0) {
+      const stack = document.createElement('div');
+      stack.className = 'stack';
+      const legend = document.createElement('div');
+      legend.className = 'stack-legend';
+      for (const agent of names.slice().sort((a, b) => (byAgent[b] || 0) - (byAgent[a] || 0))) {
+        const ms = byAgent[agent] || 0;
+        if (ms <= 0) continue;
+        const color = AGENT_COLORS[names.indexOf(agent) % AGENT_COLORS.length];
+        const seg = document.createElement('i');
+        seg.style.width = `${((ms / totalMs) * 100).toFixed(2)}%`;
+        seg.style.background = color;
+        seg.title = `${displayName(agent)} · ${fmtDur(ms)}`;
+        stack.appendChild(seg);
+        const item = document.createElement('span');
+        const sw = document.createElement('i');
+        sw.style.background = color;
+        item.append(sw, document.createTextNode(` ${displayName(agent)}`));
+        legend.appendChild(item);
+      }
+      box.appendChild(stack);
+      box.appendChild(legend);
+    }
     const sorted = names.sort((a, b) => (byAgent[b] || 0) - (byAgent[a] || 0));
     const maxMs = Math.max(1, ...names.map((a) => byAgent[a] || 0));
     for (const agent of sorted) {
@@ -656,10 +694,11 @@ import {
   function say(text) {
     if (!cfg.voice) return;
     if (isMuted()) return;
+    if (isDnd()) return;
     try {
       if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
       const u = new SpeechSynthesisUtterance(text);
-      u.lang = 'zh-CN';
+      u.lang = english ? 'en-US' : 'zh-CN';
       u.rate = 1.05;
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(u);
@@ -669,9 +708,9 @@ import {
     if (!cfg.voice) return;
     if (isMuted()) return;
     if (state === lastAnnounced) return;
-    const msg = state === 'waiting' ? '需要你处理'
-      : state === 'error' ? '出错了'
-        : state === 'done' ? '完成了' : '';
+    const msg = state === 'waiting' ? TXT.waiting
+      : state === 'error' ? TXT.error
+        : state === 'done' ? TXT.done : '';
     // 先记账再判断要不要出声：busy/idle 这些「不值得念」的状态也要把上一次
     // 的 waiting 清掉，否则同一状态第二次出现（waiting → busy → waiting）
     // 会被当成「和上次一样」永远不播 —— 而第二次「需要你」往往才是真的。
@@ -684,6 +723,34 @@ import {
   let mutedUntil = 0;
   const isMuted = () => Date.now() < mutedUntil;
 
+  // 定时勿扰：在配置的时段内同样暂停声音/语音，并让 3D 降到 8fps。和「静音 1 小时」
+  // 是两套开关：静音是手动一次性，勿扰是每天自动的作息。
+  const toMin = (hm) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(hm || ''));
+    if (!m) return null;
+    return Number(m[1]) * 60 + Number(m[2]);
+  };
+  function isDnd() {
+    if (!cfg.doNotDisturb) return false;
+    const s = toMin(cfg.dndStart);
+    const e = toMin(cfg.dndEnd);
+    if (s == null || e == null || s === e) return false;
+    const d = new Date();
+    const hm = d.getHours() * 60 + d.getMinutes();
+    // 跨午夜（22:00 → 08:00）时 s > e；同一天内（09:00 → 17:00）时 s < e。
+    return s < e ? (hm >= s && hm < e) : (hm >= s || hm < e);
+  }
+  let dndOn = false;
+  function applyDnd() {
+    const on = isDnd();
+    if (on === dndOn) return;
+    dndOn = on;
+    document.body.classList.toggle('dnd', on);
+    window.dispatchEvent(new CustomEvent('bao:dnd', { detail: { on } }));
+  }
+  // 进入/离开勿扰时段的边界靠这个分钟级轮询翻转；跨过 22:00 或 08:00 后一分钟内生效。
+  setInterval(applyDnd, 60_000);
+
   // 原生系统通知：某个软件**进入** waiting / error / done 时弹一次。
   //
   // 去重键必须是「软件 + 状态」，不能是聚合状态。第二个软件也进入「需要你」时
@@ -692,10 +759,11 @@ import {
   // 第一次见到某个软件只记账不通知：启动瞬间四行都是 waiting，不该一次弹四条。
   const slotSeen = new Map();        // agent -> 上一次看到的状态
   const slotNotifiedAt = new Map();  // agent -> 上次通知的时间
-  const NOTIFY_TEXT = { waiting: '需要你处理', error: '出错了', done: '完成了' };
+  const NOTIFY_TEXT = { waiting: TXT.waiting, error: TXT.error, done: TXT.doneNotify };
 
   function notifySlots(slots) {
     if (!inElectron || !bridge.notify) return;
+    if (isDnd()) return;
     for (const s of slots || []) {
       if (!s || !s.count) continue;
       const prev = slotSeen.get(s.agent);
@@ -721,6 +789,7 @@ import {
   function notifyFuel(f) {
     if (!inElectron || !bridge.notify) return;
     if (isMuted()) return;
+    if (isDnd()) return;
     const low = !!(f && typeof f.remaining === 'number' && f.remaining <= 5);
     if (low && lastFuelLow === false) {
       bridge.notify('额度快用完了', `${f.agent ? displayName(f.agent) + ' ' : ''}只剩 ${Math.round(f.remaining)}%`);
@@ -1085,7 +1154,15 @@ import {
       disconnectedEl.hidden = true;
       document.body.classList.remove('disconnected');
     };
-    es.onmessage = (e) => { try { render(JSON.parse(e.data)); } catch (_) {} };
+    es.onmessage = (e) => {
+      let snap;
+      try { snap = JSON.parse(e.data); } catch (_) { return; }
+      lastSnap = snap;
+      // 藏起来时别重建 DOM：把快照记下，等可见了再 render 一次补齐。
+      if (document.hidden) { snapDirty = true; return; }
+      snapDirty = false;
+      render(snap);
+    };
     es.onerror = () => {
       document.body.classList.add('disconnected');
       disconnectedEl.hidden = false;
@@ -1098,6 +1175,13 @@ import {
     };
   }
   connect();
+
+  // 重新可见时补齐后台攒下的一帧，并立刻刷新系统面板（后台那几次都跳过了）。
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    if (snapDirty && lastSnap) { snapDirty = false; render(lastSnap); }
+    pollSys();
+  });
 
   // ---------------------------------------------------------------- collapsing
   const collapseBtn = document.getElementById('btn-collapse');
@@ -1721,6 +1805,22 @@ import {
     if (inElectron) saveConfig({ showSys: cfg.showSys });
     if (cfg.showSys) pollSys(); else renderSys(null);
   });
+  // 定时勿扰：开关与两个时间都立即生效并落盘。改时间后立刻重算一次边界。
+  document.getElementById('m-dnd').addEventListener('change', (e) => {
+    cfg.doNotDisturb = e.target.checked;
+    if (inElectron) saveConfig({ doNotDisturb: cfg.doNotDisturb });
+    applyDnd();
+  });
+  document.getElementById('m-dnd-start').addEventListener('change', (e) => {
+    cfg.dndStart = e.target.value || '22:00';
+    if (inElectron) saveConfig({ dndStart: cfg.dndStart });
+    applyDnd();
+  });
+  document.getElementById('m-dnd-end').addEventListener('change', (e) => {
+    cfg.dndEnd = e.target.value || '08:00';
+    if (inElectron) saveConfig({ dndEnd: cfg.dndEnd });
+    applyDnd();
+  });
 
   // 一键重置外观：只恢复外观与动作，不碰尺寸、位置、声音和系统开关。
   const LOOK_DEFAULTS = {
@@ -2044,6 +2144,10 @@ import {
       document.getElementById('m-model').checked = cfg.showModel !== false;
       document.getElementById('m-sys').checked = cfg.showSys !== false;
       if (cfg.showSys === false) renderSys(null);
+      document.getElementById('m-dnd').checked = !!cfg.doNotDisturb;
+      document.getElementById('m-dnd-start').value = cfg.dndStart || '22:00';
+      document.getElementById('m-dnd-end').value = cfg.dndEnd || '08:00';
+      applyDnd();
       maxrowsSel.value = String(Math.max(2, Math.min(8, Number(cfg.maxRows) || 4)));
       renderPresetList();
       nameplateInput.value = cfg.nameplate || '';

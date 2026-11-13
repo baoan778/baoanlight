@@ -172,6 +172,15 @@ test('the system panel endpoint is readable and tells the truth', async () => {
   assert.ok(s.cores >= 1);
 });
 
+// 轻量事件日志：`bao log` 排障时读它。状态切换要能被看见，而且读不需要 token。
+test('the event log records state changes and is readable', async () => {
+  await raw({ path: `/set/busy?agent=claude&session=logtest&token=${token}` });
+  const res = await raw({ path: '/log' });
+  assert.equal(res.status, 200);
+  const events = JSON.parse(res.body).events || [];
+  assert.ok(events.some((e) => /claude logtest → busy/.test(e.what)), `state change was logged: ${JSON.stringify(events)}`);
+});
+
 // 预检请求不带 token，也不可能带：把它算成写操作会让每个跨源 CORS 预检都
 // 401，而 server 里那套 CORS 头永远没有机会发出去。
 test('a preflight is answered, not rejected for a missing token', async () => {
