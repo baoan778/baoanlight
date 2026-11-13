@@ -265,6 +265,21 @@ if (host && renderer) {
   // restores its own state on `webglcontextrestored`; swallowing the lost event
   // is what lets the browser try.
   renderer.domElement.addEventListener('webglcontextlost', (e) => e.preventDefault(), false);
+  // 但「three 自己会恢复」只对渲染状态成立：贴图句柄是驱动那边重新分配的，
+  // 不把材质标脏的话，恢复后常常是一台没有纹理、没有发光的白模。恢复时把
+  // 所有材质的贴图重新上传一次，再按当前尺寸重建 backing store。
+  renderer.domElement.addEventListener('webglcontextrestored', () => {
+    scene.traverse((o) => {
+      const mats = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
+      for (const m of mats) {
+        for (const key of ['map', 'emissiveMap', 'normalMap', 'roughnessMap', 'metalnessMap', 'alphaMap']) {
+          if (m[key]) m[key].needsUpdate = true;
+        }
+        m.needsUpdate = true;
+      }
+    });
+    resize();
+  }, false);
 
   // An environment made on the fly. Polished metal with no reflection is black
   // plastic; a two-stop gradient and a bright window is enough to sell chrome.
@@ -407,11 +422,17 @@ if (host && renderer) {
     while (sceneProps.children.length) {
       const child = sceneProps.children[0];
       sceneProps.remove(child);
+      // 树冠的三层共用同一个 Mleaf，按 mesh 释放会把它 dispose 三次。
+      // 先按对象去重，再各释放一次。
+      const geos = new Set();
+      const mats = new Set();
       child.traverse((o) => {
         if (!o.isMesh) return;
-        if (o.geometry) o.geometry.dispose();
-        if (o.material && o.material.dispose) o.material.dispose();
+        if (o.geometry) geos.add(o.geometry);
+        if (o.material) mats.add(o.material);
       });
+      for (const g of geos) g.dispose();
+      for (const m of mats) if (m.dispose) m.dispose();
     }
     if (!type) return;
     const r = rng({ 松树: 11, 草丛花: 22, 仙人掌: 33, 月亮: 44, 火山岩: 55, 樱花树: 66, 珊瑚: 77, 树: 88 }[type] || 11);
@@ -631,7 +652,6 @@ if (host && renderer) {
     else if (s.particle === 'ember') { particleMat.color.set(0xff8020); particleMat.opacity = 0.8 * motionScale; particleMat.size = 0.05; }
     else if (s.particle === 'petal') { particleMat.color.set(0xf2b8c8); particleMat.opacity = 0.8 * motionScale; particleMat.size = 0.07; }
     else if (s.particle === 'bubble') { particleMat.color.set(0xcfefff); particleMat.opacity = 0.7 * motionScale; particleMat.size = 0.06; }
-    else if (s.particle === 'leaf') { particleMat.color.set(0x4a8a3a); particleMat.opacity = 0.8 * motionScale; particleMat.size = 0.07; }
     else if (s.particle === 'firefly') { particleMat.color.set(0xd9ff6a); particleMat.opacity = 0.85 * motionScale; particleMat.size = 0.045; }
     else if (s.particle === 'rain') { particleMat.color.set(0xa8c4e0); particleMat.opacity = 0.7 * motionScale; particleMat.size = 0.03; }
     else particleMat.opacity = 0;
@@ -772,12 +792,15 @@ if (host && renderer) {
   const HALO_STYLES = { '环形': 'ring', '圆形': 'disc', '星形': 'star', '无': 'none' };
   function applyHalo(style) {
     const tex = haloTexture(style);
-    // 贴图是每次现画的：旧的必须释放，否则每切一次光环样式就漏一张 256² 纹理。
+    // 两块光环共用同一张贴图：先记下旧的那一张，再统一换掉。原来的循环
+    // 在第一个材质上就把它 dispose 了，第二个材质又 dispose 一次 —— 同一张
+    // 纹理被释放两次，three 的纹理计数会漂移，反复切样式后开始误删别的贴图。
+    const old = haloA.map;
     for (const h of [haloA, haloB]) {
-      if (h.map && h.map !== tex) h.map.dispose();
       h.map = tex;
       h.needsUpdate = true;
     }
+    if (old && old !== tex) old.dispose();
   }
 
   function floorRing(size, band, opacity) {
@@ -3510,9 +3533,12 @@ if (host && renderer) {
     // window that is always on someone's desktop; it should not cost a fan.
     // 离线且没在演自主动作时，画面几乎是静止的，15fps 足够 —— 这窗口是常驻的，
     // 省下来的电是实打实的。一旦开始演动作，立刻回到 30fps 保证流畅。
+    // reduce-motion 必须排在最前：系统说「少动一点」时，忙碌状态下也不该
+    // 以 60fps 继续跑（README 与文档承诺的是整场降到 8fps）。原来的顺序让
+    // active 先命中，8fps 分支在 busy/waiting/error 时永远到不了。
     const active = state === 'busy' || state === 'waiting' || state === 'error';
-    const fps = active ? 60
-      : reduceMotion ? 8
+    const fps = reduceMotion ? 8
+      : active ? 60
         : (state === 'offline' && !idlePlaying) ? 15 : 30;
     if (now - clock.last < 1000 / fps - 1) return;
     clock.last = now;
@@ -3525,7 +3551,16 @@ if (host && renderer) {
     // levels is more distracting than either level.
     // 一秒里混了 60fps 的工作段和 15fps 的空闲段时，measured 会把「这一档本来
     // 就慢」误读成「机器跑不动」。切档就重新起一个统计窗口，数字才只描述一档。
-    if (fps !== perf.tier) { perf.tier = fps; perf.frames = 0; perf.since = now; }
+    // `data-target-fps` 是这一档**要求**的节奏，`data-fps` 是实际画出来的。
+    // 两者分开，测试才能区分「逻辑把忙碌档写成了 60」和「这台机器跑不到 60」——
+    // 后者在软件渲染的 CI、或者一台正在跑别的编译的机器上随时会发生，把
+    // 产品逻辑的断言绑在它身上只会得到一条看心情的测试。
+    if (fps !== perf.tier) {
+      perf.tier = fps;
+      host.dataset.targetFps = String(fps);
+      perf.frames = 0;
+      perf.since = now;
+    }
     perf.frames += 1;
     if (now - perf.since >= 1000) {
       const measured = Math.round((perf.frames * 1000) / (now - perf.since));

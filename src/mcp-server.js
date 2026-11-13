@@ -32,7 +32,18 @@ const BASE = `http://127.0.0.1:${PORT}`;
 // The robot's state vocabulary. Anything else is rejected, not guessed — a
 // wrong colour is worse than no colour.
 const STATES = ['busy', 'waiting', 'error', 'done', 'idle', 'offline'];
-const AGENTS = ['claude', 'codex', 'deepseek', 'workbuddy'];
+// 已知的四个只是「建议值」，不是白名单：MCP 的意义就是任何客户端都能上报，
+// 硬编码四个 id 会把 `my-bot` 这类自研代理挡在门外，而 `bao hook` 是接受的。
+const KNOWN_AGENTS = ['claude', 'codex', 'deepseek', 'workbuddy'];
+const AGENT_RE = /^[a-z0-9][a-z0-9._-]{0,39}$/i;
+
+function writeErrorHint(err) {
+  const msg = String((err && err.message) || err);
+  if (/replied 401|replied 403/.test(msg)) {
+    return 'the robot refused the write (token mismatch) — run `bao doctor`, or `bao stop && bao start`';
+  }
+  return `Robot not reachable at ${BASE} (is \`bao start\` running?)`;
+}
 
 async function postJson(path, body) {
   const res = await fetch(BASE + path, {
@@ -64,15 +75,18 @@ server.registerTool('report_status', {
     'the user (waiting), when something failed (error), when it finished (done), ' +
     'and when it goes quiet (idle).',
   inputSchema: {
-    agent: z.string().describe('Agent id: claude, codex, deepseek or workbuddy'),
+    agent: z.string().describe(`Agent id. Common: ${KNOWN_AGENTS.join(', ')}; any short id is accepted`),
     state: z.enum(STATES).describe('The state to report'),
     detail: z.string().optional().describe('One short line of context'),
     cwd: z.string().optional().describe('Project folder name'),
   },
 }, async (args) => {
-  const agent = String(args.agent || '').toLowerCase();
-  if (!AGENTS.includes(agent)) {
-    return { content: [{ type: 'text', text: `Unknown agent "${args.agent}". Use one of: ${AGENTS.join(', ')}.` }], isError: true };
+  const agent = String(args.agent || '').trim().toLowerCase();
+  if (!AGENT_RE.test(agent)) {
+    return {
+      content: [{ type: 'text', text: `Invalid agent "${args.agent}". Use a short id (letters, digits, . _ -), e.g. claude, codex, ${KNOWN_AGENTS.join(', ')}, my-bot.` }],
+      isError: true,
+    };
   }
   if (!STATES.includes(args.state)) {
     return { content: [{ type: 'text', text: `Unknown state "${args.state}". Use one of: ${STATES.join(', ')}.` }], isError: true };
@@ -87,7 +101,7 @@ server.registerTool('report_status', {
     });
     return { content: [{ type: 'text', text: `Reported ${agent} as ${args.state}.` }] };
   } catch (err) {
-    return { content: [{ type: 'text', text: `Robot not reachable at ${BASE} (is \`bao start\` running?). ${err.message}` }], isError: true };
+    return { content: [{ type: 'text', text: `${writeErrorHint(err)} ${err.message}` }], isError: true };
   }
 });
 
@@ -111,7 +125,7 @@ server.registerTool('get_agents_status', {
     ].join('\n');
     return { content: [{ type: 'text', text }] };
   } catch (err) {
-    return { content: [{ type: 'text', text: `Robot not reachable at ${BASE} (is \`bao start\` running?). ${err.message}` }], isError: true };
+    return { content: [{ type: 'text', text: `${writeErrorHint(err)} ${err.message}` }], isError: true };
   }
 });
 

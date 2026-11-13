@@ -26,7 +26,9 @@ function parse(argv) {
     if (a.startsWith('--')) {
       const [k, v] = a.slice(2).split('=');
       if (v !== undefined) flags[k] = v;
-      else if (argv[i + 1] && !argv[i + 1].startsWith('-')) flags[k] = argv[++i];
+      // 只把 `--` 开头的下一个参数当成另一个选项：`--detail -1`、`--agent -x`
+      // 这类负值/短横线开头的值曾经被静默吞成布尔 true。
+      else if (argv[i + 1] && !argv[i + 1].startsWith('--')) flags[k] = argv[++i];
       else flags[k] = true;
     } else positional.push(a);
   }
@@ -490,10 +492,14 @@ async function cmdStatus(flags = {}) {
 }
 
 async function cmdDemo() {
+  // 五种状态都要演一遍：出错闪烁和完成转圈是最容易被写坏的动效，恰恰只有
+  // 真按顺序走一遍才看得见。只演 busy/waiting/idle 等于跳过了最该检查的两段。
   const seq = [
     ['busy', 'reading files'],
     ['busy', 'editing src/server.js'],
     ['waiting', 'wants to run a command'],
+    ['error', 'a command failed'],
+    ['done', 'finished the task'],
     ['idle', ''],
   ];
   for (const [state, detail] of seq) {

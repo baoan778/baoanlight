@@ -100,6 +100,7 @@ function run(opts = {}) {
   const scan = () => {
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    const seen = new Set();
 
     for (const e of entries) {
       if (!e.isDirectory()) continue;
@@ -107,10 +108,12 @@ function run(opts = {}) {
 
       let st;
       try { st = fs.statSync(folder); } catch { continue; }
+      seen.add(folder);
       if (st.mtimeMs < Date.now() - lookbackMs) continue;
 
       const t = tracked.get(folder) || { state: null, mtimeMs: 0 };
       tracked.set(folder, t);
+      t.mtimeMs = st.mtimeMs;
 
       const items = readItems(folder);
       if (!items.length) continue;
@@ -127,6 +130,18 @@ function run(opts = {}) {
       });
       if (!quiet) console.log(`  ${new Date().toISOString().slice(11, 19)}  ${e.name.slice(0, 8)} -> ${next}`);
     }
+
+    // 收摊：任务从板上消失、或已经老到 lookback 之外的，必须把之前点亮的那
+    // 一行熄掉。原来只在进程退出时清 busy —— waiting/error 的残影会一直挂到
+    // 服务端 TTL 才消失，而那时灯已经在说一件不存在的旧事。
+    const cutoff = Date.now() - lookbackMs;
+    for (const [folder, t] of [...tracked]) {
+      const stale = !seen.has(folder) || (t.mtimeMs && t.mtimeMs < cutoff);
+      if (!stale) continue;
+      tracked.delete(folder);
+      if (!t.state) continue;
+      setState({ session: `workbuddy:${path.basename(folder)}`, agent: 'workbuddy', state: 'offline' });
+    }
   };
 
   scan();
@@ -136,12 +151,18 @@ function run(opts = {}) {
   const stop = () => {
     clearInterval(timer);
     if (watchServer) clearInterval(watchServer);
+    // 任何还亮着的状态都要熄掉，不只是 busy：watcher 退出意味着「这个来源
+    // 不再提供证据」，留着黄/红灯等于替一个已经关掉的程序继续说话。
+    const jobs = [];
     for (const [folder, t] of tracked) {
-      if (t.state === 'busy') {
-        setState({ session: `workbuddy:${path.basename(folder)}`, agent: 'workbuddy', state: 'offline' });
+      if (t.state) {
+        jobs.push(setState({ session: `workbuddy:${path.basename(folder)}`, agent: 'workbuddy', state: 'offline' }));
       }
     }
-    if (!opts.manual) process.exit(0);
+    if (opts.manual) return undefined;
+    // 等请求真的发出去再退出：同步 process.exit 会把还没建立的连接直接掐掉，
+    // 服务端从来看不到 offline。
+    return Promise.allSettled(jobs).finally(() => process.exit(0));
   };
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, stop);
   // 机器人退了就收摊，避免留下一个永远轮询的孤儿进程。

@@ -284,13 +284,26 @@ function run(opts = {}) {
     }
     const byPath = new Map(dirCache.map((f) => [f.path, f]));
     // 正在跟踪的文件每轮都重新 stat：它们正在被写，尺寸必须是最新的。
-    for (const p of tracked.keys()) {
+    //
+    // 同时要把「已经老到不在 lookback 里」的条目丢掉。原来只增不减：一个
+    // 常驻数周的 watcher 会一直对全部历史文件做 statSync，并且把早已该被
+    // 忽略的老文件重新塞回读取队列 —— 注释里说的「下一轮目录扫描自会清掉」
+    // 从来没有发生过，因为没有任何地方 delete。
+    for (const p of [...tracked.keys()]) {
+      let st;
       try {
-        const st = fs.statSync(p);
-        const hit = byPath.get(p);
-        if (hit) { hit.size = st.size; hit.mtimeMs = st.mtimeMs; }
-        else byPath.set(p, { path: p, size: st.size, mtimeMs: st.mtimeMs });
-      } catch { /* 文件没了：下一轮目录扫描自会把它清掉 */ }
+        st = fs.statSync(p);
+      } catch {
+        tracked.delete(p);   // 文件没了：连跟踪状态一起清掉
+        continue;
+      }
+      if (st.mtimeMs < now - lookbackMs) {
+        tracked.delete(p);
+        continue;
+      }
+      const hit = byPath.get(p);
+      if (hit) { hit.size = st.size; hit.mtimeMs = st.mtimeMs; }
+      else byPath.set(p, { path: p, size: st.size, mtimeMs: st.mtimeMs });
     }
     for (const f of byPath.values()) {
       let t = tracked.get(f.path);
@@ -335,14 +348,18 @@ function run(opts = {}) {
   const stop = () => {
     clearInterval(timer);
     if (watchServer) clearInterval(watchServer);
+    const jobs = [];
     for (const t of tracked.values()) {
       if (t.session && t.state && t.state !== 'idle' && t.state !== 'offline') {
-        setState({ session: t.session, agent: name, state: 'offline' });
+        jobs.push(setState({ session: t.session, agent: name, state: 'offline' }));
       }
     }
     // In-process callers (tests, `watch all`) stop the watcher without taking
     // the whole process down; only the CLI wants the exit.
-    if (!opts.manual) process.exit(0);
+    if (opts.manual) return undefined;
+    // 先把 offline 真的发出去再退出。同步 process.exit 会掐断还没建立的
+    // 连接，服务端从来看不到收摊，灯就停在一个已经不存在的会话上。
+    return Promise.allSettled(jobs).finally(() => process.exit(0));
   };
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, stop);
 

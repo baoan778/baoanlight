@@ -159,3 +159,62 @@ test('the overlay page has no inline script left to bypass the CSP', () => {
   const inline = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>/g)];
   assert.equal(inline.length, 0, `inline <script> found: ${inline.map((m) => m[0]).join(', ')}`);
 });
+
+// 预检请求不带 token，也不可能带：把它算成写操作会让每个跨源 CORS 预检都
+// 401，而 server 里那套 CORS 头永远没有机会发出去。
+test('a preflight is answered, not rejected for a missing token', async () => {
+  const origin = `http://127.0.0.1:${port}`;
+  const res = await raw({
+    method: 'OPTIONS',
+    path: '/state',
+    headers: { origin, 'access-control-request-method': 'POST' },
+  });
+  assert.equal(res.status, 204);
+  assert.equal(res.headers['access-control-allow-origin'], origin);
+  assert.match(String(res.headers['access-control-allow-headers']), /x-bao-token/);
+});
+
+// 中文 detail 之前会被按 TCP 分片解码，跨分片的字符变成 U+FFFD。请求体必须
+// 按字节缓存、整段再解码。
+test('a multibyte detail survives the wire intact', async () => {
+  const detail = '正在运行 中文 ✓ ' + '汉'.repeat(40);
+  const res = await raw({
+    method: 'POST',
+    path: '/state',
+    headers: { 'content-type': 'application/json', 'x-bao-token': token },
+    body: JSON.stringify({ session: 'utf8', agent: 'claude', state: 'busy', detail }),
+  });
+  assert.equal(res.status, 200);
+  const snap = await snapshot();
+  assert.equal(snap.sessions.find((s) => s.session === 'utf8').detail, detail);
+});
+
+// limit 必须按字节算：16KB 的「字符」在中文下是 ~48KB 的流量。
+test('the request-body limit counts bytes, not characters', async () => {
+  const res = await raw({
+    method: 'POST',
+    path: '/set/busy',
+    headers: { 'content-type': 'application/json', 'x-bao-token': token },
+    body: JSON.stringify({ detail: '汉'.repeat(9000) }),   // ~27KB of UTF-8
+  });
+  assert.equal(res.status, 400);
+  assert.match(res.body, /body too large/);
+});
+
+// token 文件被替换（升级、手工清理、杀毒误删后重建）时，运行中的 server
+// 必须读到新值。否则所有钩子 401，而 client.js 只警告一次 —— 灯永久不动。
+test('a token replaced on disk is picked up without a restart', async () => {
+  const file = path.join(HOME, 'token');
+  const rotated = 'f'.repeat(64);
+  try {
+    fs.writeFileSync(file, rotated + '\n');
+    const stale = await raw({ path: `/set/busy?agent=claude&token=${token}` });
+    assert.equal(stale.status, 401, 'the old secret stops working');
+
+    const fresh = await raw({ path: `/set/busy?agent=claude&token=${rotated}` });
+    assert.equal(fresh.status, 200, 'the new one works without a restart');
+  } finally {
+    fs.writeFileSync(file, token + '\n');
+    await raw({ path: `/set/offline?agent=claude&token=${token}` });
+  }
+});

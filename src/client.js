@@ -41,6 +41,10 @@ function post(pathname, payload, { timeout = 1200 } = {}) {
         res.on('end', () => {
           try { resolve(JSON.parse(out)); } catch { resolve(null); }
         });
+        // 响应流中途出错（server 被 kill、连接被重置）时错误是异步 emit 的：
+        // 没有监听器就是未捕获异常，钩子进程以非 0 退出 —— 正好违反「钩子
+        // 永远不打断它监视的代理」。吞掉它，和请求本身的错误一样处理。
+        res.on('error', () => resolve(null));
       }
     );
     req.on('error', () => resolve(null));
@@ -59,6 +63,7 @@ function get(pathname, { timeout = 1200 } = {}) {
         res.on('end', () => {
           try { resolve(JSON.parse(out)); } catch { resolve(null); }
         });
+        res.on('error', () => resolve(null));
       }
     );
     req.on('error', () => resolve(null));
@@ -68,9 +73,8 @@ function get(pathname, { timeout = 1200 } = {}) {
 
 const setState = (payload) => post('/state', payload);
 const noteUnknown = (payload) => post('/unknown', payload);
-const clearUnknown = () => post('/unknown/clear', {});
 const health = () => get('/health');
 const snapshot = () => get('/state');
 const quitServer = () => post('/quit', {});
 
-module.exports = { post, get, setState, noteUnknown, clearUnknown, health, snapshot, quitServer };
+module.exports = { post, get, setState, noteUnknown, health, snapshot, quitServer };

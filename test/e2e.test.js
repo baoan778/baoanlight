@@ -327,7 +327,7 @@ test('installing hooks preserves existing config and is idempotent', () => {
     const after = JSON.parse(fs.readFileSync(path.join('.claude', 'settings.json'), 'utf8'));
     const ours = Object.values(after.hooks).flat().flatMap((g) => g.hooks)
       .filter((h) => /hooks[\\/]claude\.js/.test(h.command));
-    assert.equal(ours.length, 9, 'nine events, no duplicates after three installs');
+    assert.equal(ours.length, 8, 'eight events, no duplicates after three installs');
     assert.deepEqual(after.permissions, { allow: ['Bash(ls:*)'] }, 'unrelated settings untouched');
     assert.ok(
       Object.values(after.hooks).flat().flatMap((g) => g.hooks).some((h) => h.command === 'echo mine'),
@@ -427,6 +427,79 @@ test('a write may carry its fields in the body, not only in the query string', a
   });
 });
 
+// ---------------------------------------------------------- overlay wiring
+// Electron 里的路径（preload 光标订阅、IPC）没法用 Playwright 跑到，只能
+// 用源码契约钉住。这几条都对应过真实故障，不是「风格检查」。
+
+const srcFile = (...parts) => fs.readFileSync(path.join(__dirname, '..', 'src', ...parts), 'utf8');
+
+// 光标订阅曾经只有一个回调槽：robot3d.js 后注册、覆盖掉 ui.js 的回调，
+// 于是 `body.hovering` 永远是 false，工具栏在点击穿透下完全点不到。
+test('the cursor reaches every consumer, not just the last one to subscribe', () => {
+  const preload = srcFile('overlay', 'preload.js');
+  const ui = srcFile('overlay', 'ui.js');
+  const scene = srcFile('overlay', 'robot3d.js');
+
+  assert.match(preload, /const cursorSubs = new Set\(\)/, 'subscribers live in a set');
+  assert.match(preload, /cursorSubs\.add\(/, 'and each consumer adds itself');
+  assert.doesNotMatch(preload, /let cursorCb = null/, 'a single callback slot is the bug');
+  assert.match(ui, /bridge\.onCursor\(/, 'the toolbar listens');
+  assert.match(scene, /bao\.onCursor\(/, 'and so does the 3D scene');
+});
+
+// 静默状态（idle/offline）不能被当作一次「提示」占用限流窗口，否则紧接着
+// 另一软件报 error 时就没有声音了。
+test('a silent state never consumes the sound throttle', () => {
+  const ui = srcFile('overlay', 'ui.js');
+  const at = ui.indexOf('function cue(');
+  assert.ok(at > 0);
+  const body = ui.slice(at, at + 1200);
+  const tone = body.indexOf('if (!TONES[kind]) return;');
+  const stamp = body.indexOf('lastCue = now;');
+  assert.ok(tone > 0, 'the tone lookup is still there');
+  assert.ok(stamp > tone, 'and happens before the throttle is consumed');
+});
+
+// Codex 的 notify 只报「回合结束 / 等审批」。两个适配器对 complete 给出两种
+// 颜色（codex→白、log-watch→紫）就是灯在自相矛盾。
+test('codex notify reports a finished turn as done, like the log watcher does', () => {
+  const codex = srcFile('hooks', 'codex.js');
+  const at = codex.indexOf('function classify(');
+  const body = codex.slice(at, at + 600);
+  assert.match(body, /return 'done'/);
+  assert.doesNotMatch(body, /return 'idle'/);
+});
+
+// 拆解台和主窗口共用 preload（通知、开终端、退出都在上面），所以它也需要
+// 和主窗口一样的导航守卫，否则就是同一栋楼里一扇没锁的侧门。
+test('the teardown window refuses to navigate away from the local server', () => {
+  const main = srcFile('overlay', 'main.js');
+  const at = main.indexOf('teardownWin.loadURL');
+  assert.ok(at > 0);
+  assert.match(main.slice(at, at + 1200), /will-navigate/);
+});
+
+// 开机自启在 Windows 上跑「机器人 + watch all」，macOS/Linux 曾经只跑机器人：
+// 日志型代理永远不报状态，机器人一直显示离线。
+test('autostart starts the watchers on every platform', () => {
+  const src = srcFile('autostart.js');
+  const linux = src.slice(src.indexOf('function installLinux'), src.indexOf('function installDarwin'));
+  const darwin = src.slice(src.indexOf('function installDarwin'), src.indexOf('function install()'));
+  assert.match(linux, /launcher/, 'Linux goes through the launcher script');
+  assert.match(darwin, /launcher/, 'and so does macOS');
+  assert.match(src, /watch all/, 'the launcher runs the watchers');
+});
+
+// 演示命令要能看见出错闪烁和完成转圈 —— 它们是最容易被写坏的两段动效。
+test('bao demo walks through every state, including error and done', () => {
+  const cli = srcFile('cli.js');
+  const at = cli.indexOf('async function cmdDemo');
+  const body = cli.slice(at, at + 900);
+  for (const state of ['busy', 'waiting', 'error', 'done', 'idle']) {
+    assert.match(body, new RegExp(`\\['${state}'`), `${state} is part of the demo`);
+  }
+});
+
 test('the path still decides the state, and the query string still works', async () => {
   await api('/set/busy?agent=deepseek&session=q:1&detail=from%20query', {
     method: 'POST',
@@ -441,4 +514,57 @@ test('the path still decides the state, and the query string still works', async
   assert.equal(s.detail, 'from query');
 
   await api('/set/offline?session=q:1', { method: 'GET' });
+});
+
+// ---------------------------------------------------- overlay interaction traps
+
+const overlayFile = (name) => fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay', name), 'utf8');
+
+// 尺寸条和状态速览都是 z-index 22、都贴在底部，而提示条是唯一会说出
+// 「请执行 bao connect claude」的地方。它被盖住，用户就不知道该敲什么。
+test('the hint line sits above the size bar and the preview panel', () => {
+  const html = overlayFile('index.html');
+  const blocks = [...html.matchAll(/#note\s*\{[^}]*\}/g)].map((m) => m[0]);
+  assert.ok(blocks.length >= 1, 'the note has a rule');
+  const last = blocks[blocks.length - 1];
+  const z = Number((last.match(/z-index:\s*(\d+)/) || [])[1]);
+  assert.ok(z > 22, `the hint must sit above the panels at 22, got z-index ${z}`);
+});
+
+// 拖出窗口、切虚拟桌面、系统对话框抢焦点时不会有 pointerup。少了兜底，
+// `dragging` 留在 true，主进程继续把窗口钉在光标上 —— 用户只能再点一下。
+test('a dragged window cannot get stuck on the cursor', () => {
+  const js = overlayFile('ui.js');
+  assert.match(js, /setPointerCapture/, 'the pointer is captured so the release comes back');
+  assert.match(js, /addEventListener\('pointercancel'/, 'and a cancelled pointer ends the drag');
+  assert.match(js, /lostpointercapture/, 'so does a lost capture');
+});
+
+// 「已经只剩 3%」和「刚刚掉到 3%」不是一回事。初值写成 false 会让前者一开机
+// 就弹一次通知，而用户什么也没做。
+test('a gauge that is already low at startup does not fire a notification', () => {
+  const js = overlayFile('ui.js');
+  assert.match(js, /let lastFuelLow = null/, 'unknown is not the same as "was fine"');
+  assert.match(js, /low && lastFuelLow === false/, 'only a real drop notifies');
+});
+
+// 成绩与最近动态只在设置菜单里可见，而 render() 每收到一条 SSE 帧都会调它们。
+// 菜单关着还重建，等于往一个看不见的地方扔几十个节点。
+test('closed menu panels are not rebuilt on every frame', () => {
+  const js = overlayFile('ui.js');
+  for (const fn of ['renderRecent', 'renderScore']) {
+    const at = js.indexOf(`function ${fn}`);
+    assert.ok(at > 0, `${fn} exists`);
+    assert.match(js.slice(at, at + 400), /if \(menu\.hidden\) \{ panelDirty = true; return; \}/,
+      `${fn} must bail out while the menu is closed`);
+  }
+  assert.match(js, /if \(open && panelDirty && lastSnap\)/, 'and be redrawn the moment it opens');
+});
+
+// 读屏是第二条输出通道，它必须和灯说的是同一件事。曾经想给它加 2 秒节流，
+// 结果是「灯已经变绿、读屏还说需要你」—— 两条通道对同一个事实说法不同，
+// 比偶尔多念一句糟得多。
+test('the spoken text is never delayed behind the lamp', () => {
+  const js = overlayFile('ui.js');
+  assert.doesNotMatch(js, /spokenAt/, 'no throttle clock may gate the announcement');
 });

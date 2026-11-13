@@ -746,7 +746,41 @@ test('an agent name is shown as text, never as markup', async ({ page }) => {
   await api('/state', { session: 'xss', agent: name, state: 'waiting' });
   await settled(page, () => document.body.dataset.state).toBe('waiting');
 
+  // 「最近动态」只在设置菜单里可见，而菜单关着时面板不重建（看不见的东西不画）。
+  // 打开它 —— 这也正是用户看到这条记录的路径。
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+
   expect(await page.evaluate(() => document.getElementById('m-recent').innerHTML)).not.toContain('<img');
   expect(await page.evaluate(() => window.__pwned)).toBeUndefined();
   expect(await page.evaluate(() => document.getElementById('m-recent').textContent)).toContain('onerror');
+});
+
+// 工具栏和尺寸条都只认指针。键盘用户至少要有办法打开设置、关掉浮层，
+// 否则「自定义」这个功能对他们是完全不存在的。
+test('the settings menu can be opened and closed from the keyboard', async ({ page }) => {
+  const open = () => page.evaluate(() => !document.getElementById('menu').hidden);
+
+  await page.evaluate(() => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: ',', ctrlKey: true, bubbles: true }));
+  });
+  expect(await open(), 'Ctrl+, opens settings').toBe(true);
+
+  await page.keyboard.press('Escape');
+  expect(await open(), 'Escape closes it again').toBe(false);
+});
+
+// 工具栏隐藏时仍在 tab 序列里（opacity:0 不会移除焦点）。聚焦到它上面时
+// 必须现身，否则用户看不到自己正在操作什么。
+test('the hidden toolbar reveals itself when it takes focus', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-quit').focus());
+  expect(await page.evaluate(() => document.getElementById('bar').matches(':focus-within'))).toBe(true);
+  expect(await page.evaluate(() => getComputedStyle(document.getElementById('bar')).opacity)).toBe('1');
+});
+
+// 「请执行 bao connect claude」只写在画面上，读屏用户就永远不知道该敲什么。
+test('the two advisory lines are announced, not only drawn', async ({ page }) => {
+  for (const id of ['note', 'disconnected']) {
+    await expect(page.locator('#' + id)).toHaveAttribute('role', 'status');
+    await expect(page.locator('#' + id)).toHaveAttribute('aria-live', 'polite');
+  }
 });

@@ -191,7 +191,7 @@ test('installing hooks keeps every key it does not own', () => {
     assert.deepEqual(s.env, { FOO: '1' });
     assert.deepEqual(s.permissions, { allow: ['Bash(ls:*)'] });
     const hooks = Object.values(s.hooks).flat().flatMap((g) => g.hooks).length;
-    assert.equal(hooks, 9, 'all nine lifecycle hooks are wired');
+    assert.equal(hooks, 8, 'all eight lifecycle hooks are wired');
   });
 });
 

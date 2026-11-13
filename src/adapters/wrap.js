@@ -148,12 +148,29 @@ function run(argv, opts = {}) {
   };
   process.stdout.on('resize', onResize);
 
+  let finished = false;
   const finish = (code) => {
+    if (finished) return;
+    finished = true;
     clearTimeout(quietTimer);
     process.stdout.removeListener('resize', onResize);
     if (process.stdin.isTTY) { try { process.stdin.setRawMode(false); } catch {} }
     process.stdin.pause();
     setState({ session, agent, state: 'offline' }).finally(() => process.exit(code || 0));
+  };
+
+  // Windows 上 pty 的「子进程」其实是 `cmd.exe /c <shim>`，真正的 agent 是
+  // 它的孙进程。只 kill cmd.exe 会把 agent 留成孤儿：终端关了，代理还在跑，
+  // 灯却已经下线。/T 才会连整棵树一起收掉。
+  const killTree = () => {
+    if (process.platform === 'win32' && child.pid) {
+      try {
+        require('child_process').execFileSync(
+          'taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+        return;
+      } catch { /* 没 taskkill 或被拒绝：退回 child.kill */ }
+    }
+    try { child.kill(); } catch { /* 已经退出 */ }
   };
 
   // 任何异常退出路径也要把终端还回去：留着 raw mode 的终端不再回显回车，
@@ -165,7 +182,12 @@ function run(argv, opts = {}) {
   child.onExit(({ exitCode }) => finish(exitCode));
 
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    process.on(sig, () => { try { child.kill(); } catch { finish(0); } });
+    process.on(sig, () => {
+      killTree();
+      // pty 的退出事件不保证会回来（被强杀的 conhost、卡住的 shell）。
+      // 一秒后无论如都把终端还回去，别让用户对着一个不回显的 shell。
+      setTimeout(() => finish(0), 1000).unref?.();
+    });
   }
 }
 

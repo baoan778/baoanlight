@@ -6,6 +6,7 @@
 ● 绿色   代理正在干活（亮 = 运行中）
 ● 黄色   代理停下来了，在等你（权限、提问、选择题）
 ● 红色   这一轮出错了，或者被卡住
+● 紫色   这一轮刚刚成功完成（瞬态，30 秒后回到白色）
 ● 白色暗  代理还开着，但没在干活
 ● 熄灭   没有代理在运行 / 未安装
 ```
@@ -30,7 +31,7 @@ Gemini CLI、Aider、Cursor、opencode、Copilot、Cline、Windsurf、Qwen Code�
 
 **能做什么**（全部本地，无遥测）：
 
-- **四色状态灯**：绿=运行、黄=需要你、红=失败、白=空闲，语义严格、绝不撒谎（见 [docs/state-design.md](docs/state-design.md)）
+- **状态灯**：绿=运行、黄=需要你、红=失败、紫=刚完成（瞬态）、白=空闲，语义严格、绝不撒谎（见 [docs/state-design.md](docs/state-design.md)）
 - **多代理同时盯**：胸口 8 段槽位灯 + 底座 16 段灯环，谁在跑、谁在拖后腿一眼可见
 - **cc-switch 联动**：被接管后显示真实模型/供应商（「Claude Code 用 deepseek-v4.1-flash」）
 - **情绪表情**：出错头顶冒火焰 + 虹膜发红，等待含泪跺脚，未知瞳孔放大，完成喷金色星星
@@ -100,7 +101,7 @@ bao status --json      # 同一份数据，给脚本/直播/第二屏用
 bao agents             # 支持哪些代理、各自怎么接
 bao clear              # 清掉崩溃代理留下的僵尸会话
 bao doctor             # 体检：本机接线是否正确
-bao demo               # 依次播放四种状态，检查动效
+bao demo               # 依次播放五种状态，检查动效
 bao stop               # 全部关闭
 ```
 
@@ -127,7 +128,7 @@ bao connect claude     # 写 ~/.claude/settings.json（--scope project 只写当
 
 | 代理 | 状态 | 方式 |
 |---|---|---|
-| Claude Code | 全部三种，按会话 | 九个生命周期钩子 |
+| Claude Code | 全部三种，按会话 | 八个生命周期钩子 |
 | Codex | 全部三种 | `bao watch codex` 读取会话日志 |
 
 Claude Code 的钩子不需要重启即可生效。钩子脚本 1.5 秒硬超时、任何异常都静默退出 0——
@@ -251,7 +252,7 @@ bao fuel 12 --used --agent ci --label "build minutes"   # --used 表示「已用
 
 - **段灯**常亮，任何一个软件的状态都不会被别的软件盖住——不用切换、不用轮播。
 - **主灯**（大灯 + 地面溢光 + 全身姿态）只显示最要紧的那一个：
-  **红 > 黄 > 绿 > 灰白 > 白暗 > 熄灭**。
+  **红 > 黄 > 绿 > 紫 > 灰白 > 白暗 > 熄灭**。
 - **同级冲突**：按上面的固定顺序取靠前的那个，永远一致。谁后上报不影响结果，
   否则两个同优先级的软件会让主灯来回跳。
 - **同一软件多开**：合成一段，显示最坏的那个，标签写 `×N`。
@@ -317,8 +318,8 @@ bao fuel 12 --used --agent ci --label "build minutes"   # --used 表示「已用
 ## 本机接线对不对
 
 ```bash
-npm test         # 135 个逻辑测试：状态机、适配器、钩子、安装器、电量、鉴权、调色板、事件契约、HTTP 请求体与配置落盘、启动自检
-npm run test:ui  # 61 个渲染测试：机器人、拆解台、标签、电量条、CSP、XSS、朗读文本、帧率/降级预算，以及落地页对比度
+npm test         # 150 个逻辑测试：状态机、适配器、钩子、安装器、电量、鉴权、调色板、事件契约、HTTP 请求体与配置落盘、启动自检
+npm run test:ui  # 64 个渲染测试：机器人、拆解台、标签、电量条、CSP、XSS、朗读文本、键盘路径、帧率/降级预算，以及落地页对比度
 npm run lint     # 未定义的变量、声明了没用的变量、重复键、走不到的代码
 bao doctor       # 本机：二进制、配置路径、日志目录、服务器
 ```
@@ -335,7 +336,7 @@ bao doctor       # 本机：二进制、配置路径、日志目录、服务器
   是否显示标签、四个超时（`sessionTtlMs` / `idleTtlMs` / `quietAfterMs` / `unusedTtlMs`）、
   各代理日志目录 `agents`
 - `hook-events.log` —— 每个钩子事件 → 状态映射的流水账（`BAOANLIGHT_LOG=0` 关闭）
-- `token` —— 本机写入令牌（0600，首次启动自动生成）。`bao token` 打印它；
+- `token` —— 本机写入令牌（POSIX 下 0600；Windows 继承用户目录 ACL，首次启动自动生成）。`bao token` 打印它；
   钩子、CLI、MCP 自己读，不需要你抄到任何地方
 - `port`、`server.log`
 
@@ -391,7 +392,8 @@ bao doctor       # 本机：二进制、配置路径、日志目录、服务器
 - **WorkBuddy** 的任务板是计划状态，不是逐 token 状态；没有 `in_progress` 任务时它可能显示
   绿灯而实际仍在思考。要精确请用 `bao hook --agent workbuddy`。
 - 其他代理的日志格式没有公开规范，解析是宽容匹配；改 `src/adapters/log-watch.js` 一处即可。
-- 机器人的动效遵循 `prefers-reduced-motion`：系统开启「减少动态效果」后全部静止。
+- 机器人的动效遵循 `prefers-reduced-motion`：系统开启「减少动态效果」后动作幅度归零，
+  整场帧率降到 8fps（灯效本身不变，状态仍然可读）。
 
 ---
 

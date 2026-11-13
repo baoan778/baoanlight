@@ -68,25 +68,35 @@ test.beforeEach(async () => {
   await reset();
 });
 
+// 档位分两层断言：`data-target-fps` 是逻辑要求的节奏，`data-fps` 是这台机器
+// 实际画出来的。速度只有在「慢档」上才是稳定的（15/8 的余量足够大）；忙碌档
+// 在软件渲染或机器正忙时可能远低于 60，那是环境，不是产品缺陷 —— 拿它当断言
+// 会让测试随负载忽绿忽红。
+const targetFps = (page) =>
+  page.evaluate(() => Number(document.getElementById('bot').dataset.targetFps));
+
 test('an idle robot draws at a fraction of the working rate', async ({ page }) => {
   await open(page);
   const fps = await steadyFps(page);
-  expect(fps, 'nothing is running: this should be the 15fps tier').toBeLessThanOrEqual(20);
+  expect(await targetFps(page), 'nothing is running: the tier is 15fps').toBe(15);
+  expect(fps, 'and it really is drawn slowly').toBeLessThanOrEqual(20);
   expect(fps, 'but it must still be alive').toBeGreaterThan(0);
 });
 
 test('"reduce motion" slows the whole scene down, not just one animation', async ({ page }) => {
   await open(page, { reducedMotion: 'reduce' });
   const fps = await steadyFps(page);
-  expect(fps, 'the accessibility tier is 8fps').toBeLessThanOrEqual(12);
+  expect(await targetFps(page), 'the accessibility tier is 8fps').toBe(8);
+  expect(fps).toBeLessThanOrEqual(12);
 });
 
-test('a working robot still draws every frame it can', async ({ page }) => {
+test('a working robot still asks for every frame it can', async ({ page }) => {
   await api('/state', { session: 'perf', agent: 'claude', state: 'busy' });
   await open(page);
   await page.waitForFunction(() => document.body.dataset.state === 'busy');
+  expect(await targetFps(page), 'busy keeps the 60fps tier').toBe(60);
   const fps = await steadyFps(page);
-  expect(fps, 'busy keeps the 60fps tier').toBeGreaterThan(12);
+  expect(fps, 'and the loop is still drawing').toBeGreaterThan(0);
 });
 
 // 这条守的是一个真实存在过的缺陷：降级阈值写死 24fps，而空闲档位本来就只跑

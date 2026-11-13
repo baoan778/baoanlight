@@ -86,7 +86,7 @@
 | 环节 | 实现 |
 |---|---|
 | 上报 | `POST /state`（hooks / adapters：`claude`、`codex`、`dsh-watch`、`log-watch`、`task-watch`） |
-| 传输 | `GET /events`，SSE，首帧立即推送，25s 心跳；断线 1.5s 自动重连 |
+| 传输 | `GET /events`，SSE，首帧立即推送，25s 心跳；断线后指数退避重连（0.5s 起，上限 15s） |
 | 频率 | 变化即推，无变化不重发；DOM 与 3D 都只在收到帧时更新 |
 | 兜底 1 | 什么都没连：`offline`，灯全灭，只留环境光 |
 | 兜底 2 | 发现进程但没有上报：`unknown`（`presence`），并提示 `bao connect claude` |
@@ -125,7 +125,7 @@
   而不是只放大灯。
 - 范围 70%–170%；窗口以**底边中心**为锚重新定位，并 clamp 在屏幕工作区内，
   所以拖大不会跑出桌面。
-- 3D backing store 的像素比随 scale 提高（上限 2.5），放大后不糊。
+- 3D backing store 的像素比随 scale 提高（`min(2, devicePixelRatio × scale)`），放大后不糊。
 - 档位写进 `config.scale`，重启保持；齿轮进入完整设置（声音 / 穿透 / 列表 / 灯光亮度）。
 - **滑杆不溢出**：`<input type=range>` 在 Chromium 里有约 129px 的内容最小宽度，
   若不加 `min-width: 0`，滑轨与滑块会从尺寸条/设置菜单里溢出来。尺寸条加宽到
@@ -142,8 +142,8 @@
 
 | 手段 | 说明 |
 |---|---|
-| 帧率分档 | busy / waiting / error 目标 60fps，其余 30fps，`prefers-reduced-motion` 时 8fps |
-| 自适应降级 | 连续 1s 实测 < 24fps → 像素比封顶 1.25 并关闭扬尘，只降一次（避免来回抖动） |
+| 帧率分档 | busy / waiting / error 目标 60fps；done / unknown / idle 30fps；offline 且无自主动作 15fps；`prefers-reduced-motion` 时整场 8fps（优先于状态档） |
+| 自适应降级 | 连续 1s 实测 < 24fps → 像素比封顶 1x 并关闭扬尘，只降一次（避免来回抖动） |
 | 埋点 | `#bot` 上的 `data-fps` 暴露实测帧率，验收时直接读 |
 | 履带 | 44 个履带齿用 `InstancedMesh`，滚动只更新矩阵，不建对象 |
 | 灯效 | 灯环 16 个材质的 emissive 直接改值；胸口灯叠加 additive 辉光 sprite。无后处理、无 bloom，所以透明窗口不会出现方形底 |
@@ -155,7 +155,7 @@
 
 ## 7. 验收清单
 
-### 7.1 自动化（`npx playwright test`，59 条全绿）
+### 7.1 自动化（`npx playwright test`，64 条全绿）
 
 3D 拆解台（2026-11-12，`test-ui/teardown.spec.js`，页面在 `/teardown/`）：
 
@@ -202,14 +202,15 @@
 1. **单软件运行**：`bao set busy --agent claude` → 胸口绿灯脉动、前脸跑马灯、桌面一圈绿光跑马、履带滚动、手臂泵动。
 2. **多软件**：再 `bao set waiting --agent codex`、`bao set error --agent workbuddy` →
    主灯变红（最坏者）、灯环出现红/黄/绿三段、铭牌写着红灯对应的那个软件名、右侧 pill 三行。
-3. **完成**：`bao set idle --agent claude` → 机器人原地转一圈 + 连跳两下，颜色保持白，**不**变绿。
+3. **完成**：`bao set idle --agent claude`（或显式 `bao set done`）→ 机器人原地转一圈 + 连跳两下，
+   `done` 显示紫色并在 30 秒后回落白色，**不**变绿。
 4. **眼睛跟随**：把鼠标缓慢停在两个镜片之间 → 头跟着转，身体不动、不甩尾。
 5. **身体转身**：把鼠标沿机身从左划到右 → 整机（连履带）左右各转约 49°，能看到侧面与背面挂钩、散热格栅；左右履带反向滚（差速转向），胸口主灯与仪表舱始终可读。
 6. **问候**：双击机器人 → 双臂抬起、肘部弯曲、手指张开挥手 2 秒。
 7. **尺寸**：右键 → 拖动滑杆到 150% → 机器人、fuel 条、pill 一起变大，窗口向上长，不跑出屏幕；
    重启后仍是 150%。
 8. **断连**：关掉 server → 机器人变暗、灯环熄灭、底部出现 `no connection — state unknown`；
-   重开 server 后 1.5s 内自动恢复。
+   重开 server 后 0.5s 内开始重试，通常立刻恢复（连续失败则按 0.5s→15s 退避）。
 
 ### 7.3 视觉验收
 

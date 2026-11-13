@@ -4,8 +4,9 @@
 //
 // Codex calls the program in `notify` with a single JSON argument describing the
 // event. It only fires on notable moments (turn finished, approval needed), so
-// this adapter drives red and green. For a yellow "working" lamp as well, run
-// Codex through `bao watch codex`, or `bao wrap -- codex` as a last resort.
+// this adapter drives done (purple) and waiting (yellow). For a green "working"
+// lamp as well, run Codex through `bao watch codex`, or `bao wrap -- codex` as a
+// last resort — notify alone never sees the start of a turn.
 
 const { setState, noteUnknown } = require('../client');
 
@@ -16,7 +17,10 @@ const { setState, noteUnknown } = require('../client');
 function classify(type) {
   const t = String(type || '').toLowerCase();
   if (t.includes('approval') || t.includes('request') || t.includes('input')) return 'waiting';
-  if (t.includes('complete') || t.includes('finish') || t.includes('done')) return 'idle';
+  // 成功收尾是 done（紫色），不是 idle（白色）：这是「刚刚做完」和「现在闲着」
+  // 的区别，也是 docs/adapters.md 的事件词表。日志观察器早就这样映射了，
+  // 两个适配器对同一个词给出两种颜色，就是灯在自相矛盾。
+  if (t.includes('complete') || t.includes('finish') || t.includes('done')) return 'done';
   if (t.includes('start') || t.includes('begin') || t.includes('turn')) return 'busy';
   return null;
 }

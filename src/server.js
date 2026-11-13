@@ -18,12 +18,25 @@ const MIME = {
 
 function readBody(req, limit = 64 * 1024) {
   return new Promise((resolve, reject) => {
-    let data = '';
+    // 按字节收，不按字符串拼：`data += chunk` 会对每个 TCP 分片单独做一次
+    // UTF-8 解码，一个中文字符正好跨在两个分片之间时，两边都会变成 U+FFFD
+    // （详情文案里出现的「�」就是这么来的）。而且 limit 必须按字节算，
+    // 否则 16KB 的请求体在中文下实际能到 ~48KB。
+    const chunks = [];
+    let size = 0;
+    let tooLarge = false;
     req.on('data', (c) => {
-      data += c;
-      if (data.length > limit) { reject(new Error('body too large')); req.destroy(); }
+      if (tooLarge) return;   // 继续把连接读完，否则 400 还没发出去就被 reset 了
+      size += c.length;
+      if (size > limit) {
+        tooLarge = true;
+        chunks.length = 0;
+        reject(new Error('body too large'));
+        return;
+      }
+      chunks.push(c);
     });
-    req.on('end', () => resolve(data));
+    req.on('end', () => { if (!tooLarge) resolve(Buffer.concat(chunks).toString('utf8')); });
     req.on('error', reject);
   });
 }
@@ -42,26 +55,38 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
     store.mergeStats(JSON.parse(fs.readFileSync(statsFile, 'utf8')));
   } catch { /* 首次运行或文件损坏 */ }
   let statsTimer = null;
+  // 落盘抽成一个函数：防抖定时器会用它，`/quit` 和 server 关闭时也要用它。
+  // 否则 `bao stop` 永远丢掉最后 2 秒的今日统计。
+  const flushStats = () => {
+    clearTimeout(statsTimer);
+    statsTimer = null;
+    try {
+      config.ensureDir();
+      fs.writeFileSync(statsFile, JSON.stringify(store.stats));
+    } catch { /* 写不进也不影响运行 */ }
+  };
   store.on('change', () => {
     if (statsTimer) return;
-    statsTimer = setTimeout(() => {
-      statsTimer = null;
-      try {
-        config.ensureDir();
-        fs.writeFileSync(statsFile, JSON.stringify(store.stats));
-      } catch { /* 写不进也不影响运行 */ }
-    }, 2000);
+    statsTimer = setTimeout(flushStats, 2000);
     if (statsTimer.unref) statsTimer.unref();
   });
 
   const clients = new Set();
 
-  // 启动自检：每次启动同步跑一遍，结果挂进快照（机器人窗口据此提示）+ 单独端点。
-  const selfcheckResult = selfcheck.run();
+  // 启动自检：结果挂进快照（机器人窗口据此提示）+ 单独端点。
+  //
+  // 但不能只算一次：用户完全可能先启动、再 `bao connect claude` 把钩子修好，
+  // 而一次性的结果会让窗口和 CLI 一直念「未安装」，直到重启 server。
+  // 30 秒的 TTL 足够让修复被看见，又不会每次 SSE 帧都去摸磁盘。
+  let selfcheckResult = selfcheck.run();
+  const currentSelfcheck = () => {
+    if (Date.now() - (selfcheckResult.at || 0) > 30_000) selfcheckResult = selfcheck.run();
+    return selfcheckResult;
+  };
 
   // `presence` is evidence, not state: true means "a Claude process exists",
   // false means "we could not prove one does" (see src/presence.js).
-  const frame = () => ({ ...store.snapshot(), presence: presence.lastValue(), ccSwitch: ccSwitch.lastValue(), selfcheck: selfcheckResult });
+  const frame = () => ({ ...store.snapshot(), presence: presence.lastValue(), ccSwitch: ccSwitch.lastValue(), selfcheck: currentSelfcheck() });
 
   const send = (res, code, obj) => {
     const body = JSON.stringify(obj);
@@ -70,25 +95,35 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
   };
 
   const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, 'http://localhost');
-    const p = url.pathname;
     // Port 0 means the OS picked one, so the real port only exists here.
     const boundPort = (server.address() || {}).port || port;
 
-    // 绑定 127.0.0.1 挡不住「别人网页里的 <img>」和 DNS rebinding —— 所以每个请求
-    // 先过 Host/Origin，写入再过 token。CORS 也不再是 `*`：只有同源的浏览器页面
-    // 才拿到回显的 Origin，别的源连读都读不到。
-    const verdict = auth.guard(req, url, boundPort);
-    if (!verdict.ok) return send(res, verdict.code, { error: verdict.error });
-
-    if (req.headers.origin) {
-      res.setHeader('access-control-allow-origin', req.headers.origin);
-      res.setHeader('vary', 'origin');
+    // 请求行可以是 absolute-form（`GET http://127.0.0.1:99999/`）。端口越界、
+    // 控制字符都会让 URL 构造抛错 —— 它必须在 try 里：async handler 的拒绝
+    // 会变成 unhandledRejection，Node 20 默认直接结束整个进程，一行畸形请求
+    // 就能把机器人从桌面上打掉。
+    let url;
+    try {
+      url = new URL(req.url || '/', 'http://localhost');
+    } catch {
+      return send(res, 400, { error: 'bad request target' });
     }
-    res.setHeader('access-control-allow-headers', 'content-type, x-bao-token');
-    if (req.method === 'OPTIONS') return res.writeHead(204).end();
+    const p = url.pathname;
 
     try {
+      // 绑定 127.0.0.1 挡不住「别人网页里的 <img>」和 DNS rebinding —— 所以每个
+      // 请求先过 Host/Origin，写入再过 token。CORS 也不再是 `*`：只有同源的
+      // 浏览器页面才拿到回显的 Origin，别的源连读都读不到。
+      const verdict = auth.guard(req, url, boundPort);
+      if (!verdict.ok) return send(res, verdict.code, { error: verdict.error });
+
+      if (req.headers.origin) {
+        res.setHeader('access-control-allow-origin', req.headers.origin);
+        res.setHeader('vary', 'origin');
+      }
+      res.setHeader('access-control-allow-headers', 'content-type, x-bao-token');
+      if (req.method === 'OPTIONS') return res.writeHead(204).end();
+
       // `clients` is how many overlays are listening. A running server with
       // nobody watching is not a running robot.
       // 回真实绑定的端口：`--port 0` 时请求里的 0 毫无意义，而 README 的
@@ -97,7 +132,7 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
 
       if (p === '/state' && req.method === 'GET') return send(res, 200, frame());
 
-      if (p === '/selfcheck') return send(res, 200, selfcheckResult);
+      if (p === '/selfcheck') return send(res, 200, currentSelfcheck());
 
       if (p === '/state' && req.method === 'POST') {
         const raw = await readBody(req);
@@ -155,8 +190,16 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
         });
         res.write(`data: ${JSON.stringify(frame())}\n\n`);
         clients.add(res);
-        const ping = setInterval(() => res.write(': ping\n\n'), 25_000);
-        req.on('close', () => { clearInterval(ping); clients.delete(res); });
+        // 客户端半关连接后，`res.write` 的失败是异步 emit 的：没有 error
+        // 监听器就是未捕获异常，一次断线能把整个 server 带走。
+        let ping = null;
+        const drop = () => {
+          if (ping) clearInterval(ping);
+          clients.delete(res);
+        };
+        res.on('error', drop);
+        ping = setInterval(() => { try { res.write(': ping\n\n'); } catch { drop(); } }, 25_000);
+        req.on('close', drop);
         return;
       }
 
@@ -169,6 +212,8 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
 
       if (p === '/quit' && req.method === 'POST') {
         send(res, 200, { ok: true });
+        // 先把防抖里那 2 秒的今日统计写下去，再退出。
+        flushStats();
         return setTimeout(() => process.exit(0), 50);
       }
 
@@ -188,9 +233,14 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
 
       return send(res, 404, { error: 'not found' });
     } catch (err) {
+      // 静态文件是流式写出的：响应已经开始之后再 writeHead 会再抛一次，
+      // 那一次没人接，等于把「404」换成「进程崩溃」。
+      if (res.headersSent) { try { res.end(); } catch { /* 已经关了 */ } return; }
       return send(res, 400, { error: String(err.message || err) });
     }
   });
+  // 进程被 `server.close()`（测试、`bao stop` 之外的路由）收掉时也落盘一次。
+  server.once('close', flushStats);
 
   store.on('change', () => {
     const line = `data: ${JSON.stringify(frame())}\n\n`;

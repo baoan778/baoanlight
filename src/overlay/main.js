@@ -334,6 +334,12 @@ ipcMain.on('teardown:open', () => {
   teardownWin.loadURL(URL_BASE + '/teardown/');
   teardownWin.on('closed', () => { teardownWin = null; });
   teardownWin.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+  // 拆解台和主窗口共用同一份 preload（通知、开终端、退出都挂在它上面）。
+  // 既然能力跟着渲染进程走，那么「这个窗口停在哪里」也是一条安全边界：
+  // 主窗口有这个守卫，拆解台没有，等于开了一扇没锁的侧门。
+  teardownWin.webContents.on('will-navigate', (e, url) => {
+    if (!url.startsWith(URL_BASE)) e.preventDefault();
+  });
 });
 
 // 原生系统通知：某个软件需要你 / 出错 / 额度见底时弹一次。

@@ -1,6 +1,5 @@
 node_modules/
 *.baoanlight-backup-*
-*.aitl-backup-*
 *.signalhead-backup-*
 .DS_Store
 

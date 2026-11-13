@@ -72,6 +72,10 @@ function writeJson(file, data) {
 
 // ---------------------------------------------------------------- Claude Code
 
+// SubagentStop 刻意不在列表里：它总在 Stop 之后几秒才到，映射成 busy 会把刚
+// 变绿的灯重新点亮，映射成别的又没有任何信息量。hooks/claude.js 已经把它列入
+// IGNORED —— 装一个只会空转的钩子（每次子代理结束都起一个 node 进程）不是
+// 「更全」，是让用户多付一份启动开销。
 const CLAUDE_EVENTS = [
   'SessionStart',
   'UserPromptSubmit',
@@ -79,7 +83,6 @@ const CLAUDE_EVENTS = [
   'PostToolUse',
   'Notification',
   'Stop',
-  'SubagentStop',
   'PreCompact',
   'SessionEnd',
 ];
@@ -163,7 +166,6 @@ function stripNotify(lines) {
 
 function installCodex() {
   const file = codexConfigPath();
-  const bak = backup(file);
   const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
   const notify = `notify = ["${nodeBin}", "${hookScript('codex')}"]`;
 
@@ -171,8 +173,11 @@ function installCodex() {
   // 人，正在用的可能是桌面提醒或他自己的脚本。告诉他，让他决定。
   const foreign = existing.split(/\r?\n/).find((l) => NOTIFY_RE.test(l) && !isOurs(l));
   if (foreign) {
-    return { file, backup: bak, skipped: true, foreign: foreign.trim() };
+    // 还没有动过文件，就不要留备份：跳过时也备份，会让反复尝试 `bao connect
+    // codex` 的用户在每个目录里攒下一堆时间戳副本。
+    return { file, backup: null, skipped: true, foreign: foreign.trim() };
   }
+  const bak = backup(file);
 
   // `notify` is a top-level key, so it has to sit above the first [table] header.
   const lines = stripNotify(existing.split(/\r?\n/));
@@ -188,10 +193,11 @@ function installCodex() {
 function uninstallCodex() {
   const file = codexConfigPath();
   if (!fs.existsSync(file)) return { file, removed: 0 };
-  const bak = backup(file);
   const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
   const kept = stripNotify(lines);
-  if (kept.length === lines.length) return { file, backup: bak, removed: 0 };
+  // 没有可删的东西就别备份：否则「本来就没装」的一次调用也会留下副本。
+  if (kept.length === lines.length) return { file, removed: 0 };
+  const bak = backup(file);
   fs.writeFileSync(file, kept.join('\n'));
   return { file, backup: bak, removed: lines.length - kept.length };
 }

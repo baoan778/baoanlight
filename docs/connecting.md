@@ -25,7 +25,8 @@
 bao connect claude
 ```
 
-写入 `~/.claude/settings.json` 的 9 个生命周期钩子，**立即生效、无需重启**。
+写入 `~/.claude/settings.json` 的 8 个生命周期钩子，**立即生效、无需重启**。
+（`SubagentStop` 不装：它总在 `Stop` 之后几秒才到，装上也只会空转。）
 
 - 只写当前仓库、不碰全局：`bao connect claude --scope project`
 - 撤销：`bao disconnect claude`

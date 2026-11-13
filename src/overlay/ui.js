@@ -114,10 +114,11 @@ import {
   // 点击聚焦：null = 自动聚合（主灯显示最坏者）；非 null = 聚焦到某个软件，
   // 主灯临时显示该软件的状态，但四个通道始终各自可见。
   let focusedAgent = null;
-  // 戳一下 = 「我看到了」：安静 60 秒，不动灯。灯说的是事实，静音只关声音。
-  // 原来记的是「哪个状态被静音过」，但提示音本来就只在状态变化时响一次 ——
-  // 状态没变就不会再响，那个判断永远不成立，是一句空承诺。
-  let silentUntil = 0;
+  // 戳一下 = 「我看到了」：只安静**这一次**事件，不动灯。灯说的是事实，
+  // 静音只关声音；一旦状态变了（新的「需要你」、新的报错），声音必须回来。
+  // 之前写成固定 60 秒，会把 60 秒内第二个软件的告警一起吞掉 —— 对一个承诺
+  // 「绝不漏报」的工具，这不是静音，是漏报。
+  let silencedState = null;
   // 预览状态时置 true：预览只改画面，不触发真实的通知/声音/语音，也不让任何
   // 后台刷新把预览状态覆盖掉；预览结束再恢复真实状态。
   let previewing = false;
@@ -236,7 +237,11 @@ import {
   function cue(kind) {
     if (!cfg.sound) return;
     if (isMuted()) return;
-    if (Date.now() < silentUntil) return;
+    if (silencedState && kind === silencedState) return;
+    // 先判断「这个状态有没有音效」，再占用限流窗口。反过来的话，一个
+    // busy → idle（本来静默）会把 2.5 秒窗口吃掉，紧接着另一个软件报
+    // error 就没声了 —— 安静的状态不该消费告警的配额。
+    if (!TONES[kind]) return;   // idle / offline 静默：安静是刻意的
     const now = Date.now();
     if (now - lastCue < 2500) return;      // one cue per incident, not per event
     lastCue = now;
@@ -245,7 +250,6 @@ import {
       if (!AC) return;
       actx = actx || new AC();
       if (actx.state === 'suspended') actx.resume();
-      if (!TONES[kind]) return;   // idle / offline 静默：安静是刻意的
       const style = SOUND_STYLES[cfg.soundStyle] || SOUND_STYLES['清脆叮咚'];
       const tones = TONES[kind];
       const peak = Number(cfg.soundVolume) || 0.22;
@@ -271,8 +275,8 @@ import {
   window.addEventListener('bao:poke', () => {
     const s = document.body.dataset.state;
     if (s !== 'waiting' && s !== 'error') return;
-    silentUntil = Date.now() + 60_000;
-    flashNote('已静音提示 60 秒');
+    silencedState = s;
+    flashNote('已静音这次提示');
   });
 
   // 一行短提示，1.6 秒后收回。
@@ -408,10 +412,12 @@ import {
     window.dispatchEvent(new CustomEvent('bao:render', { detail }));
   }
 
-  // "Done" is not a state the server has: a run finishing is busy → idle, and
-  // the machine answers it with two nods, not a colour change. Green means
-  // "working", so a green flash on an idle robot is exactly the lie this tool
-  // exists to prevent — the acknowledgement is motion, not light.
+  // 完成的两种来源要分开看：
+  //   * 只报 Stop 的代理（Claude Code）是 busy → idle。服务端没有额外的完成
+  //     信号，于是机器人用「转一圈 + 连跳两下」确认，而不是换颜色。
+  //   * 能报显式完成的代理（日志观察器 / MCP / bao set done）会给出 done
+  //     （紫色，30 秒后自动回落 idle）。两种都触发同一个动作，绿色永远只
+  //     表示「正在跑」——空闲机器人闪绿才是这个工具最不能撒的谎。
   // cc-switch 切换提示：模型/供应商变了，机器人冒个气泡说一句。
   const lastCC = new Map();
   function announceCC(snap) {
@@ -453,9 +459,15 @@ import {
     row.append(b, span, em);
     return row;
   }
+  // 这两块只在设置菜单里可见，而 render() 每收到一条 SSE 帧就会调它们一次。
+  // 菜单关着的时候重建等于往一个看不见的地方扔几十个节点 —— 常驻窗口里每次
+  // 状态变化（忙碌时很密）都白做一次。记一个脏标记，等菜单真的打开再画。
+  let panelDirty = false;
+
   function renderRecent() {
     const box = document.getElementById('m-recent');
     if (!box) return;
+    if (menu.hidden) { panelDirty = true; return; }
     box.innerHTML = '';
     for (const r of recent) {
       const ago = Math.round((Date.now() - r.at) / 1000);
@@ -477,6 +489,7 @@ import {
   function renderScore(snap) {
     const box = document.getElementById('m-score');
     if (!box) return;
+    if (menu.hidden) { panelDirty = true; return; }
     const byAgent = snap?.stats?.byAgent || {};
     const events = snap?.stats?.events || {};
     const names = [...new Set([...Object.keys(byAgent), ...Object.keys(events)])]
@@ -691,13 +704,17 @@ import {
     }
   }
 
-  // 额度见底提醒：剩余额度从 >5% 掉到 ≤5% 时弹一次。
-  let lastFuelLow = false;
+  // 额度见底提醒：剩余额度**从 >5% 掉到 ≤5%** 时弹一次。
+  //
+  // 初值是 null 而不是 false：`false` 表示「上次看到的时候还够用」，而启动时
+  // 我们其实什么都没看到。已经只剩 3% 的用户一开机就被通知「快用完了」，
+  // 那不是「刚刚用完」，而是「我们刚知道」—— 两种意思不能共用一次弹窗。
+  let lastFuelLow = null;
   function notifyFuel(f) {
     if (!inElectron || !bridge.notify) return;
     if (isMuted()) return;
     const low = !!(f && typeof f.remaining === 'number' && f.remaining <= 5);
-    if (low && !lastFuelLow) {
+    if (low && lastFuelLow === false) {
       bridge.notify('额度快用完了', `${f.agent ? displayName(f.agent) + ' ' : ''}只剩 ${Math.round(f.remaining)}%`);
     }
     lastFuelLow = low;
@@ -714,6 +731,9 @@ import {
     else if (agent) text = `${displayName(agent)} ${VERB[state] || state}`;
     else text = VERB[state] || state;
     if (text === spoken) return;
+    // 不做节流：aria-live 是 polite，浏览器自己会排队朗读；而把「运行中」
+    // 延后两秒，会出现「灯已经变绿、读屏还说需要你」—— 这个工具最不能撒的谎
+    // 就是让两条输出通道对同一个事实说法不同。
     spoken = text;
     if (liveEl) liveEl.textContent = text;
   }
@@ -876,6 +896,8 @@ import {
     if (!previewing) {
       lastRealState = displayState;
       document.body.dataset.state = displayState;
+      // 状态已经变了，「这次事件」就结束了：解除单次静音，新的告警必须能出声。
+      if (silencedState && displayState !== silencedState) silencedState = null;
     }
     // 主灯代表的软件（状态最要紧的那个）：机器人待机时会瞄一眼它的槽位。
     const mainPriority = PRIO;
@@ -1086,6 +1108,13 @@ import {
     menu.hidden = !open;
     bar.classList.toggle('menu-open', open);
     if (open) setSizer(false);
+    // 菜单关着时那两块面板不重建（见 renderRecent / renderScore），所以打开
+    // 的这一刻必须补画一次，否则看到的是上次打开时的旧内容。
+    if (open && panelDirty && lastSnap) {
+      panelDirty = false;
+      renderScore(lastSnap);
+      renderRecent();
+    }
     fit();
   };
 
@@ -1650,6 +1679,7 @@ import {
     skin: '做旧黄', eyestyle: '默认黑', eyeshape: '圆', trackstyle: '黑', tracktype: '圆角矩形',
     armskin: '枪灰', claw: '铲形', armtype: '双板', headtype: '双筒', scene: '无',
     motion: '标准', halo: '环形', body: '标准', baseEffect: '状态色', brightness: 1,
+    decoration: '无',
     poses: { error: '环抱', waiting: '举手', busy: '泵动', done: '摊开', idle: '垂放' },
   };
   // 把一套外观即时套用到界面（不整页刷新）：逐个设置控件值并触发 change，
@@ -1773,8 +1803,20 @@ import {
     renderPresetList('');
   };
 
-  // 尺寸快捷键：Ctrl/⌘+Shift + = / - / 0。
+  // 键盘出口：工具栏和尺寸条都依赖指针，键盘用户至少要有办法打开设置、
+  // 关掉浮层。Esc 关菜单/尺寸条，Ctrl/⌘+, 开设置（和大多数应用的偏好设置一致）。
   window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (menuOpen) { e.preventDefault(); setMenu(false); }
+      else if (sizerOpen) { e.preventDefault(); setSizer(false); }
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === ',' || e.key === '，')) {
+      e.preventDefault();
+      setSizer(false);
+      setMenu(!menuOpen);
+      return;
+    }
     if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
     if (e.key === '=' || e.key === '+') { e.preventDefault(); applyScale(scale + 0.1, { persist: true }); }
     // Shift 按着时 '-' 的 e.key 是 '_'：只认 '-' 的话，界面上写着的那条快捷键
@@ -1798,7 +1840,7 @@ import {
   const EXPORT_KEYS = ['scale', 'brightness', 'baseEffect', 'body', 'theme', 'skin', 'eyestyle', 'trackstyle',
     'tracktype', 'armskin', 'claw', 'armtype', 'headtype', 'eyeshape', 'scene', 'motion',
     'idleActions', 'idleFreq', 'halo', 'agentOrder', 'poses', 'nameplate', 'sound', 'soundStyle',
-    'soundVolume', 'voice', 'clickThrough', 'showLabels', 'showOffline', 'showModel', 'maxRows',
+    'voice', 'clickThrough', 'showLabels', 'showOffline', 'showModel', 'maxRows',
     'presets', 'signMode', 'signPos', 'signColor', 'signShape', 'decoration'];
   document.getElementById('m-export').onclick = () => {
     syncCfg();
@@ -1867,6 +1909,11 @@ import {
     }, 1000);
     if (!inElectron) return;
     dragging = true;
+    // 抓住这个 pointer：拖到窗口外、系统弹窗抢走焦点、触控笔离开屏幕时，
+    // 浏览器会把 pointerup 补发回同一个元素，而不是让它凭空消失。
+    // 没有这一句，`dragging` 会留在 true，主进程的 16ms 轮询继续把窗口钉在
+    // 光标上 —— 用户看到的是「机器人黏住了」，只能再点一下才松开。
+    try { robot.setPointerCapture(e.pointerId); } catch { /* 老引擎不支持 */ }
     bridge.dragStart();
     window.dispatchEvent(new CustomEvent('bao:drag', { detail: { on: true } }));
   });
@@ -1897,6 +1944,10 @@ import {
     pressAt = 0;
   };
   window.addEventListener('pointerup', endDrag);
+  // 指针被系统收走（切虚拟桌面、弹出的系统对话框抢焦点、触控笔离屏）时不一定
+  // 有 pointerup。少了这两条兜底，窗口会一直跟着光标走到下一次点击。
+  window.addEventListener('pointercancel', endDrag);
+  document.addEventListener('lostpointercapture', endDrag);
   window.addEventListener('blur', endDrag);
 
   // A double click is a greeting, not a command: both arms up for two seconds.
@@ -1989,6 +2040,9 @@ import {
       const ask = ARMSKIN_NAMES.includes(cfg.armskin) ? cfg.armskin : '枪灰';
       armskinSel.value = ask;
       window.dispatchEvent(new CustomEvent('bao:armskin', { detail: { armskin: ask } }));
+      // 四项配色都已就位，现在才能判定主题；否则下拉停在第一项「经典战损黄」，
+      // 与机器人实际配色不符，用户也没法靠「再选一次」纠正。
+      syncThemeLabel();
       const cw = CLAW_NAMES.includes(cfg.claw) ? cfg.claw : '铲形';
       clawSel.value = cw;
       window.dispatchEvent(new CustomEvent('bao:claw', { detail: { claw: cw } }));

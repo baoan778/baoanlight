@@ -37,9 +37,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/deepak-hp/baoanlight.git"
+    "url": "git+https://github.com/baoan778/baoanlight.git"
   },
-  "homepage": "https://deepak-hp.github.io/baoanlight",
+  "homepage": "https://baoan778.github.io/baoanlight",
   "keywords": [
     "claude-code",
     "codex",
@@ -61,11 +61,12 @@
     "docs/index.html",
     "docs/*.md",
     "docs/robot.png",
+    "docs/demo",
     "README.md",
     "LICENSE"
   ],
   "bugs": {
-    "url": "https://github.com/deepak-hp/baoanlight/issues"
+    "url": "https://github.com/baoan778/baoanlight/issues"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

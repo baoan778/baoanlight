@@ -134,12 +134,19 @@ class Store extends EventEmitter {
   checkDay() {
     const today = dayKey();
     if (this.stats.day === today) return;
-    this.stats.history[this.stats.day] = {
-      byAgent: this.stats.byAgent,
-      events: this.stats.events,
-    };
-    const keys = Object.keys(this.stats.history).sort();
-    while (keys.length > 7) delete this.stats.history[keys.shift()];
+    // 和 mergeStats 一样：只有真的干过活的那一天才进历史。否则一台整夜
+    // 开着、什么都没跑的机器，每天都会往 history 里塞一个空白天，7 天之后
+    // 真正的战绩就被这些空条目挤出去了 —— 周报不是少了一天，是少了一周。
+    const hasData = Object.keys(this.stats.byAgent).length > 0
+      || Object.keys(this.stats.events).length > 0;
+    if (this.stats.day && hasData) {
+      this.stats.history[this.stats.day] = {
+        byAgent: this.stats.byAgent,
+        events: this.stats.events,
+      };
+      const keys = Object.keys(this.stats.history).sort();
+      while (keys.length > 7) delete this.stats.history[keys.shift()];
+    }
     this.stats.day = today;
     this.stats.byAgent = {};
     this.stats.events = {};

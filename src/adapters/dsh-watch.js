@@ -205,13 +205,17 @@ function run(opts = {}) {
   const stop = () => {
     clearInterval(timer);
     if (watchServer) clearInterval(watchServer);
+    const jobs = [];
     for (const t of tracked.values()) {
-      if (t.state === 'busy' || t.state === 'waiting') {
-        setState({ session: `deepseek:${t.session}`, agent: 'deepseek', state: 'offline' });
+      // 任何还亮着的状态都要熄掉：watcher 退出就是「证据没了」。只清
+      // busy/waiting 会留下红灯或完成态，替一个已经关掉的程序继续说话。
+      if (t.state && t.state !== 'idle' && t.state !== 'offline') {
+        jobs.push(setState({ session: `deepseek:${t.session}`, agent: 'deepseek', state: 'offline' }));
       }
     }
     // The CLI exits on Ctrl+C; tests call stop() to clean up in-process.
-    if (!opts.manual) process.exit(0);
+    if (opts.manual) return undefined;
+    return Promise.allSettled(jobs).finally(() => process.exit(0));
   };
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, stop);
   // 机器人退了就收摊：这个 watcher 原来没有这条守护，`bao stop` 之后会一直轮询。

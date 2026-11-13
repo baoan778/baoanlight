@@ -42,7 +42,8 @@ function parseArgs(argv) {
     if (a.startsWith('--')) {
       const [k, v] = a.slice(2).split('=');
       if (v !== undefined) out.flags[k] = v;
-      else if (argv[i + 1] && !argv[i + 1].startsWith('-')) out.flags[k] = argv[++i];
+      // 见 cli.js：只把 `--` 开头的下一个参数当成另一个选项，别吞掉负值。
+      else if (argv[i + 1] && !argv[i + 1].startsWith('--')) out.flags[k] = argv[++i];
       else out.flags[k] = true;
     } else out.positional.push(a);
   }

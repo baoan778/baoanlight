@@ -30,7 +30,9 @@ test.beforeEach(async ({ page }) => {
 
 test('the teardown lists every part the model defines', async ({ page }) => {
   const info = await page.evaluate(() => ({ parts: window.__teardown.parts, stages: window.__teardown.stages }));
-  expect(info.parts).toBeGreaterThanOrEqual(45);
+  // 精确值，不是「至少 45」：文档、面板和 README 都承诺 51 件。用 >= 的
+  // 话，模型悄悄少掉零件时测试仍然全绿，而那份承诺已经变成假话。
+  expect(info.parts).toBe(51);
   expect(info.stages).toBe(6);
 });
 
@@ -84,8 +86,10 @@ test('a selected part gets a leader-line callout pushed away from it', async ({ 
 
 test('assemble mode reverses the tour back to whole', async ({ page }) => {
   await page.evaluate(() => window.__teardown.setMode('explode'));
-  await page.waitForTimeout(900);
-  expect(await page.evaluate(() => window.__teardown.amount())).toBeCloseTo(1, 1);
+  // 等它真的走完，而不是等一个「900ms 应该够了」的猜测：这条动画是按帧推进
+  // 的，慢一点的机器上 900ms 只到 0.93，于是同一份代码在别人的机器上飘红。
+  await expect.poll(() => page.evaluate(() => window.__teardown.amount()), { timeout: 8000 })
+    .toBeGreaterThanOrEqual(0.98);
   await page.evaluate(() => window.__teardown.setMode('assemble'));
   expect(await page.evaluate(() => window.__teardown.mode())).toBe('assemble');
   await expect.poll(() => page.evaluate(() => window.__teardown.amount()), { timeout: 6000 }).toBeLessThan(0.9);

@@ -13,9 +13,12 @@ if (!found) {
   console.warn('baoanlight: 启动参数里没有 --bao-port，端口回落到 4747');
 }
 
-// 光标订阅只保留一个：页面重新加载或二次调用 onCursor 时不能叠加监听，
-// 否则同一个光标位置会推到每个回调里，每帧干几遍同样的事。
-let cursorCb = null;
+// 光标订阅可以有多个：界面（悬停工具栏）和 3D 场景（眼睛跟随）是两个独立的
+// 消费者，它们都要读同一个坐标。曾经这里只留一个回调槽，后注册的 robot3d.js
+// 直接把 ui.js 的回调覆盖掉 —— 工具栏从此拿不到光标，`body.hovering` 永远是
+// false，折叠/切尺寸/退出按钮在点击穿透下完全点不到。
+// IPC 监听仍然只挂一次，只是把每个坐标分发给集合里的所有回调。
+const cursorSubs = new Set();
 let cursorBound = false;
 
 contextBridge.exposeInMainWorld('bao', {
@@ -29,12 +32,19 @@ contextBridge.exposeInMainWorld('bao', {
   // The scene needs the cursor even when the window is click-through, so main
   // pushes it rather than relying on forwarded mouse events.
   onCursor: (cb) => {
-    cursorCb = cb;
-    if (cursorBound) return;
-    cursorBound = true;
-    ipcRenderer.on('cursor', (_e, p) => { if (cursorCb) cursorCb(p); });
+    if (typeof cb !== 'function') return () => {};
+    cursorSubs.add(cb);
+    if (!cursorBound) {
+      cursorBound = true;
+      ipcRenderer.on('cursor', (_e, p) => {
+        for (const fn of cursorSubs) {
+          try { fn(p); } catch { /* 一个消费者出错不能拖累另一个 */ }
+        }
+      });
+    }
+    // 返回退订函数：页面销毁/重建时可以只摘掉自己那一个。
+    return () => cursorSubs.delete(cb);
   },
-  offCursor: () => { cursorCb = null; },
   trayStatus: (s) => ipcRenderer.send('tray:status', s),
   notify: (title, body) => ipcRenderer.send('notify:show', { title, body }),
   openTerminal: (cwd) => ipcRenderer.send('shell:open', { cwd }),

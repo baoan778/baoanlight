@@ -79,7 +79,7 @@ const AGENTS = {
     label: 'Claude Code',
     tier: 'hooks',
     accent: '#d97757',
-    how: 'nine lifecycle hooks',
+    how: 'eight lifecycle hooks',
     detail: 'exact, per session — `bao connect claude`',
     hooks: 'claude',
     logs: LOG_DIRS.claude,
