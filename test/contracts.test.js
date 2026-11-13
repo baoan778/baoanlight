@@ -207,6 +207,28 @@ test('the generic menu button width cannot override the inline controls', () => 
   assert.match(html, /#menu #m-preset-save/, 'and so do the preset buttons');
 });
 
+// ------------------------------------------------------------ pages build
+
+// 落地页的 3D 是从 src/overlay/ 复制过去的构建产物：GitHub Pages 只发布 docs/，
+// 浏览器拿不到 ../src/。忘了跑 `npm run build:pages` 时，页面会安静地继续显示
+// 上一版机器人 —— 这条断言把「产物过期」变成一次失败，而不是一个慢慢跑偏的
+// 商品橱窗。
+test('the landing-page demo is a byte-for-byte copy of the product renderer', () => {
+  const files = [
+    'robot3d.js',
+    'vendor/three.module.js',
+    'vendor/three.core.js',
+    'scene/geometry.js',
+    'scene/surfaces.js',
+    'shared/palette.mjs',
+  ];
+  for (const rel of files) {
+    const src = fs.readFileSync(path.join(ROOT, 'src', 'overlay', rel));
+    const out = fs.readFileSync(path.join(ROOT, 'docs', 'demo', rel));
+    assert.ok(src.equals(out), `docs/demo/${rel} is stale — run: npm run build:pages`);
+  }
+});
+
 // ------------------------------------------------------------ docs drift
 
 // 文档里的清单最容易和代码走散：加一个场景、改一次皮肤，README 不会跟着变。

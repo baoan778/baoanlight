@@ -62,11 +62,27 @@ async function run() {
   if (health) {
     check('Server running', 'pass', `http://127.0.0.1:${health.port} (pid ${health.pid})`);
     const snap = await client.snapshot();
-    check('Live state readable', snap ? 'pass' : 'fail',
-      snap ? `overall: ${snap.overall}, ${snap.sessions.length} session(s)` : 'no response');
+    // `snap.sessions` 可能是 undefined（端口上跑的是别的程序，回了 200 但不是
+    // 我们的 JSON）。那样 `snap.sessions.length` 会抛，而 doctor 是用户唯一
+    // 能拿到的诊断工具 —— 它自己崩掉是最糟的结果。
+    const sessions = Array.isArray(snap && snap.sessions) ? snap.sessions : null;
+    check('Live state readable', sessions ? 'pass' : 'fail',
+      sessions ? `overall: ${snap.overall}, ${sessions.length} session(s)` : 'no usable response');
   } else {
     check('Server running', 'warn', `nothing listening on port ${config.port()}`, 'bao start');
+    check('  port is free or ours', 'warn', `port ${config.port()} did not answer as baoanlight`,
+      'another program may have taken it — change config.port');
   }
+
+  // ---- write token
+  // 钩子和 CLI 都用它给写请求签名。文件读不出来时所有写入 401，而 client.js
+  // 会把 401 静默吞掉 —— 表现就是「灯一动不动」，且没有任何报错。这是最难
+  // 自查的一类故障，所以让 doctor 明确说一句。
+  let token = '';
+  try { token = require('./auth').token(); } catch { /* 生成失败 */ }
+  check('Write token', token.length >= 32 ? 'pass' : 'fail',
+    token ? `${token.length} chars in ~/.baoanlight/token` : 'missing and could not be created',
+    'bao token   (rebuilds it; then re-run bao connect claude)');
 
   // ---- overlay runtime
   let electronPath = null;
@@ -144,7 +160,7 @@ async function run() {
   const cfg = config.load();
   for (const name of agents.names()) {
     const entry = agents.AGENTS[name];
-    if (entry.tier !== 'log') continue;
+    if (!entry || entry.tier !== 'log') continue;
 
     const dir = agents.logDir(name, { config: cfg });
     const candidates = agents.candidates(name);

@@ -317,7 +317,7 @@ bao fuel 12 --used --agent ci --label "build minutes"   # --used 表示「已用
 ## 本机接线对不对
 
 ```bash
-npm test         # 132 个逻辑测试：状态机、适配器、钩子、安装器、电量、鉴权、调色板、事件契约、HTTP 请求体与配置落盘
+npm test         # 135 个逻辑测试：状态机、适配器、钩子、安装器、电量、鉴权、调色板、事件契约、HTTP 请求体与配置落盘、启动自检
 npm run test:ui  # 61 个渲染测试：机器人、拆解台、标签、电量条、CSP、XSS、朗读文本、帧率/降级预算，以及落地页对比度
 npm run lint     # 未定义的变量、声明了没用的变量、重复键、走不到的代码
 bao doctor       # 本机：二进制、配置路径、日志目录、服务器
@@ -422,6 +422,10 @@ src/doctor.js           本机诊断
 
 拆解台本身就在仓库里（`src/overlay/teardown/`：`spec.js` 是尺寸与阶段的真源，`model.js`
 建模，`live.js` 驱动巡游）。要把它录成影片，用上面的 `npm run capture:teardown`。
+
+落地页（`docs/index.html`）里的机器人是**同一份 3D 代码**，不是另画的一张图：GitHub Pages
+只发布 `docs/`，所以 `npm run build:pages` 把渲染代码复制到 `docs/demo/`。改完
+`src/overlay/robot3d.js` 记得跑一次 —— `test/contracts.test.js` 会逐字节比对，忘了会红。
 
 ---
 

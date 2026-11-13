@@ -2019,12 +2019,24 @@ if (host && renderer) {
   let signW = SIGN_W;
   let signH = SIGN_H;
   let signX = SIGN_X;
+  let signY = 3.34;
   const syncSignSize = () => {
     const mini = document.body.dataset.theme === 'mini';
-    signW = mini ? 1.3 : SIGN_W;
-    signH = signW * (SIGN_H / SIGN_W);
-    // 中心 + 半宽必须留在视野半宽以内（mini 只有 1.45u），否则右半边在画外。
-    signX = mini ? 0.72 : SIGN_X;
+    if (mini) {
+      // mini 窗口只有 210px 宽，整机连着一切零件一起缩到 0.7 倍 —— 招牌要是
+      // 跟着等比缩小，字就只剩 4px。这里不再按比例走：把牌子**加宽到比机身还
+      // 宽**（2.6u ≈ 132px）、抬到头顶之上，字号才守得住（约 13px，比 pill 的
+      // 10px 还大）。视野半宽是 2.07u，中心 0.5 + 半宽 1.3 = 1.8u，不出画。
+      signW = 2.6;
+      signH = 0.78;
+      signX = 0.5;
+      signY = 3.42;
+    } else {
+      signW = SIGN_W;
+      signH = SIGN_H;
+      signX = SIGN_X;
+      signY = 3.34;
+    }
     sign.scale.set(signW, signH, 1);
     signGlow.scale.set(signW + 0.5, signH + 0.32, 1);
   };
@@ -3283,7 +3295,7 @@ if (host && renderer) {
     signMat.opacity = damp(signMat.opacity, signLabel ? 1 : 0, 8, dt);
     sign.scale.set(signW * popScale, signH * popScale, 1);
     sign.position.x = signPos === 'left' ? -signX : signX;
-    sign.position.y = 3.34 + (reduceMotion ? 0 : Math.sin(t * 1.8) * 0.03);
+    sign.position.y = signY + (reduceMotion ? 0 : Math.sin(t * 1.8) * 0.03);
     // 辉光：像通电灯箱一样呼吸，颜色跟着自定义走
     signGlow.material.color.set(signColor);
     signGlow.opacity = damp(signGlow.opacity, signLabel ? 0.35 + Math.sin(t * 3.2) * 0.15 : 0, 8, dt);

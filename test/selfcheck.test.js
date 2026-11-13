@@ -1,34 +1,74 @@
 'use strict';
+// 启动自检的两个易错点：
+//   1. 同一个故障只报一次，而且报对（坏 JSON ≠ 未安装）；
+//   2. 它覆盖的代理清单必须来自 agents 表，不能是手写的副本 —— 副本不会跟着
+//      新代理长大，而且不会报错，只是那个代理永远不出现在自检里。
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
-const { run } = require('../src/selfcheck');
+const install = require('../src/adapters/install');
+const agents = require('../src/adapters/agents');
+const selfcheck = require('../src/selfcheck');
 
-// The startup self-check is what `bao start` runs every time. It must always
-// return a well-formed result — never throw, never block on the network.
-test('the startup self-check returns a well-formed result', () => {
-  const r = run();
-
-  assert.ok(r, 'returns a result');
-  assert.ok(Array.isArray(r.checks) && r.checks.length > 0, 'has checks');
-  assert.equal(typeof r.fails, 'number', 'counts fails');
-  assert.equal(typeof r.warns, 'number', 'counts warns');
-
-  for (const c of r.checks) {
-    assert.equal(typeof c.name, 'string');
-    assert.ok(['pass', 'warn', 'fail'].includes(c.status), `${c.name} has a valid status`);
+const withSettings = (content, fn) => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bao-sc-')), 'settings.json');
+  fs.writeFileSync(file, content);
+  const original = install.claudeSettingsPath;
+  install.claudeSettingsPath = () => file;
+  try {
+    return fn(file);
+  } finally {
+    install.claudeSettingsPath = original;
+    fs.rmSync(path.dirname(file), { recursive: true, force: true });
   }
+};
 
-  // The counts must match the actual checks.
-  assert.equal(r.fails, r.checks.filter((c) => c.status === 'fail').length);
-  assert.equal(r.warns, r.checks.filter((c) => c.status === 'warn').length);
+const claudeChecks = (result) => result.checks.filter((c) => c.name.includes('Claude'));
+
+test('a settings file we cannot parse is reported once, as a failure', () => {
+  withSettings('{ "hooks": { ,,, }', () => {
+    const related = claudeChecks(selfcheck.run());
+    assert.equal(related.filter((c) => c.status === 'fail').length, 1,
+      'the broken file is exactly one failure');
+    assert.equal(related.filter((c) => c.status === 'warn').length, 0,
+      'and it must not also be reported as "not installed" — two contradictory lines');
+  });
 });
 
-// A broken Claude settings file is the classic cross-machine failure; the
-// self-check must call it out as a hard fail rather than staying silent.
-test('the self-check flags a broken Claude settings file', () => {
-  const r = run();
-  const claude = r.checks.find((c) => c.name.startsWith('Claude Code'));
-  assert.ok(claude, 'checks Claude Code hooks');
-  assert.ok(['pass', 'warn', 'fail'].includes(claude.status));
+test('missing hooks are a warning, not a failure', () => {
+  withSettings('{"permissions":{"allow":[]}}', () => {
+    const related = claudeChecks(selfcheck.run());
+    assert.deepEqual(related.map((c) => c.status), ['warn'],
+      'an uninstalled hook is optional, and must not look broken');
+  });
+});
+
+test('hooks whose paths no longer exist are a failure', () => {
+  const settings = {
+    hooks: {
+      Stop: [{ hooks: [{ type: 'command', command: '"/no/such/node" "/no/such/hooks/claude.js"' }] }],
+    },
+  };
+  withSettings(JSON.stringify(settings), () => {
+    const related = claudeChecks(selfcheck.run());
+    assert.equal(related.filter((c) => c.status === 'fail').length, 1,
+      'a moved checkout is the single most common cross-machine failure');
+  });
+});
+
+// 新增一个「有日志」的代理时，只改 agents.js 就该够了。这条断言盯的是
+// selfcheck 有没有偷偷维护第二份名单。
+test('the self-check looks at every agent that reports through a log', () => {
+  const result = selfcheck.run();
+  const names = result.checks.map((c) => c.name);
+  const logged = agents.names().filter((n) => (agents.AGENTS[n] || {}).tier === 'log');
+  assert.ok(logged.length >= 3, 'precondition: there are log-backed agents');
+  for (const name of logged) {
+    const { label } = agents.AGENTS[name];
+    assert.ok(names.some((n) => n.startsWith(label)),
+      `selfcheck never looks at "${name}" (${label}) — the list is hardcoded somewhere`);
+  }
 });

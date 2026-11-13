@@ -15,7 +15,12 @@ const path = require('path');
 // there, which is exactly what the theme-persistence test depends on. A test
 // that loads the page differently from how it ships is testing something else.
 const DOCS = path.resolve(__dirname, '..', 'docs');
-const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml' };
+// `.mjs` 必须声明成 JS：少了它，浏览器会把模块当二进制下载然后拒绝执行，
+// 而失败发生在 import 里，页面上只是静静地没有机器人。
+const MIME = {
+  '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript',
+  '.mjs': 'text/javascript', '.svg': 'image/svg+xml', '.png': 'image/png',
+};
 
 let server;
 let PAGE;
@@ -113,20 +118,21 @@ test('the page is readable at rest, with the demo already running', async ({ pag
 
   // The robot is awake from the first frame — a powered-down widget would look
   // broken in a screenshot or a link preview.
-  const lit = await page.evaluate(() => {
-    const demo = document.getElementById('demo');
-    const led = document.getElementById('demo-led');
-    return { state: demo.dataset.state, fill: getComputedStyle(led).fill, bot: !!document.querySelector('.bot') };
-  });
-  expect(lit.bot, 'the demo shows the robot, not the old traffic light').toBe(true);
+  // 卡片里必须是真的 WebGL 机器人（产品自己那份建模代码），不是一张画。
+  // data-ready 由 robot3d.js 在首帧之后写，所以等它等于等「3D 真的起来了」。
+  await expect(page.locator('#bot')).toHaveAttribute('data-ready', '1', { timeout: 20000 });
+  const lit = await page.evaluate(() => ({
+    state: document.body.dataset.state,
+    canvases: document.querySelectorAll('#bot canvas').length,
+    width: document.getElementById('bot').clientWidth,
+    lamp: getComputedStyle(document.body).getPropertyValue('--state').trim(),
+  }));
+  expect(lit.canvases, 'the demo is the real robot, not a drawing').toBe(1);
+  expect(lit.width, 'the canvas has been given room to draw in').toBeGreaterThan(100);
   expect(lit.state).toBe('busy');
-  // Green while working. The page used to show amber here, which taught the
-  // wrong contract before anyone had even installed it. Polled rather than
-  // read once: the lamp cross-fades, so a single read can catch a mid-frame.
-  await expect.poll(
-    () => page.evaluate(() => getComputedStyle(document.getElementById('demo-led')).fill),
-    { timeout: 3000 }
-  ).toBe('rgb(52, 199, 89)');
+  // Green while working — the page used to show amber here, which taught the
+  // wrong contract before anyone had installed it.
+  expect(lit.lamp.toLowerCase()).toBe('#34c759');
 });
 
 test('the served page loads clean — no console errors, no broken local requests', async ({ page }) => {

@@ -14,6 +14,7 @@
     "overlay": "electron src/overlay/main.js",
     "server": "node src/cli.js server",
     "setup": "node scripts/setup.js",
+    "build:pages": "node scripts/build-pages.mjs",
     "vendor:three": "node scripts/vendor-three.js",
     "status": "node src/cli.js status",
     "agents": "node src/cli.js agents",
@@ -57,7 +58,9 @@
   "files": [
     "src",
     "scripts",
-    "docs",
+    "docs/index.html",
+    "docs/*.md",
+    "docs/robot.png",
     "README.md",
     "LICENSE"
   ],

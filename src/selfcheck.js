@@ -53,32 +53,42 @@ function run() {
   if (!exists(claudeFile)) {
     check('Claude Code 钩子', 'warn', '未安装', 'bao connect claude');
   } else {
-    let settings = {};
+    let settings = null;
     try {
       settings = JSON.parse(fs.readFileSync(claudeFile, 'utf8'));
     } catch {
       check('Claude Code 钩子', 'fail', `${claudeFile} 不是合法 JSON`, '修复或从 baoanlight-backup-* 恢复');
     }
-    const ours = Object.entries(settings.hooks || {})
-      .flatMap(([evt, groups]) => (groups || []).flatMap((g) => (g.hooks || []).map((h) => ({ evt, cmd: h.command || '' }))))
-      .filter((h) => /hooks[\\/]claude\.js/.test(h.cmd));
-    if (ours.length) {
-      const quoted = (ours[0].cmd.match(/"([^"]+)"/g) || []).map((q) => q.slice(1, -1));
-      const [bin, script] = quoted;
-      if (!exists(bin) || !exists(script)) {
-        check('Claude Code 钩子路径失效', 'fail',
-          `${script || '(未解析)'} 不存在`, 'bao connect claude（为本机重写路径）');
+    // 解析失败就到此为止：原来 `settings` 会停在初值 `{}` 上继续往下走，
+    // 于是同一个文件既报「不是合法 JSON」又报「未安装」—— 两条互相矛盾，
+    // 用户照着第一条去修，第二条却还在。
+    if (settings) {
+      const ours = Object.entries(settings.hooks || {})
+        .flatMap(([evt, groups]) => (groups || []).flatMap((g) => (g.hooks || []).map((h) => ({ evt, cmd: h.command || '' }))))
+        .filter((h) => /hooks[\\/]claude\.js/.test(h.cmd));
+      if (ours.length) {
+        const quoted = (ours[0].cmd.match(/"([^"]+)"/g) || []).map((q) => q.slice(1, -1));
+        const [bin, script] = quoted;
+        if (!exists(bin) || !exists(script)) {
+          check('Claude Code 钩子路径失效', 'fail',
+            `${script || '(未解析)'} 不存在`, 'bao connect claude（为本机重写路径）');
+        } else {
+          check('Claude Code 钩子', 'pass', `${ours.length} 个事件已接`);
+        }
       } else {
-        check('Claude Code 钩子', 'pass', `${ours.length} 个事件已接`);
+        check('Claude Code 钩子', 'warn', '未安装', 'bao connect claude');
       }
-    } else {
-      check('Claude Code 钩子', 'warn', '未安装', 'bao connect claude');
     }
   }
 
   // ---- 日志类代理的日志目录
-  for (const name of ['codex', 'deepseek', 'workbuddy']) {
+  //
+  // 名单从 agents 表里来，不在这里另写一份：`bao doctor` 用的是同一张表，而
+  // 硬编码的副本在新增一个代理时不会跟着变 —— 也不会报错，只是那个代理在自检
+  // 里永远缺席。
+  for (const name of agents.names()) {
     const entry = agents.find(name);
+    if (!entry || entry.tier !== 'log') continue;
     const dir = agents.logDir(name, { config: cfg });
     if (dir && exists(dir)) check(`${entry.label} 日志`, 'pass', dir);
     else check(`${entry.label} 日志`, 'warn', '未找到', `bao watch ${name} --dir <路径>`);
