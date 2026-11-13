@@ -46,19 +46,13 @@ module.exports = [
   {
     // 这几块是浏览器里的 ES module，不是 CommonJS。注意 main.js / preload.js
     // 虽然是同目录，仍然是 CommonJS（Electron 主进程），不能一起加进来。
-    files: ['src/overlay/ui.js', 'src/overlay/robot3d.js', 'src/overlay/scene/**/*.js', 'src/overlay/teardown/**/*.js'],
+    files: ['src/overlay/ui.js', 'src/overlay/robot3d.js', 'src/overlay/scene/**/*.js'],
     languageOptions: { ecmaVersion: 2023, sourceType: 'module', globals: { ...globals.browser } },
     rules: RULES,
   },
   {
     files: ['**/*.mjs'],
     languageOptions: { ecmaVersion: 2023, sourceType: 'module', globals: { ...globals.node } },
-    rules: RULES,
-  },
-  {
-    // 逐帧导出脚本：本体跑在 Node，但 page.evaluate() 里的回调会进浏览器。
-    files: ['scripts/capture-teardown.mjs'],
-    languageOptions: { ecmaVersion: 2023, sourceType: 'module', globals: { ...globals.node, ...globals.browser } },
     rules: RULES,
   },
 ];

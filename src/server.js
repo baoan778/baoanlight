@@ -228,8 +228,8 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
       // 兄弟目录穿越（老的 startsWith(OVERLAY_DIR) 会被这种路径骗过）。
       const file = p === '/' ? 'index.html' : p.replace(/^\/+/, '');
       let abs = path.resolve(OVERLAY_DIR, file);
-      // 目录形式（/teardown/ 或 /teardown）落到它自己的 index.html：拆解台是
-      // 一个独立页面，而不是要记住 `/teardown/index.html` 这种地址。
+      // 目录形式（/foo/ 或 /foo）落到它自己的 index.html，避免要记住
+      // `/foo/index.html` 这种地址。
       if (fs.existsSync(abs) && fs.statSync(abs).isDirectory()) abs = path.join(abs, 'index.html');
       const insideOverlay = abs === OVERLAY_DIR || abs.startsWith(OVERLAY_DIR + path.sep);
       if (insideOverlay && fs.existsSync(abs) && fs.statSync(abs).isFile()) {

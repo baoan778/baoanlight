@@ -103,10 +103,6 @@ import {
   const note    = document.getElementById('note');
   const liveEl  = document.getElementById('live');
   const slotEls = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => document.getElementById('slot' + i));
-  const tdbar   = document.getElementById('tdbar');
-  const tdRange = document.getElementById('td-range');
-  const tdPct   = document.getElementById('td-pct');
-  const tdTag   = document.getElementById('td-tag');
   const sysEl   = document.getElementById('sys');
   const sysCpu  = document.getElementById('sys-cpu');
   const sysMem  = document.getElementById('sys-mem');
@@ -168,8 +164,6 @@ import {
       if (labels && labels.children.length) boxes.push(labels.getBoundingClientRect());
       if (!menu.hidden) boxes.push(menu.getBoundingClientRect());
       if (!sizer.hidden) boxes.push(sizer.getBoundingClientRect());
-      // 拆解控制条同样要进热区：它是拆解模式下唯一的操作入口。
-      if (!tdbar.hidden) boxes.push(tdbar.getBoundingClientRect());
       // 状态速览面板也要进热区：不然它在点击穿透区里，六个按钮全点不了。
       const pv = document.getElementById('preview');
       if (pv && !pv.hidden) boxes.push(pv.getBoundingClientRect());
@@ -1861,10 +1855,7 @@ import {
   // 关掉浮层。Esc 关菜单/尺寸条，Ctrl/⌘+, 开设置（和大多数应用的偏好设置一致）。
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      if (document.body.classList.contains('teardown')) {
-        e.preventDefault();
-        window.dispatchEvent(new CustomEvent('bao:teardown-close'));
-      } else if (menuOpen) { e.preventDefault(); setMenu(false); }
+      if (menuOpen) { e.preventDefault(); setMenu(false); }
       else if (sizerOpen) { e.preventDefault(); setSizer(false); }
       return;
     }
@@ -1935,54 +1926,6 @@ import {
     e.target.value = '';
   });
   document.getElementById('m-quit').onclick = () => (inElectron ? bridge.quit() : window.close());
-
-  // 3D 拆解：不再开网页/第二个窗口，直接在桌面上把这台机器人拆开。
-  // 真正的模型与相机在 robot3d.js 里，这里只负责开关和控制条。
-  document.getElementById('m-teardown').onclick = () => {
-    setMenu(false);
-    window.dispatchEvent(new CustomEvent('bao:teardown-open'));
-  };
-
-  const tdButtons = [...tdbar.querySelectorAll('button[data-td]')];
-  function syncTeardown(s) {
-    const on = !!(s && s.on);
-    document.body.classList.toggle('teardown', on);
-    tdbar.hidden = !on;
-    if (!on) tdTag.textContent = '';
-    if (on && s) {
-      const pct = Math.round((s.amount || 0) * 100);
-      const raw = String(pct * 10);
-      if (tdRange.value !== raw) tdRange.value = raw;
-      tdPct.textContent = `${pct}%`;
-      for (const b of tdButtons) b.setAttribute('aria-pressed', String(b.dataset.td === s.mode));
-    }
-    fit();
-    if (lastSnap) render(lastSnap);
-  }
-  window.addEventListener('bao:teardown-state', (e) => syncTeardown(e.detail));
-  window.addEventListener('bao:teardown-failed', (e) => {
-    const msg = (e.detail && e.detail.message) || '未知错误';
-    flashNote(`拆解模型加载失败：${String(msg).slice(0, 60)}`);
-  });
-  window.addEventListener('bao:teardown-hover', (e) => {
-    const d = e.detail;
-    tdTag.textContent = '';
-    if (!d) return;
-    const b = document.createElement('b');
-    b.textContent = d.label || '';
-    const span = document.createElement('span');
-    span.textContent = d.note || '';
-    tdTag.append(b, span);
-  });
-  for (const b of tdButtons) {
-    b.onclick = () => window.dispatchEvent(new CustomEvent('bao:teardown-mode', { detail: { mode: b.dataset.td } }));
-  }
-  tdRange.addEventListener('input', () => {
-    window.dispatchEvent(new CustomEvent('bao:teardown-amount', { detail: { amount: Number(tdRange.value) / 1000 } }));
-  });
-  document.getElementById('td-close').onclick = () => {
-    window.dispatchEvent(new CustomEvent('bao:teardown-close'));
-  };
 
   // ---------------------------------------------------------------- drag
   // The window is click-through except over the robot, and a CSS drag region

@@ -2541,7 +2541,7 @@ if (host && renderer) {
 
   // A click on the machine is a poke, not a command: it looks up, blinks and
   // hops once, then goes back to whatever it was doing.
-  window.addEventListener('bao:poke', () => { if (tdOpen) return; pokeAt = clock.t; });
+  window.addEventListener('bao:poke', () => { pokeAt = clock.t; });
   // A double click is a greeting: both arms come up and wave for two seconds,
   // which is the only interaction here that is purely for the human.
   window.addEventListener('bao:greet', () => { greetAt = clock.t; });
@@ -2568,61 +2568,6 @@ if (host && renderer) {
 
   const pose = { bob: 0, roll: 0, yaw: 0, lean: 0, headYaw: 0, headPitch: 0, eye: 1, focus: 1 };
 
-  // ---------------------------------------------------------- desktop teardown
-  // 菜单里的「3D 拆解」不再打开网页或第二个窗口：它把桌面上的这台机器人
-  // 换成可拆解的零件模型，在原地爆炸、装回。模块按需加载，落地页那份渲染
-  // 代码不会因为这段功能多下载一个文件。
-  let td = null;
-  let tdOpen = false;
-  let tdLoading = false;
-  const tdHide = [robot, sign, signGlow];
-
-  const tdEmit = (s) => {
-    host.dataset.td = s.on ? '1' : '0';
-    host.dataset.tdAmount = String(Math.round(s.amount * 100));
-    host.dataset.tdParts = String(s.parts);
-    window.dispatchEvent(new CustomEvent('bao:teardown-state', { detail: s }));
-  };
-  const tdHover = (part) => {
-    window.dispatchEvent(new CustomEvent('bao:teardown-hover', { detail: part }));
-  };
-
-  async function openTeardown() {
-    if (tdOpen || tdLoading) return;
-    tdLoading = true;
-    try {
-      const mod = await import('./teardown/inline.js');
-      td = td || mod.createInlineTeardown({
-        scene, camera, hide: tdHide, onState: tdEmit, onHover: tdHover,
-      });
-      td.open();
-      tdOpen = true;
-    } catch (err) {
-      // 模型加载失败也必须说出来：菜单点下去什么都不发生，是最难排查的一种。
-      const message = String((err && err.message) || err);
-      tdHover({ label: '拆解模型加载失败', note: message });
-      window.dispatchEvent(new CustomEvent('bao:teardown-failed', { detail: { message } }));
-    } finally {
-      tdLoading = false;
-    }
-  }
-
-  function closeTeardown() {
-    if (!tdOpen || !td) return;
-    td.close();
-    tdOpen = false;
-    tdHover(null);
-  }
-
-  window.addEventListener('bao:teardown-open', openTeardown);
-  window.addEventListener('bao:teardown-close', closeTeardown);
-  window.addEventListener('bao:teardown-mode', (e) => {
-    if (td && td.isOpen()) td.setMode(e.detail && e.detail.mode);
-  });
-  window.addEventListener('bao:teardown-amount', (e) => {
-    if (td && td.isOpen()) td.setAmount(e.detail && e.detail.amount);
-  });
-
   function damp(current, target, rate, dt) {
     return current + (target - current) * (1 - Math.exp(-rate * dt));
   }
@@ -2640,16 +2585,6 @@ if (host && renderer) {
   // 这里，免得下一个人再来试一次。
   function update(dt) {
     const t = (clock.t += dt);
-
-    // 拆解模式接管整个画面：普通机器人的姿态、灯效、广告牌都停在这一帧，
-    // 算力留给 51 个零件和相机。关闭时相机在模块里复位。
-    if (tdOpen && td) {
-      td.update(dt, pointer);
-      const tdState = td.state();
-      host.dataset.tdMode = tdState.mode;
-      host.dataset.tdTarget = String(Math.round(tdState.target * 100));
-      return;
-    }
 
     state = body.dataset.state || 'offline';
     dead = body.classList.contains('disconnected');
@@ -3620,8 +3555,7 @@ if (host && renderer) {
     // reduce-motion 必须排在最前：系统说「少动一点」时，忙碌状态下也不该
     // 以 60fps 继续跑（README 与文档承诺的是整场降到 8fps）。原来的顺序让
     // active 先命中，8fps 分支在 busy/waiting/error 时永远到不了。
-    // 拆解模式按 60fps 走：拖滑块和旋转相机都需要跟手，它不是「静止的待机」。
-    const active = state === 'busy' || state === 'waiting' || state === 'error' || tdOpen;
+    const active = state === 'busy' || state === 'waiting' || state === 'error';
     const fps = reduceMotion ? 8
       : active ? 60
         : (state === 'offline' && !idlePlaying) ? 15 : 30;
