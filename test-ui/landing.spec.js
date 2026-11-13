@@ -155,7 +155,29 @@ test('the gauge on the page matches the app: neutral, not a lamp colour', async 
 
 test('the status pill carries a dot, the agent and its status', async ({ page }) => {
   await page.goto(PAGE);
-  await expect(page.locator('.pill .who')).toHaveText('claude');
+  // 正式产品名，与安装后的界面一致：列表和铭牌显示「Claude Code」而不是代号。
+  await expect(page.locator('.pill .who')).toHaveText('Claude Code');
   await expect(page.locator('.pill .dot')).toBeVisible();
   await expect(page.locator('.pill .what')).not.toBeEmpty();
 });
+
+// 主色同时是链接文字和按钮底色。原来的检查只看 body 和 .lede，于是 67% 的靛蓝
+// 在近白底上 3.9:1 也能全绿通过。
+for (const scheme of ['light', 'dark']) {
+  test(`the accent clears AA in ${scheme} mode`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme: scheme });
+    await page.goto(PAGE);
+    const c = await page.evaluate(() => {
+      const btn = document.querySelector('.btn.primary');
+      const code = document.querySelector('.agents .how code');
+      return {
+        bg: getComputedStyle(document.body).backgroundColor,
+        btnBg: getComputedStyle(btn).backgroundColor,
+        btnFg: getComputedStyle(btn).color,
+        codeFg: getComputedStyle(code).color,
+      };
+    });
+    expect(contrast(c.btnFg, c.btnBg), 'button label on the accent').toBeGreaterThan(4.5);
+    expect(contrast(c.codeFg, c.bg), 'accent text on the page ground').toBeGreaterThan(4.5);
+  });
+}

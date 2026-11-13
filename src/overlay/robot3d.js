@@ -1979,16 +1979,29 @@ if (host && renderer) {
   }
 
   // ---- 今日时长广告牌：一块带金边、时钟图标、辉光的立式招牌 -----------------
+  // 招牌的两条尺寸约束：
+  //   1. 屏幕上要读得清。它只有 1.15 世界单位宽（约 85px），却要放「DeepSeek Harness
+  //      12 时 30 分」这么长一句 —— 尺寸和清晰度都得给够；
+  //   2. 不能出画。相机在 300px 宽的画面里横向视野约 4.1u（半宽 2.07u），
+  //      mini 模式只有 1.45u，所以中心 + 半宽必须留在 1.55u 以内。
+  const SIGN_W = 1.95;
+  const SIGN_H = 0.585;
+  // 0.96：再往左就会压到右镜筒上缘，再往右在 pop 放大时会被画布边缘裁掉。
+  const SIGN_X = 0.96;
+  // 2 倍超采样：170% 缩放 + HiDPI 时这块招牌占约 260 设备像素，320px 的纹理
+  // 只够 1:1，稍微一放大就靠插值撑开，字边全是毛的。坐标仍然按 320×96 的旧
+  // 逻辑写，靠 drawSign 里的 setTransform 整体放大，布局一个像素都不用动。
+  const SIGN_SS = 2;
   const signCanvas = document.createElement('canvas');
-  signCanvas.width = 320;
-  signCanvas.height = 96;
+  signCanvas.width = 320 * SIGN_SS;
+  signCanvas.height = 96 * SIGN_SS;
   const signCtx = signCanvas.getContext('2d');
   const signTex = new THREE.CanvasTexture(signCanvas);
   signTex.colorSpace = THREE.SRGBColorSpace;
   const signMat = new THREE.SpriteMaterial({ map: signTex, transparent: true, depthWrite: false, opacity: 0 });
   const sign = new THREE.Sprite(signMat);
-  sign.scale.set(1.15, 0.345, 1);
-  sign.position.set(0.98, 3.32, 0.42);
+  sign.scale.set(SIGN_W, SIGN_H, 1);
+  sign.position.set(SIGN_X, 3.34, 0.42);
   robot.add(sign);
 
   // 招牌后面的光晕：additive 金色，随呼吸脉动，让招牌像「点着灯」。
@@ -1996,9 +2009,31 @@ if (host && renderer) {
     map: softTexture(64), color: 0xffd54a, transparent: true, depthWrite: false, opacity: 0,
     depthTest: false, blending: THREE.AdditiveBlending,
   }));
-  signGlow.scale.set(1.7, 0.62, 1);
+  signGlow.scale.set(SIGN_W + 0.5, SIGN_H + 0.32, 1);
   signGlow.position.copy(sign.position);
   robot.add(signGlow);
+
+  // mini 模式的画面横向视野只有 1.45u（full 是 2.07u），1.95u 的招牌会有一半
+  // 落在画外。按窗口模式回缩，比例保持不变 —— 这是「同一块牌子，换个位置挂」，
+  // 不是两套设计。
+  let signW = SIGN_W;
+  let signH = SIGN_H;
+  let signX = SIGN_X;
+  const syncSignSize = () => {
+    const mini = document.body.dataset.theme === 'mini';
+    signW = mini ? 1.3 : SIGN_W;
+    signH = signW * (SIGN_H / SIGN_W);
+    // 中心 + 半宽必须留在视野半宽以内（mini 只有 1.45u），否则右半边在画外。
+    signX = mini ? 0.72 : SIGN_X;
+    sign.scale.set(signW, signH, 1);
+    signGlow.scale.set(signW + 0.5, signH + 0.32, 1);
+  };
+  if (window.MutationObserver) {
+    new MutationObserver(syncSignSize).observe(document.body, {
+      attributes: true, attributeFilter: ['data-theme'],
+    });
+  }
+  syncSignSize();
 
   let signText = '';
   let signShownAt = -99;
@@ -2023,8 +2058,11 @@ if (host && renderer) {
     drawnSign = { text, color: signColor, shape: signShape };
     signText = text;
     const g = signCtx;
-    const w = signCanvas.width;
-    const h = signCanvas.height;
+    // 逻辑尺寸固定 320×96，实际画布是它的 SIGN_SS 倍：下面所有坐标、字号、
+    // 线宽都按老逻辑写，整体由 transform 放大，等于「同一张图用更高分辨率画」。
+    const w = 320;
+    const h = 96;
+    g.setTransform(SIGN_SS, 0, 0, SIGN_SS, 0, 0);
     g.clearRect(0, 0, w, h);
     if (text) {
       // 形状：胶囊是超大半圆、方正是小圆角、圆角是默认。
@@ -2064,18 +2102,40 @@ if (host && renderer) {
       g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx, cy - 9);
       g.moveTo(cx, cy); g.lineTo(cx + 7, cy + 2);
       g.lineWidth = 3; g.stroke();
-      // 文字
-      g.fillStyle = '#ffffff';
+      // 文字：名字一行、时长一行。
+      //
+      // 单行放「DeepSeek 1 时 35 分」时，可用宽度只有 240px，字号会被
+      // measureText 一路压到 16px 下限 —— 那是屏幕上看不清的全部原因。
+      // 拆成两行后每行都能用足字号：名字 26px、时长 33px。
       g.textAlign = 'left';
       g.textBaseline = 'middle';
-      // 名字有长有短（DeepSeek / Claude Code），放不下就自动缩字号。
-      let fontSize = 30;
-      g.font = `bold ${fontSize}px system-ui, "Microsoft YaHei", sans-serif`;
-      while (g.measureText(text).width > 240 && fontSize > 16) {
-        fontSize -= 2;
-        g.font = `bold ${fontSize}px system-ui, "Microsoft YaHei", sans-serif`;
+      const family = 'system-ui, "Microsoft YaHei", sans-serif';
+      // 放不下就逐级缩，但停在 12px 而不是 16px：再窄也总比截断好。
+      const fitFont = (str, size) => {
+        let s = size;
+        g.font = `bold ${s}px ${family}`;
+        while (g.measureText(str).width > w - 62 - 16 && s > 12) {
+          s -= 1;
+          g.font = `bold ${s}px ${family}`;
+        }
+        return s;
+      };
+      // 时长总是以数字开头（「1 时 35 分」「45 分钟」），名字在它前面。
+      const split = /^(.*?)(\d.*)$/.exec(text);
+      const head = (split ? split[1] : text).trim();
+      const span = split ? split[2].trim() : '';
+      if (span) {
+        fitFont(head, 26);
+        g.fillStyle = 'rgba(255,255,255,.74)';
+        g.fillText(head, 62, h * 0.34);
+        fitFont(span, 33);
+        g.fillStyle = signColor;
+        g.fillText(span, 62, h * 0.68);
+      } else {
+        fitFont(head, 33);
+        g.fillStyle = '#ffffff';
+        g.fillText(head, 62, h / 2 + 1);
       }
-      g.fillText(text, 62, h / 2 + 1);
     }
     signTex.needsUpdate = true;
   }
@@ -3221,9 +3281,9 @@ if (host && renderer) {
     const pop = signLabel && signShownAt >= 0 ? Math.max(0, 1 - (t - signShownAt) / 0.30) : 0;
     const popScale = 1 + pop * 0.22;
     signMat.opacity = damp(signMat.opacity, signLabel ? 1 : 0, 8, dt);
-    sign.scale.set(1.15 * popScale, 0.345 * popScale, 1);
-    sign.position.x = signPos === 'left' ? -0.98 : 0.98;
-    sign.position.y = 3.32 + (reduceMotion ? 0 : Math.sin(t * 1.8) * 0.03);
+    sign.scale.set(signW * popScale, signH * popScale, 1);
+    sign.position.x = signPos === 'left' ? -signX : signX;
+    sign.position.y = 3.34 + (reduceMotion ? 0 : Math.sin(t * 1.8) * 0.03);
     // 辉光：像通电灯箱一样呼吸，颜色跟着自定义走
     signGlow.material.color.set(signColor);
     signGlow.opacity = damp(signGlow.opacity, signLabel ? 0.35 + Math.sin(t * 3.2) * 0.15 : 0, 8, dt);

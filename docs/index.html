@@ -8,7 +8,9 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='6' y='12' width='20' height='14' rx='4' fill='%23f2c11c'/><circle cx='12' cy='11' r='4' fill='%2323262b'/><circle cx='20' cy='11' r='4' fill='%2323262b'/><circle cx='12' cy='11' r='1.6' fill='%23e8eef5'/><circle cx='20' cy='11' r='1.6' fill='%23e8eef5'/></svg>" />
 
 <meta property="og:title" content="baoanlight" />
-<meta property="og:description" content="A desk robot that shows what your AI coding agents are doing. Red when it needs you, yellow while it works, green when it's done." />
+<!-- 颜色语义必须与产品一致：绿只代表「正在跑」。曾经这里写「green when it's done」，
+     而那正是这个工具存在的理由——完成态绝不能是绿色。 -->
+<meta property="og:description" content="A desk robot that shows what your AI coding agents are doing. Green only while one is working, amber when it needs you, red when it failed." />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://deepak-hp.github.io/baoanlight" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -38,7 +40,9 @@
        ground — a hair under the 4.5:1 WCAG AA floor for body text. Darkened
        just enough to clear it; the muted role is unchanged. */
     --muted-foreground: 215 18% 42%;
-    --primary: 239 84% 67%;
+    /* 67% 的靛蓝在这块近白底上只有约 3.9:1 —— 链接、eyebrow 和按钮上的白字
+       都不达标。压到 58% 才过 WCAG AA（深色模式下另有覆盖，见下面两处）。 */
+    --primary: 239 84% 58%;
     --primary-foreground: 0 0% 100%;
     --popover: 0 0% 100%;
 
@@ -50,6 +54,8 @@
     /* idle and unknown may not borrow the three state colours */
     --idle: #dfe5ec;
     --unknown: #ccd3dc;
+    /* 「刚完成」是产品里真实存在的第四种颜色，而且刻意不是绿——绿只属于「正在跑」。 */
+    --done: #b06bff;
     --housing-1: #2a2d33;
     --housing-2: #16181c;
     --lamp-off: #0c0d10;
@@ -74,6 +80,10 @@
       --muted: 240 12% 16%;
       --muted-foreground: 215 20% 60%;
       --popover: 240 15% 10%;
+      /* 深色底上 58% 的靛蓝只有 3.8:1，这里要更亮才够对比；而亮色底上的白字
+         又会掉到 3.6:1，所以文字反过来用深色。 */
+      --primary: 239 84% 72%;
+      --primary-foreground: 240 18% 6%;
       --shadow-sm: 0 2px 4px 0 #00000052;
       --shadow-lg: 0 20px 25px -5px #00000066, 0 8px 10px -6px #00000040;
     }
@@ -87,6 +97,8 @@
     --muted: 240 12% 16%;
     --muted-foreground: 215 20% 60%;
     --popover: 240 15% 10%;
+    --primary: 239 84% 72%;
+    --primary-foreground: 240 18% 6%;
     --shadow-sm: 0 2px 4px 0 #00000052;
     --shadow-lg: 0 20px 25px -5px #00000066, 0 8px 10px -6px #00000040;
   }
@@ -220,7 +232,10 @@
   .pill[data-c="red"] .dot   { background: var(--red);   box-shadow: 0 0 7px var(--red); }
   .pill[data-c="amber"] .dot { background: var(--amber); box-shadow: 0 0 7px var(--amber); }
   .pill[data-c="green"] .dot { background: var(--green); box-shadow: 0 0 7px var(--green); }
-  .pill[data-c="idle"] .dot  { background: var(--idle);  opacity: .45; }
+  .pill[data-c="done"] .dot  { background: var(--done);  box-shadow: 0 0 7px var(--done); }
+  /* 「暗白」是深色桌面上的说法：在近白底上 #dfe5ec 的对比度只有 1.1:1，等于没有
+     这个点。浅色主题改用中性灰（并保留低不透明度来表达「暗」）。 */
+  .pill[data-c="idle"] .dot  { background: hsl(var(--muted-foreground)); opacity: .45; }
   .pill[data-c="grey"] .dot  { background: var(--unknown); box-shadow: 0 0 7px var(--unknown); }
 
   /* ---------- meanings ---------- */
@@ -231,7 +246,8 @@
   .legend .r { background: var(--red);   box-shadow: 0 0 8px var(--red); }
   .legend .a { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
   .legend .g { background: var(--green); box-shadow: 0 0 8px var(--green); }
-  .legend .i { background: var(--idle); opacity: .35; }
+  .legend .i { background: hsl(var(--muted-foreground)); opacity: .35; }
+  .legend .d { background: var(--done); box-shadow: 0 0 8px var(--done); }
   .legend b { font-weight: 600; }
   .legend span { color: hsl(var(--muted-foreground)); font-size: 15px; }
 
@@ -406,7 +422,8 @@
     </div>
     <div class="pill" id="pill" data-c="amber">
       <span class="dot"></span>
-      <span class="who">claude</span>
+      <!-- 与产品一致：列表和铭牌显示正式产品名，不是内部代号。 -->
+      <span class="who">Claude Code</span>
       <span class="what" id="what">thinking</span>
     </div>
   </div>
@@ -415,7 +432,8 @@
     <div><i class="g"></i><span><b>Green</b> — it is working. Bright means running, right now.</span></div>
     <div><i class="a"></i><span><b>Yellow</b> — it stopped and needs you. A permission prompt, a question, a choice.</span></div>
     <div><i class="r"></i><span><b>Red</b> — this run failed, or it is blocked and will not recover alone.</span></div>
-    <div><i class="i"></i><span><b>Dim white</b> — the software is open but idle. Green is never used to mean "not working".</span></div>
+    <div><i class="d"></i><span><b>Purple</b> — it just finished. Deliberately not green: green means it is still working.</span></div>
+    <div><i class="i"></i><span><b>Dim</b> — the software is open but idle. Green is never used to mean "not working".</span></div>
   </div>
 
   <h2>Install</h2>
@@ -494,12 +512,15 @@ bao connect claude</pre>
   const pill = document.getElementById('pill');
   const what = document.getElementById('what');
 
+  // 一轮完整的回合，颜色顺序就是产品说的顺序：绿（在跑）→ 黄（要你）→
+  // 紫（刚完成，刻意不是绿）→ 暗（开着但空闲）。
   const turn = [
     ['busy',    'green', 'working',                  2400],
     ['busy',    'green', 'running Bash',             2200],
     ['busy',    'green', 'editing src/server.js',    2200],
     ['waiting', 'amber', 'needs your permission',    4200],
     ['busy',    'green', 'running Bash',             1900],
+    ['done',    'done',  'finished',                 2600],
     ['idle',    'idle',  'ready',                    3200],
   ];
 

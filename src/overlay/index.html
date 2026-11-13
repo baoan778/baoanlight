@@ -176,7 +176,10 @@
   #labels { display: flex; flex-direction: column; gap: 3px; align-items: center; width: 100%; }
   .pill {
     display: grid;
-    grid-template-columns: 8px minmax(52px, 76px) 1fr 30px;
+    /* 名字列原本最大 76px：「DeepSeek Harness」在 11px 下要 ~100px，于是每一行
+       都被截成「DeepSeek Ha…」—— 而名字是这一行的身份，被截断就认不出是谁。
+       让名字列拿到 110px，detail 仍然是 1fr（它自己也会省略号收尾）。 */
+    grid-template-columns: 8px minmax(52px, 110px) 1fr 30px;
     align-items: center;
     gap: 7px;
     width: calc(100% - 24px);
