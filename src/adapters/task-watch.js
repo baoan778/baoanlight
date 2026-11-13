@@ -165,8 +165,16 @@ function run(opts = {}) {
     return Promise.allSettled(jobs).finally(() => process.exit(0));
   };
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, stop);
+  // server 重启回来之后把还亮着的会话重报：任务板上的状态没变，不会触发
+  // 常规的「状态变化才上报」，于是重启后这些灯要等下一次状态切换才重新亮起。
+  const resend = () => {
+    for (const [folder, t] of tracked) {
+      if (!t.state || t.state === 'offline') continue;
+      setState({ session: `workbuddy:${path.basename(folder)}`, agent: 'workbuddy', state: t.state, detail: t.state === 'busy' ? 'working through tasks' : '' });
+    }
+  };
   // 机器人退了就收摊，避免留下一个永远轮询的孤儿进程。
-  watchServer = keepAliveWith(stop);
+  watchServer = keepAliveWith(stop, { onRecover: resend });
 
   return { stop, tracked, dir };
 }

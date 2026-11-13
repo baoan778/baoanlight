@@ -7,12 +7,23 @@
 // 会被忘掉。
 const client = require('../client');
 
-function keepAliveWith(stop, { everyMs = 20_000, missesAllowed = 3 } = {}) {
+function keepAliveWith(stop, { everyMs = 20_000, missesAllowed = 3, onRecover } = {}) {
   let misses = 0;
+  let wasDown = false;
   const timer = setInterval(async () => {
     const health = await client.get('/health');
-    misses = health && health.ok ? 0 : misses + 1;
-    if (misses >= missesAllowed) stop();
+    if (health && health.ok) {
+      // server 回来了：通知 watcher 把它已经跟踪到的会话/电量重新上报一次。
+      // 重启后 store 是空的，什么都不做的话，这些会话要等下一条新日志才会
+      // 重新出现；而「stop 之后马上 start」的那几秒内，恰恰没有新日志。
+      if (wasDown && onRecover) { try { onRecover(); } catch { /* 上报失败别拖垮守护 */ } }
+      misses = 0;
+      wasDown = false;
+    } else {
+      misses += 1;
+      wasDown = true;
+      if (misses >= missesAllowed) stop();
+    }
   }, everyMs);
   if (timer.unref) timer.unref();
   return timer;

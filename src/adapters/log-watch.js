@@ -235,7 +235,12 @@ function run(opts = {}) {
 
     if (type === 'token_count' || /fuel|usage|quota|rate_limit/i.test(normaliseType(type))) {
       const f = readFuel(rec.payload || rec.data || rec, opts.fuel);
-      if (f) setState({ session, fuel: f });
+      if (f) {
+        // 记住这次读数：server 重启后 store 是空的，要靠 onRecover 把它重报
+        // 回去，否则电量条要等下一条 fuel 日志才重新出现。
+        t.fuel = f;
+        setState({ session, fuel: f });
+      }
       return;
     }
 
@@ -363,7 +368,21 @@ function run(opts = {}) {
   };
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, stop);
 
-  watchServer = keepAliveWith(stop);
+  // server 重启回来之后，把还活着的会话连同它的电量一起重报：store 是新的，
+  // 已经跟踪到的会话不会凭空自己长出来。
+  const resend = () => {
+    for (const t of tracked.values()) {
+      if (!t.session || !t.state || t.state === 'offline') continue;
+      const payload = {
+        session: t.session, agent: name, state: t.state,
+        detail: t.state === 'waiting' ? 'needs approval' : t.state === 'busy' ? 'working' : '',
+        cwd: t.cwd || '',
+      };
+      if (t.fuel) payload.fuel = t.fuel;
+      setState(payload);
+    }
+  };
+  watchServer = keepAliveWith(stop, { onRecover: resend });
 
   return { stop, tracked, dir };
 }

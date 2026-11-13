@@ -218,8 +218,18 @@ function run(opts = {}) {
     return Promise.allSettled(jobs).finally(() => process.exit(0));
   };
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, stop);
+  // server 重启回来之后把还活着的会话连同上下文电量重报：store 是新的，
+  // 投影文件还在，但会话要等下一条变化才会重新出现。
+  const resend = () => {
+    for (const t of tracked.values()) {
+      if (!t.state || t.state === 'offline') continue;
+      const payload = { session: `deepseek:${t.session}`, agent: 'deepseek', state: t.state };
+      if (t.fuel) payload.fuel = t.fuel;
+      setState(payload);
+    }
+  };
   // 机器人退了就收摊：这个 watcher 原来没有这条守护，`bao stop` 之后会一直轮询。
-  watchServer = keepAliveWith(stop);
+  watchServer = keepAliveWith(stop, { onRecover: resend });
 
   return { stop, tracked, dir };
 }
