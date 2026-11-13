@@ -1984,10 +1984,15 @@ if (host && renderer) {
   //      12 时 30 分」这么长一句 —— 尺寸和清晰度都得给够；
   //   2. 不能出画。相机在 300px 宽的画面里横向视野约 4.1u（半宽 2.07u），
   //      mini 模式只有 1.45u，所以中心 + 半宽必须留在 1.55u 以内。
-  const SIGN_W = 1.95;
-  const SIGN_H = 0.585;
-  // 0.96：再往左就会压到右镜筒上缘，再往右在 pop 放大时会被画布边缘裁掉。
-  const SIGN_X = 0.96;
+  // 一块挂在机器人**右上方空处**的牌子，不压在它身上：
+  //   左边缘 = 1.3 - 0.75 = 0.55u，正好在双筒右沿（0.5）之外 —— 眼睛和头顶
+  //   那根细天线都在它左边，不会被盖住；
+  //   右边缘 = 2.05u，仍在相机横向视野半宽（2.07u）之内，不出画；
+  //   底边 = 3.60 - 0.225 = 3.375u，高过双筒顶（约 3.05）与装饰（约 3.4）。
+  const SIGN_W = 1.5;
+  const SIGN_H = 0.45;
+  const SIGN_X = 1.3;
+  const SIGN_Y = 3.60;
   // 2 倍超采样：170% 缩放 + HiDPI 时这块招牌占约 260 设备像素，320px 的纹理
   // 只够 1:1，稍微一放大就靠插值撑开，字边全是毛的。坐标仍然按 320×96 的旧
   // 逻辑写，靠 drawSign 里的 setTransform 整体放大，布局一个像素都不用动。
@@ -2001,7 +2006,7 @@ if (host && renderer) {
   const signMat = new THREE.SpriteMaterial({ map: signTex, transparent: true, depthWrite: false, opacity: 0 });
   const sign = new THREE.Sprite(signMat);
   sign.scale.set(SIGN_W, SIGN_H, 1);
-  sign.position.set(SIGN_X, 3.34, 0.42);
+  sign.position.set(SIGN_X, SIGN_Y, 0.42);
   robot.add(sign);
 
   // 招牌后面的光晕：additive 金色，随呼吸脉动，让招牌像「点着灯」。
@@ -2013,40 +2018,10 @@ if (host && renderer) {
   signGlow.position.copy(sign.position);
   robot.add(signGlow);
 
-  // mini 模式的画面横向视野只有 1.45u（full 是 2.07u），1.95u 的招牌会有一半
-  // 落在画外。按窗口模式回缩，比例保持不变 —— 这是「同一块牌子，换个位置挂」，
-  // 不是两套设计。
-  let signW = SIGN_W;
-  let signH = SIGN_H;
-  let signX = SIGN_X;
-  let signY = 3.34;
-  const syncSignSize = () => {
-    const mini = document.body.dataset.theme === 'mini';
-    if (mini) {
-      // mini 窗口只有 210px 宽，整机连着一切零件一起缩到 0.7 倍 —— 招牌要是
-      // 跟着等比缩小，字就只剩 4px。这里不再按比例走：把牌子**加宽到比机身还
-      // 宽**（2.6u ≈ 132px）、抬到头顶之上，字号才守得住（约 13px，比 pill 的
-      // 10px 还大）。视野半宽是 2.07u，中心 0.5 + 半宽 1.3 = 1.8u，不出画。
-      signW = 2.6;
-      signH = 0.78;
-      signX = 0.5;
-      signY = 3.42;
-    } else {
-      signW = SIGN_W;
-      signH = SIGN_H;
-      signX = SIGN_X;
-      signY = 3.34;
-    }
-    sign.scale.set(signW, signH, 1);
-    signGlow.scale.set(signW + 0.5, signH + 0.32, 1);
-  };
-  if (window.MutationObserver) {
-    new MutationObserver(syncSignSize).observe(document.body, {
-      attributes: true, attributeFilter: ['data-theme'],
-    });
-  }
-  syncSignSize();
-
+  // 位置和尺寸都不再跟着窗口模式变：牌子挂在机器人右上方那片空处，左边缘
+  // 落在双筒右沿（0.5）之外、头顶之上，所以既不压眼睛也不压那根细天线。
+  // mini 只是画布更小（字自然小一点），位置关系不该因此变 —— 两套尺寸只会让
+  // 「它到底在哪儿」多一份需要维护的答案。
   let signText = '';
   let signShownAt = -99;
   let signMode = 'top';    // top 最多 / total 合计 / cycle 轮播 / off 关闭
@@ -3291,11 +3266,13 @@ if (host && renderer) {
     if (signLabel && !signText) signShownAt = t;   // 从无到有：弹一下
     drawSign(signLabel);   // 内部对比文字/颜色/形状，没变化就直接返回
     const pop = signLabel && signShownAt >= 0 ? Math.max(0, 1 - (t - signShownAt) / 0.30) : 0;
-    const popScale = 1 + pop * 0.22;
+    // 弹出幅度从 0.22 收到 0.10：招牌顶边本来就在相机的上边界附近，再放大
+    // 会有一瞬间被画布切掉一条边。
+    const popScale = 1 + pop * 0.10;
     signMat.opacity = damp(signMat.opacity, signLabel ? 1 : 0, 8, dt);
-    sign.scale.set(signW * popScale, signH * popScale, 1);
-    sign.position.x = signPos === 'left' ? -signX : signX;
-    sign.position.y = signY + (reduceMotion ? 0 : Math.sin(t * 1.8) * 0.03);
+    sign.scale.set(SIGN_W * popScale, SIGN_H * popScale, 1);
+    sign.position.x = signPos === 'left' ? -SIGN_X : SIGN_X;
+    sign.position.y = SIGN_Y + (reduceMotion ? 0 : Math.sin(t * 1.8) * 0.03);
     // 辉光：像通电灯箱一样呼吸，颜色跟着自定义走
     signGlow.material.color.set(signColor);
     signGlow.opacity = damp(signGlow.opacity, signLabel ? 0.35 + Math.sin(t * 3.2) * 0.15 : 0, 8, dt);
