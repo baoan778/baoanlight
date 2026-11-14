@@ -57,7 +57,16 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
   const statsFile = path.join(config.DIR, 'stats.json');
   try {
     store.mergeStats(JSON.parse(fs.readFileSync(statsFile, 'utf8')));
-  } catch { /* 首次运行或文件损坏 */ }
+  } catch (err) {
+    // 首次运行没有文件是正常的；文件坏了不能静默丢弃 —— 今日时长/周报少一天却
+    // 没有任何提示，用户会以为是自己漏记了。备份 + 说一句。
+    if (err.code !== 'ENOENT') {
+      try {
+        fs.renameSync(statsFile, statsFile + '.bad');
+        console.error(`baoanlight: stats.json was unreadable (${err.message}); moved to stats.json.bad, starting fresh.`);
+      } catch { /* 备份失败也不影响启动 */ }
+    }
+  }
   let statsTimer = null;
   // 落盘抽成一个函数：防抖定时器会用它，`/quit` 和 server 关闭时也要用它。
   // 否则 `bao stop` 永远丢掉最后 2 秒的今日统计。
@@ -66,7 +75,12 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
     statsTimer = null;
     try {
       config.ensureDir();
-      fs.writeFileSync(statsFile, JSON.stringify(store.stats));
+      // 原子写：先写临时文件再 rename。进程在 writeFileSync 中途被杀（kill -9 /
+      // 断电）会留下半截 JSON，下次启动 parse 失败、统计清零。rename 是同目录内
+      // 的原子替换，磁盘上要么是完整旧文件、要么是完整新文件。
+      const tmp = statsFile + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(store.stats));
+      fs.renameSync(tmp, statsFile);
     } catch { /* 写不进也不影响运行 */ }
   };
   store.on('change', () => {

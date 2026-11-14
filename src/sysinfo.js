@@ -10,6 +10,7 @@
 const os = require('os');
 
 let prev = null;
+let prevAt = 0;      // 上次采样的时刻：差值只在这两帧之间的窗口里有意义
 let cached = null;
 let cachedAt = 0;
 
@@ -32,11 +33,16 @@ function sample() {
   if (prev) {
     const dTotal = cur.total - prev.total;
     const dIdle = cur.idle - prev.idle;
-    // 第一次采样没有差值，返回 0 而不是「开机以来的平均值」——后者会
-    // 在启动瞬间报一个和此刻无关的数字。
-    if (dTotal > 0) cpu = Math.max(0, Math.min(100, Math.round((1 - dIdle / dTotal) * 100)));
+    // 差值只在这两帧之间有意义：面板关了几小时再打开，prev 还是几小时前的值，
+    // 用它算出来的是「过去几小时的平均」，冒充「此刻占用」——正是文件顶部
+    // 承诺不报的数字。超过 5 秒就丢弃旧差值，只刷新基准、返回 0（下一帧 2 秒后
+    // 才出真值）。第一次采样没有差值，同样返回 0。
+    if (dTotal > 0 && now - prevAt <= 5000) {
+      cpu = Math.max(0, Math.min(100, Math.round((1 - dIdle / dTotal) * 100)));
+    }
   }
   prev = cur;
+  prevAt = now;
 
   const total = os.totalmem();
   const free = os.freemem();

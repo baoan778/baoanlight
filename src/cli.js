@@ -517,6 +517,11 @@ async function cmdStatus(flags = {}) {
 }
 
 async function cmdDemo() {
+  // 没起服务就演，等于对着空气说台词：终端照打 demo done，机器人一动不动。
+  if (!(await client.health())) {
+    console.error(`${c.red('●')} no server listening — run: bao start`);
+    process.exit(1);
+  }
   // 五种状态都要演一遍：出错闪烁和完成转圈是最容易被写坏的动效，恰恰只有
   // 真按顺序走一遍才看得见。只演 busy/waiting/idle 等于跳过了最该检查的两段。
   const seq = [
@@ -528,8 +533,15 @@ async function cmdDemo() {
     ['idle', ''],
   ];
   for (const [state, detail] of seq) {
+    const res = await client.setState({ state, detail, agent: 'demo', session: 'demo:1' });
+    // 端口被别的程序占用、token 不匹配时 setState 返回 null / {error}：这时
+    // 「demo done」是句谎话。立刻停，别让用户盯着一个没动的机器人等 15 秒。
+    if (!res || res.error) {
+      console.error(`${c.red('●')} the robot did not accept the write — is it the right server? (bao doctor)`);
+      process.exitCode = 1;
+      return;
+    }
     process.stdout.write(`${DOT[state]()} ${state}${detail ? ' — ' + detail : ''}\n`);
-    await client.setState({ state, detail, agent: 'demo', session: 'demo:1' });
     await new Promise((r) => setTimeout(r, 2400));
   }
   await client.setState({ state: 'offline', session: 'demo:1' });
@@ -545,7 +557,11 @@ function cmdAgents() {
   console.log(`\n${c.b('Agents')}\n`);
   console.log(`  ${c.dim('agent'.padEnd(12))} ${c.dim('how it reports'.padEnd(30))} ${c.dim('setup')}`);
   for (const r of rows) {
-    const setup = r.tier === 'pty' ? `bao wrap -- ${r.n === 'claude' ? 'claude' : r.n}`
+    // pty 代理不能用 `bao wrap -- ${r.n}` 拼命令：cursor 的真实二进制是
+    // cursor-agent，copilot/cline/windsurf 要 `--agent X -- X` 才能指对。agents.js
+    // 的 detail 里已经存了正确命令（`bao wrap --agent cursor -- cursor-agent`），
+    // 列表必须和详情一致，照抄才跑得起来。
+    const setup = r.tier === 'pty' ? String(r.detail || '').replace(/`/g, '').trim()
       : r.tier === 'log' ? `bao watch ${r.n}`
         : `bao connect ${r.n}`;
     console.log(`  ${r.n.padEnd(12)} ${String(r.how).padEnd(30)} ${setup}`);
@@ -796,7 +812,18 @@ function cmdOnboard() {
     rl.close();
 
     if (choice === '1' || (choice === '' && claudePresent && !claudeHooked)) {
-      const r = install.installClaude({ scope: 'user' });
+      let r;
+      try {
+        r = install.installClaude({ scope: 'user' });
+      } catch (err) {
+        // settings.json 读不出来 / 不是合法 JSON：不写任何东西，说清楚为什么。
+        // 和 cmdInstall 同一套错误处理 —— onboarding 更不能让人「选了 1」就
+        // 静默退出，连错在哪一步都不知道。
+        console.error(`\n${c.red('✗')} ${err.message}`);
+        console.error(c.dim('  Nothing was written. Fix or move that file, then run: bao connect claude'));
+        process.exitCode = 1;
+        return;
+      }
       console.log(`\n${c.grn('●')} Claude Code hooks installed (${r.events} events)`);
       console.log(c.dim(`  ${r.file}`));
       console.log(c.grn('✓') + ' 立即生效，不用重启——给 Claude Code 发条消息，机器人就变绿。');
@@ -824,7 +851,11 @@ function cmdOnboard() {
     console.log(`    ${c.b('bao doctor')}     体检这台机器接线对不对`);
     console.log(`    ${c.b('bao agents')}     所有支持的代理`);
     console.log('');
-  })().catch(() => process.exit(1));
+  })().catch((err) => {
+    // 别裸 exit：哪怕是上面 try 漏掉的路径，也得让人知道为什么没装成。
+    console.error(`${c.red('✗')} ${err && err.message ? err.message : err}`);
+    process.exit(1);
+  });
 }
 
 // ---------------------------------------------------------------------- main
