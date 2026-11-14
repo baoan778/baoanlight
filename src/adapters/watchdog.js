@@ -10,13 +10,17 @@ const client = require('../client');
 function keepAliveWith(stop, { everyMs = 20_000, missesAllowed = 3, onRecover } = {}) {
   let misses = 0;
   let wasDown = false;
+  let lastPid = null;
   const timer = setInterval(async () => {
     const health = await client.get('/health');
     if (health && health.ok) {
-      // server 回来了：通知 watcher 把它已经跟踪到的会话/电量重新上报一次。
-      // 重启后 store 是空的，什么都不做的话，这些会话要等下一条新日志才会
-      // 重新出现；而「stop 之后马上 start」的那几秒内，恰恰没有新日志。
-      if (wasDown && onRecover) { try { onRecover(); } catch { /* 上报失败别拖垮守护 */ } }
+      // server 回来了，**或者换了一个新 server**。后者覆盖「stop 之后马上 start」
+      // 的快速重启：watchdog 每 20 秒才探一次，根本抓不到那 <1 秒的 down 空窗，
+      // 只认 wasDown 的话 onRecover 永远不触发 —— 重启后 store 是空的，灯就一直
+      // 灭到下一次状态变化。pid 变了就是新进程，一样要重报。
+      const newServer = !!health.pid && lastPid != null && health.pid !== lastPid;
+      if ((wasDown || newServer) && onRecover) { try { onRecover(); } catch { /* 上报失败别拖垮守护 */ } }
+      if (health.pid) lastPid = health.pid;
       misses = 0;
       wasDown = false;
     } else {

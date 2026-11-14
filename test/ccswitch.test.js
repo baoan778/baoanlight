@@ -5,6 +5,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// 隔离：本文件有测试在 port 0 上起 server，别把临时端口写进用户真实的端口文件。
+process.env.BAOANLIGHT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-ccs-'));
+
 const { readCcSwitch, claudeModel, codexModel, refresh, lastValue, reset } = require('../src/adapters/ccswitch');
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccs-'));

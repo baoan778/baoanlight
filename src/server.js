@@ -138,7 +138,10 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
       // 浏览器页面才拿到回显的 Origin，别的源连读都读不到。
       const verdict = auth.guard(req, url, boundPort);
       if (!verdict.ok) {
-        logEvent(`refused ${req.method} ${p} (${verdict.error})`);
+        // 带上查询串：被拒的写请求里往往带着 agent/session，不记下来就永远
+        // 不知道「是谁没带 token」，只能看到一堆没头没尾的 refused。
+        const qs = url.search ? `?${url.search}` : '';
+        logEvent(`refused ${req.method} ${p}${qs} (${verdict.error})`);
         return send(res, verdict.code, { error: verdict.error });
       }
 
@@ -216,8 +219,9 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
         return send(res, 200, { ok: true });
       }
 
-      // Convenience for shell one-liners and hooks:
-      //   curl -s localhost:4747/set/busy?agent=claude
+      // Convenience for shell one-liners and hooks. 写入（含 GET）必须带 token：
+      //   curl -s -H "x-bao-token: $(bao token)" localhost:4747/set/busy?agent=claude
+      // 没带 token 的 GET 会被上面的 guard 拒绝（否则 <img> 就能替你点灯）。
       // 也接受 JSON 请求体（`bao mcp` 走的就是这条）：路径里的 state 永远优先，
       // 查询串与 body 都能补 agent/session/detail/cwd，缺省才回落。
       // 只读查询串曾经让整条 MCP 通道静默失效——报上来的每个软件都叫 "agent"。

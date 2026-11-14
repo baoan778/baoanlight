@@ -6,6 +6,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// 隔离到临时目录：测试在 port 0 上起 server，会把临时端口写进 ~/.baoanlight/port，
+// 覆盖用户真实机器人的端口。HOME 必须在 require server 之前设好（config.DIR 在
+// 模块加载时就定死了）。
+process.env.BAOANLIGHT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-e2e-'));
+
 const { start } = require('../src/server');
 const install = require('../src/adapters/install');
 

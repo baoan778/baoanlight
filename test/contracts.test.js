@@ -15,6 +15,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// 隔离到临时目录：本文件在 port 0 上起 server，别把临时端口写进用户真实的端口文件。
+process.env.BAOANLIGHT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-contracts-'));
+
 const { start } = require('../src/server');
 const install = require('../src/adapters/install');
 
