@@ -166,12 +166,19 @@ test('the scene is told which software owns which light, in fixed order', async 
   await settled(page, () => {
     const last = window.__ring[window.__ring.length - 1];
     return last ? last.agents.length : 0;
-  }).toBe(3);
+  }).toBe(4);
 
+  // 4 个注册软件都在（deepseek 没会话 = 离线占位）：灯环段位置固定，和胸口槽位、
+  // pills 行一致。offline 段 hex 为空，由 3D 端画成暗色。
   const agents = await page.evaluate(() =>
     window.__ring[window.__ring.length - 1].agents.map((a) => `${a.agent}:${a.state}:${a.worst}`));
 
-  expect(agents).toEqual(['claude:busy:false', 'codex:error:true', 'workbuddy:waiting:false']);
+  expect(agents).toEqual([
+    'deepseek:offline:false',
+    'claude:busy:false',
+    'codex:error:true',
+    'workbuddy:waiting:false',
+  ]);
 });
 
 // ---------------------------------------------------------------- the label
@@ -1236,12 +1243,14 @@ test('a triple click fires the crazy easter egg without the single/double reacti
     for (const e of ['bao:poke', 'bao:greet', 'bao:crazy']) window.addEventListener(e, () => window.__acts.push(e));
   });
 
-  // 三次快速点击（间隔 < 300ms 的反应窗口，且在 900ms 连击窗口内）。
+  // 三次快速点击（间隔 < 300ms 的反应窗口，且在 900ms 连击窗口内）。间隔取 120ms
+  // 留足余量：全套件串跑时单次 click 的派发时间会抖，间隔太大就可能把第三下挤出
+  // 900ms 窗口，让这条用例在重负载下偶发失败。
   const robot = page.locator('#robot');
   await robot.click({ position: { x: 30, y: 30 } });
-  await page.waitForTimeout(180);
+  await page.waitForTimeout(120);
   await robot.click({ position: { x: 30, y: 30 } });
-  await page.waitForTimeout(180);
+  await page.waitForTimeout(120);
   await robot.click({ position: { x: 30, y: 30 } });
 
   await expect.poll(() => page.evaluate(() => window.__acts)).toContain('bao:crazy');

@@ -427,10 +427,26 @@ import {
       const at = Number(s.updatedAt) || 0;
       if (!last.has(s.agent) || last.get(s.agent) < at) last.set(s.agent, at);
     }
+    // 离线软件也占一段（hex 为空、dim 置真），而不是把它从灯环里摘掉：它一下线
+    // 其余软件的段会整体前移，和固定位置的胸口槽位/pills 行错位 —— 第 4 个软件
+    // 会在灯环上变成第 3 段。
     return slots
-      .filter((s) => s && s.count > 0 && HEX[COLOR[s.state]])
       .map((s) => {
-        const at = last.get(s.agent) || 0;
+        if (!s) return null;
+        const live = s.count > 0 && HEX[COLOR[s.state]];
+        if (!live) {
+          return {
+            agent: s.agent,
+            label: displayName(s.agent),
+            state: 'offline',
+            hex: null,        // planRing 里 null = 熄灯占位
+            dim: true,
+            count: 0,
+            at: 0,
+            fresh: false,
+            worst: false,
+          };
+        }
         return {
           agent: s.agent,
           label: displayName(s.agent),
@@ -438,11 +454,12 @@ import {
           hex: HEX[COLOR[s.state]],
           dim: s.state === 'idle',
           count: s.count,
-          at,
-          fresh: now - at < FRESH_MS,
+          at: last.get(s.agent) || 0,
+          fresh: now - (last.get(s.agent) || 0) < FRESH_MS,
           worst: s.agent === worstAgent,
         };
       })
+      .filter(Boolean)
       .sort((a, b) => (AGENT_RANK[a.agent] ?? 99) - (AGENT_RANK[b.agent] ?? 99));
   }
 
@@ -1112,11 +1129,13 @@ import {
     announceDone(sessions);
     if (!previewing) checkStuck(sessions);
     announceCC(snap);
-    // 每个软件的今日时长（用短名）传给 3D 广告牌。
+    // 每个软件的今日时长传给 3D 广告牌。key 用稳定的 agent id（不是显示名首词）：
+    // 两个软件改名叫同首词时（把 codex 改名「Claude 2」）会互相覆盖、时长被合并。
+    // 显示名放在 value 里，展示时才还原。
     const stats = {};
     for (const [agent, ms] of Object.entries(snap.stats?.byAgent || {})) {
       const min = Math.floor(ms / 60000);
-      if (min >= 1) stats[displayName(agent).split(' ')[0]] = min;
+      if (min >= 1) stats[agent] = { n: displayName(agent), m: min };
     }
     document.body.dataset.stats = JSON.stringify(stats);
     // 今日战绩：完成 / 出错总次数，交给 3D 广告牌展示。

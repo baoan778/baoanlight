@@ -13,6 +13,7 @@ const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
+const { StringDecoder } = require('string_decoder');
 const { profileFor, stripAnsi } = require('./patterns');
 const { setState } = require('../client');
 
@@ -53,7 +54,11 @@ function which(cmd) {
 function resolveSpawn(command, args) {
   const file = which(command);
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(file)) {
-    return [process.env.COMSPEC || 'cmd.exe', ['/c', file, ...args]];
+    // cmd.exe /c 会把 & | < > ^ ( ) 当命令分隔/重定向解析：参数里带这些字符
+    // （模型名、带 & 的提示词）会被截断，甚至执行不该执行的片段。用 ^ 转义成
+    // 字面量；file 路径也一样处理（路径里可能有括号）。
+    const esc = (a) => String(a).replace(/([&|<>^()])/g, '^$1');
+    return [process.env.COMSPEC || 'cmd.exe', ['/c', esc(file), ...args.map(esc)]];
   }
   return [file, args];
 }
@@ -133,8 +138,12 @@ function run(argv, opts = {}) {
   // so a red light clears the moment they answer.
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
+  // raw mode 下 Node 的读分块不保证字符对齐：一个多字节字符的字节序列可能被拆进
+  // 两个 data 事件，各自 toString('utf8') 会把半个序列解成 �。StringDecoder 会
+  // 把不完整的尾字节攒到下一次，中文/emoji 才不会被敲成乱码。
+  const stdinDecoder = new StringDecoder('utf8');
   process.stdin.on('data', (d) => {
-    child.write(d.toString('utf8'));
+    child.write(stdinDecoder.write(d));
     if (current === 'waiting') {
       // The question has been answered, so drop the prompt from the tail before
       // the agent's next output is matched against it.

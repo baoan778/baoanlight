@@ -2506,7 +2506,8 @@ if (host && renderer) {
         l.worst = !!a.worst;
         l.segStart = at;
         l.segLen = n;
-        l.color.set(a.hex || FALLBACK.unknown);
+        // hex 为空 = 离线占位：用和胸口槽位一致的暗色熄灯，而不是灰白（FALLBACK）。
+        l.color.set(a.hex || 0x2a3340);
       }
       at += n;
     }
@@ -3441,23 +3442,26 @@ if (host && renderer) {
     const fmt = (m) => (m < 60 ? `${m} 分钟` : `${Math.floor(m / 60)} 时 ${m % 60} 分`);
     const statsByAgent = datasetJson('stats');
     let signLabel = '';
-    if (signMode !== 'off' && !off) {
+    // total（合计今日）是「今天干了多少」，下班全部离线时恰恰最想看一眼 ——
+    // 不该跟着机器人一起熄灭。top/cycle 是「谁最久」，离线时没那么重要，仍随 off 隐藏。
+    if (signMode !== 'off' && (signMode === 'total' || !off)) {
       const entries = Object.entries(statsByAgent);
       if (entries.length) {
-        const sorted = [...entries].sort((a, b) => b[1] - a[1]);
+        // value 现在是 { n: 显示名, m: 分钟 }：key 是稳定 agent id，显示名放里面。
+        const sorted = [...entries].sort((a, b) => b[1].m - a[1].m);
         if (signMode === 'total') {
           const ev = datasetJson('events');
           const bits = [];
           if (ev && ev.done) bits.push(`完成 ${ev.done}`);
           if (ev && ev.error) bits.push(`出错 ${ev.error}`);
           const suffix = bits.length ? ` · ${bits.join(' · ')}` : '';
-          signLabel = `合计 ${fmt(entries.reduce((a, [, m]) => a + m, 0))}${suffix}`;
+          signLabel = `合计 ${fmt(entries.reduce((a, [, v]) => a + v.m, 0))}${suffix}`;
         } else if (signMode === 'cycle') {
-          const [name, min] = sorted[Math.floor(t / 4) % sorted.length];
-          signLabel = `${name} ${fmt(min)}`;
+          const [, v] = sorted[Math.floor(t / 4) % sorted.length];
+          signLabel = `${v.n} ${fmt(v.m)}`;
         } else {
-          const [name, min] = sorted[0];
-          signLabel = `${name} ${fmt(min)}`;
+          const [, v] = sorted[0];
+          signLabel = `${v.n} ${fmt(v.m)}`;
         }
       }
     }
