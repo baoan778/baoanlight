@@ -130,7 +130,9 @@
 
   /* ---------- shapes ---------- */
   body.collapsed #bot { width: 150px; }
-  body[data-theme="mini"] #bot { width: 210px; }
+  /* `:not(.collapsed)`：两条规则特异性相同时后写的会赢，mini 下点「收起」
+     机器人一直保持 210px，只有列表消失 —— 按钮看起来是坏的。 */
+  body[data-theme="mini"]:not(.collapsed) #bot { width: 210px; }
   body.collapsed #fuel,
   body[data-theme="mini"] #fuel { display: none; }
 
@@ -411,16 +413,28 @@
   #m-score .week-chart i.today { background: rgba(120,190,255,.85); }
   #menu select { flex: 1; min-width: 0; height: 20px; background: rgba(255,255,255,.08); color: #e9edf2;
     border: 0; border-radius: 6px; font: inherit; font-size: 10.5px; cursor: pointer; }
-  /* 勿扰时段的两个时间输入：和下拉同一套外观，宽度收窄，中间一条短横线。 */
+  /* Chrome 的时钟按钮要吃掉约 20px：两个时间框挤在 198px 的行里时，数字会被
+     挤到看不见，只剩两个钟表图标。隐藏按钮，数字才回得来（仍可点进去用键盘
+     或方向键调整）。 */
+  #menu input[type="time"]::-webkit-calendar-picker-indicator { display: none; }
+  /* 勿扰时段的两个时间输入：和下拉同一套外观，宽度收窄，中间一条短横线。
+     字号与内边距比别的控件更紧，否则最后一位数字会被裁掉（显示成「22:0」）。 */
+  #dnd-times { gap: 4px; }
   #menu input[type="time"] {
-    flex: 1; min-width: 0; height: 20px; padding: 0 4px;
+    flex: 1; min-width: 0; height: 20px; padding: 0 2px;
     background: rgba(255,255,255,.08); color: #e9edf2;
-    border: 0; border-radius: 6px; font: inherit; font-size: 10.5px;
+    border: 0; border-radius: 6px; font: inherit; font-size: 10px;
   }
   #dnd-times .dash { opacity: .5; flex: none; }
   #menu select option { background: #1a1d22; color: #e9edf2; }
-  #menu input[type="text"] { flex: 1; min-width: 0; height: 20px; padding: 0 7px; background: rgba(255,255,255,.08);
+  #menu input[type="text"], #menu input[type="search"] { flex: 1; min-width: 0; height: 20px; padding: 0 7px; background: rgba(255,255,255,.08);
     color: #e9edf2; border: 0; border-radius: 6px; font: inherit; font-size: 10.5px; }
+  /* 设置搜索：菜单里控件过五十个，记得住名字、记不住在哪一组。 */
+  #m-find { width: 100%; margin: 0 0 6px; }
+  /* 搜索时分组标题、说明和底部战绩让位，只留命中的设置行。 */
+  #menu.searching .title, #menu.searching .hint,
+  #menu.searching #panel-score, #menu.searching #panel-recent { display: none; }
+  #menu.searching #m-find-empty:not([hidden]) { display: block; }
   #menu output { flex: none; width: 34px; text-align: right; font-variant-numeric: tabular-nums; opacity: .8; }
   /* 注意特异性：下面 `#menu button` 的 width:100% 和这些规则同特异性且定义在后，
      不加 `#menu` 前缀就会被整行宽度盖掉 —— 排序箭头会撑满一行、把 ↑↓ 挤出容器，
@@ -441,6 +455,20 @@
   #menu label.row { cursor: pointer; }
   #menu input[type="checkbox"] { accent-color: var(--state); cursor: pointer; }
   #menu .hint { opacity: .45; font-size: 10px; line-height: 1.35; margin: 2px 0 4px; }
+  #menu .hint.warn { opacity: .85; color: #ffb24d; }
+  /* `.row` 是 display:flex，会覆盖 UA 的 [hidden]：取色器行（自定义配色）与
+     搜索过滤（.no-find）都靠这条真的藏起来。 */
+  #menu .row[hidden], #menu .row.no-find { display: none; }
+  /* 软件名称行：右侧是「是否为它弹系统通知」的勾选框；关掉时名字变淡。 */
+  #m-alias input[type="checkbox"] { flex: none; margin: 0; }
+  #m-alias .row.muted input[type="text"] { opacity: .45; }
+  /* 每日目标进度条：一条细进度 + 数字。用战绩条同一支蓝，不借红黄绿紫 ——
+     那几色在这个产品里是状态。 */
+  #m-score .goal { display: flex; flex-direction: column; gap: 3px; margin: 2px 0 3px; }
+  #m-score .goal span { font-size: 9.5px; color: #aab4c0; font-variant-numeric: tabular-nums; }
+  #m-score .goal em { display: block; height: 4px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
+  #m-score .goal em i { display: block; height: 100%; border-radius: 999px; background: rgba(120,190,255,.5); }
+  #m-score .goal.reached em i { background: rgba(120,190,255,.95); }
   #menu button {
     width: 100%; margin-top: 6px; padding: 5px 0;
     border: 0; border-radius: 7px; cursor: pointer;
@@ -519,6 +547,8 @@
 
   <div id="menu" hidden>
     <div class="title">机器人</div>
+    <input id="m-find" type="search" placeholder="搜索设置…" aria-label="搜索设置" autocomplete="off" spellcheck="false" />
+    <div class="hint" id="m-find-empty" hidden>没有匹配的设置</div>
     <details class="group" open>
       <summary>基础</summary>
       <div class="row">
@@ -535,6 +565,24 @@
         <input id="m-brightness" type="range" min="50" max="100" step="5" value="100" />
         <output id="m-brightness-val">100%</output>
       </div>
+      <div class="row">
+        <label for="m-thememode">尺寸模式</label>
+        <select id="m-thememode">
+          <option value="full">完整</option>
+          <option value="mini">迷你</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="m-goal">每日目标</label>
+        <select id="m-goal">
+          <option value="0">关闭</option>
+          <option value="2">2 小时</option>
+          <option value="4">4 小时</option>
+          <option value="6">6 小时</option>
+          <option value="8">8 小时</option>
+        </select>
+      </div>
+      <div class="hint">目标只影响「今日战绩」里的进度，不参与状态判断，灯也不会因为达成而变色。</div>
     </details>
     <details class="group">
       <summary>灯光</summary>
@@ -558,10 +606,18 @@
         <select id="m-skin"></select>
         <i class="swatch" id="skin-swatch"></i>
       </div>
+      <div class="row color-row" id="custom-skin-row" hidden>
+        <label for="m-skin-custom">车身颜色</label>
+        <input type="color" id="m-skin-custom" />
+      </div>
       <div class="row">
         <label for="m-eyestyle">眼睛配色</label>
         <select id="m-eyestyle"></select>
         <i class="swatch" id="eye-swatch"></i>
+      </div>
+      <div class="row color-row" id="custom-eye-row" hidden>
+        <label for="m-eyestyle-custom">瞳孔颜色</label>
+        <input type="color" id="m-eyestyle-custom" />
       </div>
       <div class="row">
         <label for="m-eyeshape">眼睛形状</label>
@@ -572,6 +628,10 @@
         <select id="m-trackstyle"></select>
         <i class="swatch" id="track-swatch"></i>
       </div>
+      <div class="row color-row" id="custom-track-row" hidden>
+        <label for="m-trackstyle-custom">履带颜色</label>
+        <input type="color" id="m-trackstyle-custom" />
+      </div>
       <div class="row">
         <label for="m-tracktype">履带形状</label>
         <select id="m-tracktype"></select>
@@ -580,6 +640,10 @@
         <label for="m-armskin">配件配色</label>
         <select id="m-armskin"></select>
         <i class="swatch" id="arm-swatch"></i>
+      </div>
+      <div class="row color-row" id="custom-arm-row" hidden>
+        <label for="m-armskin-custom">配件颜色</label>
+        <input type="color" id="m-armskin-custom" />
       </div>
       <div class="row">
         <label for="m-claw">手爪形状</label>
@@ -601,6 +665,19 @@
       <button id="m-random-look">随机换装</button>
     </details>
     <details class="group">
+      <summary>材质</summary>
+      <div class="row">
+        <label for="m-wear">做旧程度</label>
+        <input id="m-wear" type="range" min="0" max="150" step="5" value="100" />
+        <output id="m-wear-val">100%</output>
+      </div>
+      <div class="row">
+        <label for="m-finish">表面质感</label>
+        <select id="m-finish"></select>
+      </div>
+      <div class="hint">做旧改贴图、质感改反光，两者都不碰颜色 —— 红黄绿在这台机器上只能表示状态。</div>
+    </details>
+    <details class="group">
       <summary>动作</summary>
       <div class="title">状态手势</div>
       <div class="row"><label for="m-pose-error">出错</label><select id="m-pose-error"></select></div>
@@ -617,6 +694,32 @@
         <label for="m-motion">动效强度</label>
         <select id="m-motion"></select>
       </div>
+      <div class="row">
+        <label for="m-clickaction">点击反应</label>
+        <select id="m-clickaction">
+          <option value="poke">戳一下</option>
+          <option value="greet">挥挥手</option>
+          <option value="none">不反应</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="m-dblclick">双击反应</label>
+        <select id="m-dblclick">
+          <option value="greet">挥挥手</option>
+          <option value="none">不反应</option>
+        </select>
+      </div>
+    </details>
+    <details class="group">
+      <summary>台词</summary>
+      <div class="row"><label for="m-phrase-waiting">等待</label><input id="m-phrase-waiting" type="text" maxlength="10" placeholder="需要你处理" /></div>
+      <div class="row"><label for="m-phrase-error">出错</label><input id="m-phrase-error" type="text" maxlength="10" placeholder="出错了" /></div>
+      <div class="row"><label for="m-phrase-done">完成</label><input id="m-phrase-done" type="text" maxlength="10" placeholder="完成了" /></div>
+      <div class="row">
+        <button id="m-phrase-try">试一句</button>
+        <button id="m-phrase-reset">恢复内置</button>
+      </div>
+      <div class="hint">留空显示内置台词；气泡与语音共用同一句。</div>
     </details>
     <details class="group">
       <summary>场景</summary>
@@ -633,25 +736,46 @@
         <label for="m-soundstyle">提示音风格</label>
         <select id="m-soundstyle"></select>
       </div>
+      <div class="row">
+        <label for="m-soundvol">提示音音量</label>
+        <input id="m-soundvol" type="range" min="5" max="60" step="5" value="22" />
+        <output id="m-soundvol-val">22%</output>
+      </div>
+      <label class="row"><input id="m-sounddone" type="checkbox" checked /> 完成也响一声</label>
+      <label class="row"><input id="m-notifydone" type="checkbox" checked /> 完成也弹通知</label>
       <label class="row"><input id="m-voice" type="checkbox" /> 语音播报</label>
-      <button id="m-mute">静音 1 小时（暂停通知/提示音）</button>
+      <div class="row">
+        <label for="m-mutedur">静音时长</label>
+        <select id="m-mutedur">
+          <option value="30">30 分钟</option>
+          <option value="60">1 小时</option>
+          <option value="120">2 小时</option>
+        </select>
+      </div>
+      <button id="m-mute">静音 1 小时（暂停通知与声音）</button>
       <label class="row"><input id="m-dnd" type="checkbox" /> 定时勿扰（静音 + 降帧率）</label>
       <div class="row" id="dnd-times">
         <label for="m-dnd-start">勿扰时段</label>
         <input id="m-dnd-start" type="time" value="22:00" />
         <span class="dash">–</span>
-        <input id="m-dnd-end" type="time" value="08:00" />
+        <input id="m-dnd-end" type="time" value="08:00" aria-label="勿扰结束时间" />
       </div>
+      <div class="hint warn" id="m-dnd-note" hidden>起止时间相同 = 这段勿扰不会生效。跨午夜可以让结束时间早于开始时间（22:00 → 08:00）。</div>
       <label class="row"><input id="m-click" type="checkbox" checked /> 点击穿透</label>
+      <label class="row"><input id="m-autostart" type="checkbox" /> 开机自启</label>
       <label class="row"><input id="m-labels" type="checkbox" checked /> 软件列表</label>
       <label class="row"><input id="m-offline" type="checkbox" checked /> 显示未运行软件</label>
       <label class="row"><input id="m-model" type="checkbox" checked /> 显示模型/供应商</label>
       <label class="row"><input id="m-sys" type="checkbox" checked /> 系统占用（CPU/内存）</label>
+      <label class="row"><input id="m-score-panel" type="checkbox" checked /> 今日战绩面板</label>
+      <label class="row"><input id="m-recent-panel" type="checkbox" checked /> 最近动态面板</label>
       <div class="row">
         <label for="m-maxrows">列表行数</label>
         <select id="m-maxrows"></select>
       </div>
-      <div class="title">今日时长广告牌</div>
+    </details>
+    <details class="group">
+      <summary>广告牌</summary>
       <div class="row">
         <label for="m-sign">显示内容</label>
         <select id="m-sign"></select>
@@ -664,6 +788,10 @@
         <label for="m-sign-color">颜色</label>
         <select id="m-sign-color"></select>
       </div>
+      <div class="row color-row" id="custom-sign-row" hidden>
+        <label for="m-sign-color-custom">牌面颜色</label>
+        <input type="color" id="m-sign-color-custom" />
+      </div>
       <div class="row">
         <label for="m-sign-shape">形状</label>
         <select id="m-sign-shape"></select>
@@ -672,9 +800,19 @@
         <label for="m-nameplate">铭牌文字</label>
         <input id="m-nameplate" type="text" maxlength="16" placeholder="留空显示软件名" />
       </div>
-      <div class="title">软件顺序</div>
+      <div class="hint">铭牌留空时显示主灯代表的那个软件名。</div>
+    </details>
+    <details class="group">
+      <summary>软件</summary>
+      <div class="title">顺序</div>
       <div id="m-order"></div>
       <div class="hint">点 ↑/↓ 调整软件在灯环与列表里的前后顺序。</div>
+      <div class="title">名称</div>
+      <div id="m-alias"></div>
+      <div class="hint">留空显示默认名称；右侧勾选框控制是否为它弹系统通知（灯照常亮）。</div>
+    </details>
+    <details class="group">
+      <summary>配置</summary>
       <div class="row">
         <button id="m-export">导出配置</button>
         <button id="m-import">导入配置</button>
@@ -693,10 +831,14 @@
       <div class="hint">快捷键：Ctrl/⌘+Shift+= 放大，- 缩小，0 重置。</div>
       <button id="m-quit" class="danger">退出</button>
     </details>
-    <div class="title">今日战绩</div>
-    <div id="m-score"></div>
-    <div class="title">最近动态</div>
-    <div id="m-recent"></div>
+    <div id="panel-score">
+      <div class="title">今日战绩</div>
+      <div id="m-score"></div>
+    </div>
+    <div id="panel-recent">
+      <div class="title">最近动态</div>
+      <div id="m-recent"></div>
+    </div>
     <div class="hint">右键机器人调出尺寸条，双击打招呼。</div>
   </div>
 

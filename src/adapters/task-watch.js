@@ -52,6 +52,9 @@ function deriveTaskState(items) {
     return 'waiting';
   }
   if (states.some((s) => s === 'in_progress' || s === 'running' || s === 'active')) return 'busy';
+  // 全部完成 = done（紫），不是 idle：完成值得被看见一次，也才有「已完成」通知。
+  // 「取消」是中性收尾，仍然只是 idle。
+  if (states.length > 0 && states.every((s) => s === 'completed' || s === 'done')) return 'done';
   if (states.length > 0 && states.every((s) => s === 'completed' || s === 'done' || s === 'cancelled')) {
     return 'idle';
   }

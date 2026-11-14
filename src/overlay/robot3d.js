@@ -90,25 +90,91 @@ const M = {
   }),
 };
 
+// ---- 做旧程度：锈迹/污渍/掉漆的强度倍率 ------------------------------------
+// 出厂值 1，设置里 0（刚出厂的新漆）～1.5（战损）。只有「贴了做旧贴图」的那几块
+// 材质参与，颜色和发光一概不动 —— 状态色在任何自定义下都必须是同一个意思。
+// 每条记录都带着重画所需的全部参数（种子/基数/重复次数），所以重画是可逆的：
+// 滑回 100% 拿到的一定是当初那张纹理，而不是「又叠了一层锈」。
+const AGED = [
+  { key: 'body', mat: M.yellow, base: DEFAULT_SKIN.hex, seed: 3, amount: 1, repeat: [0.55, 0.72] },
+  { key: 'bodyDark', mat: M.yellowDark, base: DEFAULT_SKIN.dark, seed: 5, amount: 1.2, repeat: [0.8, 0.8] },
+  { key: 'metal', mat: M.metal, base: '#77736a', seed: 7, amount: 0.7, repeat: [0.9, 0.9] },
+  { key: 'steel', mat: M.steel, base: DEFAULT_ARM.steel, seed: 11, amount: 0.55, repeat: [1.6, 1.6] },
+  { key: 'arm', mat: M.arm, base: DEFAULT_ARM.arm, seed: 23, amount: 0.6, repeat: [1.4, 1.4] },
+  { key: 'rust', mat: M.rust, base: '#8a4a28', seed: 13, amount: 0.8, repeat: [2, 2] },
+  { key: 'wheel', mat: M.wheel, base: '#7a4530', seed: 17, amount: 0.9, repeat: [2, 2] },
+  { key: 'eyeBody', mat: M.eyeBody, base: DEFAULT_ARM.eye, seed: 19, amount: 0.5, repeat: [1.6, 1.6] },
+];
+let wearLevel = 1;
+const agedEntry = (key) => AGED.find((a) => a.key === key);
+// 只重画点名的几块（换皮肤只动车身两片），不点名就全部重画（改做旧程度）。
+function repaintAged(keys) {
+  for (const a of AGED) {
+    if (keys && !keys.includes(a.key)) continue;
+    const next = paint(a.base, {
+      seed: a.seed, amount: a.amount, wear: wearLevel, repeat: a.repeat,
+    });
+    const prev = a.mat.map;
+    a.mat.map = next;
+    a.mat.needsUpdate = true;
+    // 旧贴图要显式释放：不释放的话来回切换会一直吃显存。
+    if (prev && prev !== next) prev.dispose();
+  }
+}
 // ---- 皮肤系统：身体主色 + 暗色（门板/下板）可换，做旧纹理保留 --------------
 const SKINS = Object.fromEntries(SKIN_TONES.map((t) => [t.name, { main: t.hex, dark: t.dark }]));
-function applySkin(name) {
-  const s = SKINS[name] || SKINS['做旧黄'];
-  // 旧贴图要显式释放：换皮肤会重新生成两张纹理，不释放的话来回切换会一直吃显存。
-  const oldMain = M.yellow.map;
-  const oldDark = M.yellowDark.map;
-  M.yellow.map = paint(s.main, { seed: 3, repeat: [0.55, 0.72] });
-  M.yellow.needsUpdate = true;
-  M.yellowDark.map = paint(s.dark, { seed: 5, amount: 1.2, repeat: [0.8, 0.8] });
-  M.yellowDark.needsUpdate = true;
-  if (oldMain && oldMain !== M.yellow.map) oldMain.dispose();
-  if (oldDark && oldDark !== M.yellowDark.map) oldDark.dispose();
+// 自定义配色只给一个主色，其余明暗在这里统一推导。返回 null 表示不是合法
+// 十六进制 —— 调用方必须保留现状，别把机器人涂成默认色（那会让「选了什么」
+// 和「看起来是什么」又一次对不上）。
+const parseHex = (hex) => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex == null ? '' : hex).trim());
+  return m ? parseInt(m[1], 16) : null;
+};
+const toHex = (n) => `#${(n & 0xffffff).toString(16).padStart(6, '0')}`;
+function darkenHex(hex, k = 0.72) {
+  const n = parseHex(hex);
+  if (n == null) return null;
+  const f = (c) => Math.round(c * k);
+  return toHex((f((n >> 16) & 255) << 16) | (f((n >> 8) & 255) << 8) | f(n & 255));
+}
+// 朝白色混：履齿高光、金属受光面都用它，比 multiplicative 的「提亮」更接近漆面。
+function lightenHex(hex, k = 0.22) {
+  const n = parseHex(hex);
+  if (n == null) return null;
+  const f = (c) => Math.round(c + (255 - c) * k);
+  return toHex((f((n >> 16) & 255) << 16) | (f((n >> 8) & 255) << 8) | f(n & 255));
+}
+function applySkin(name, hex) {
+  let main, dark;
+  if (name === '自定义') {
+    const base = parseHex(hex);
+    if (base == null) return;       // 非法颜色：保持现状
+    main = toHex(base);
+    dark = darkenHex(main);
+  } else {
+    const s = SKINS[name] || SKINS['做旧黄'];
+    main = s.main;
+    dark = s.dark;
+  }
+  // 只换这两片的底色与暗色，做旧程度沿用当前值（重画在 repaintAged 里统一做，
+  // 顺带释放旧贴图 —— 来回换皮肤不会一直吃显存）。
+  agedEntry('body').base = main;
+  agedEntry('bodyDark').base = dark;
+  repaintAged(['body', 'bodyDark']);
 }
 
 // ---- 眼睛配色：镜片 + 虹膜换色（表情的核心颜色） --------------------------
 const EYE_STYLES = Object.fromEntries(EYE_TONES.map((t) => [t.name, { lens: t.lens, iris: t.iris }]));
-function applyEyeStyle(name) {
-  const s = EYE_STYLES[name] || EYE_STYLES['默认黑'];
+function applyEyeStyle(name, hex) {
+  let s;
+  if (name === '自定义') {
+    const iris = parseHex(hex);
+    if (iris == null) return;
+    // 镜片是虹膜外面那层黑玻璃：自己压暗，挑的颜色才真的「亮在里面」。
+    s = { iris: toHex(iris), lens: darkenHex(toHex(iris), 0.45) };
+  } else {
+    s = EYE_STYLES[name] || EYE_STYLES['默认黑'];
+  }
   // 镜片本身接近黑玻璃，换色几乎看不出来；真正被看见的是镜片里那圈虹膜，
   // 所以两者一起改，瞳色才真的「换色」而不是只换了一层反光。
   M.lens.color.set(s.lens);
@@ -117,8 +183,16 @@ function applyEyeStyle(name) {
 
 // ---- 履带配色：橡胶 + 履带齿高光换色 --------------------------------------
 const TRACK_SKINS = Object.fromEntries(TRACK_TONES.map((t) => [t.name, { rubber: t.rubber, hi: t.hi }]));
-function applyTrackSkin(name) {
-  const s = TRACK_SKINS[name] || TRACK_SKINS['黑'];
+function applyTrackSkin(name, hex) {
+  let s;
+  if (name === '自定义') {
+    const rubber = parseHex(hex);
+    if (rubber == null) return;
+    const base = toHex(rubber);
+    s = { rubber: base, hi: lightenHex(base, 0.24) };
+  } else {
+    s = TRACK_SKINS[name] || TRACK_SKINS['黑'];
+  }
   M.rubber.color.set(s.rubber);
   M.rubberHi.color.set(s.hi);
 }
@@ -127,8 +201,17 @@ function applyTrackSkin(name) {
 const ARM_SKINS = Object.fromEntries(
   ARM_TONES.map((t) => [t.name, { arm: t.arm, steel: t.steel, dark: t.dark, eye: t.eye }])
 );
-function applyArmSkin(name) {
-  const s = ARM_SKINS[name] || ARM_SKINS['枪灰'];
+function applyArmSkin(name, hex) {
+  let s;
+  if (name === '自定义') {
+    const arm = parseHex(hex);
+    if (arm == null) return;
+    const base = toHex(arm);
+    // 一块金属需要三个值：本体、受光面（钢）、背光面（暗）。都从主色推。
+    s = { arm: base, steel: lightenHex(base, 0.14), dark: darkenHex(base, 0.32), eye: darkenHex(base, 0.42) };
+  } else {
+    s = ARM_SKINS[name] || ARM_SKINS['枪灰'];
+  }
   M.arm.color.set(s.arm);
   M.steel.color.set(s.steel);
   M.dark.color.set(s.dark);
@@ -671,6 +754,55 @@ if (host && renderer) {
     robot.scale.set(b.x, b.y, b.z);
   }
 
+  // ---- 表面质感：只改金属度与粗糙度，颜色一根汗毛都不动 ---------------------
+  // 「哑光 / 标准 / 精工」是在出厂数值上乘一个系数，基准值第一次见到某个材质时
+  // 记下来 —— 否则连着切两次「精工」会把倍率越乘越亮，最后真成了亮银玩具。
+  const FINISHES = {
+    '哑光': { metal: 0.55, rough: 1.35 },
+    '标准': { metal: 1, rough: 1 },
+    // 精工是「刚上过油」，不是镀铬：即使开到最亮，车身的金属度也只有 0.2 上下，
+    // 远不到那面会把桌面照出来的镜子 —— 那是玩具感最重的样子。
+    '精工': { metal: 1.45, rough: 0.72 },
+  };
+  const MAT_BASE = new WeakMap();
+  let finishName = '标准';
+  function applyFinish(name) {
+    finishName = FINISHES[name] ? name : '标准';
+    const f = FINISHES[finishName];
+    // 新漆比风化过的漆面更光滑一点：做旧程度也参与粗糙度（0% 最亮，100% 起不变）。
+    const clean = 1 - 0.12 * Math.max(0, Math.min(1, 1 - wearLevel));
+    robot.traverse((o) => {
+      const mats = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
+      for (const m of mats) {
+        // MeshPhysicalMaterial（镜片）也是 isMeshStandardMaterial，一并跟着走。
+        if (!m || !m.isMeshStandardMaterial) continue;
+        let base = MAT_BASE.get(m);
+        if (!base) {
+          base = { metalness: m.metalness, roughness: m.roughness };
+          MAT_BASE.set(m, base);
+        }
+        m.metalness = Math.max(0, Math.min(1, base.metalness * f.metal));
+        m.roughness = Math.max(0.02, Math.min(1, base.roughness * f.rough * clean));
+      }
+    });
+  }
+  window.addEventListener('bao:finish', (e) => {
+    const name = e.detail && e.detail.finish;
+    if (name) applyFinish(name);
+  });
+  // 做旧程度既改贴图也（轻微）改粗糙度，所以两件事一起做：重画八张做旧纹理，
+  // 再在当前质感上重算反光。顺序不能反 —— 后者读的是新的 wearLevel。
+  window.addEventListener('bao:wear', (e) => {
+    const w = Number(e.detail && e.detail.wear);
+    if (!Number.isFinite(w)) return;
+    const next = Math.max(0, Math.min(1.5, w));
+    // 启动时 UI 会把出厂值再发一次；贴图本来就是这一版，八张 256² 不必重画。
+    if (Math.abs(next - wearLevel) < 0.005) return;
+    wearLevel = next;
+    repaintAged();
+    applyFinish(finishName);
+  });
+
   // -------------------------------------------------------------- base light
   // Sixteen LEDs on the desk, just outside the belts. They are not decoration:
   // each contiguous stretch belongs to one software, in priority order, so the
@@ -955,6 +1087,9 @@ if (host && renderer) {
     const nA = buildTrack(-1), nB = buildTrack(1);
     trackGroups.push(nA, nB);
     robot.add(nA, nB);
+    // 新履带带着新材质（灯带、链轮）：把当前质感再套一遍，否则换一次形状，
+    // 这条履带的金属度就会悄悄回到出厂值。
+    applyFinish(finishName);
   }
 
   // chassis: what the tracks hang off and what the body sits on. Nearly all of
@@ -1213,15 +1348,32 @@ if (host && renderer) {
   namePlate.position.set(BAY.x, 1.70, frontOf(hull, 0.004));
   bodyGroup.add(namePlate);
 
+  // 铭牌画布 512×96，50px 等宽字体只够 16 个半角字符。中文一个字就是一个
+  // 全角宽度，16 个汉字要 800px —— 原来那句 slice(0, 16) 让长名字的右半边
+  // 直接被画布裁掉，而且裁得毫无提示。这里按实际宽度缩字号，缩到底才省略。
   function drawName(name) {
+    const full = [...String(name || '')].join('');
     nameCtx.clearRect(0, 0, nameCanvas.width, nameCanvas.height);
     nameCtx.fillStyle = '#3a3016';
-    nameCtx.font = '600 50px ui-monospace, SFMono-Regular, Menlo, monospace';
     nameCtx.textBaseline = 'middle';
-    nameCtx.fillText(String(name || '').slice(0, 16), 8, 50);
+    const maxW = nameCanvas.width - 16;
+    const fontOf = (px) => `600 ${px}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+    let size = 50;
+    let shown = full;
+    nameCtx.font = fontOf(size);
+    while (size > 22 && nameCtx.measureText(shown).width > maxW) {
+      size -= 2;
+      nameCtx.font = fontOf(size);
+    }
+    if (nameCtx.measureText(shown).width > maxW) {
+      let chars = [...shown];
+      while (chars.length > 1 && nameCtx.measureText(chars.join('') + '…').width > maxW) chars = chars.slice(0, -1);
+      shown = chars.join('') + '…';
+    }
+    nameCtx.fillText(shown, 8, 50);
     nameTex.needsUpdate = true;
-    namePlate.visible = !!name;
-    nameShown = String(name || '').slice(0, 16);
+    namePlate.visible = !!full;
+    nameShown = full;
   }
 
   // ---- neck --------------------------------------------------------------
@@ -1621,6 +1773,7 @@ if (host && renderer) {
     eyes = built.eyes;
     tearMeshes = built.tearMeshes;
     lensTargets = eyes.map((e) => e.face.children[0]);
+    applyFinish(finishName);
   }
 
   // ---- arms --------------------------------------------------------------
@@ -1840,6 +1993,7 @@ if (host && renderer) {
     }
     arms.length = 0;
     arms.push(buildArm(-1), buildArm(1));
+    applyFinish(finishName);
   }
 
   // ---- the speech bubble -------------------------------------------------
@@ -1863,6 +2017,22 @@ if (host && renderer) {
   // 临时提示（cc-switch 切换等）：气泡短暂显示，优先级低于出错/需要你。
   let noticeText = '';
   let noticeAt = -99;
+  // 台词：设置里写的那几句（空串 = 内置）。取值和语音共用 ui.js 里的同一个函数，
+  // 这里只负责把气泡上的字换掉 —— done 不冒泡，那句只走语音。
+  const PHRASE_KEYS = ['waiting', 'error', 'done'];
+  const phrases = { waiting: '', error: '', done: '' };
+  window.addEventListener('bao:phrase', (e) => {
+    const d = e.detail || {};
+    if (!PHRASE_KEYS.includes(d.state)) return;
+    phrases[d.state] = String(d.text || '').slice(0, 10);
+  });
+  // 「试一句」：走临时提示通道，2.2 秒后自己消失，不改变任何状态。
+  window.addEventListener('bao:say', (e) => {
+    const text = String((e.detail && e.detail.text) || '').slice(0, 10);
+    if (!text) return;
+    noticeText = text;
+    noticeAt = clock.t;
+  });
   window.addEventListener('bao:ccswitch', () => {
     noticeText = '换模型啦';
     noticeAt = clock.t;
@@ -1900,10 +2070,26 @@ if (host && renderer) {
       g.fillStyle = 'rgba(16,18,22,.94)';
       g.fill();
       g.fillStyle = '#ffffff';
-      g.font = 'bold 46px system-ui, -apple-system, "Microsoft YaHei", sans-serif';
+      // 自适应字号：256px 宽的气泡上，46px 只装得下 6 个汉字。自定义台词最多 10 字，
+      // 原来那句 slice(0, 6) 会把用户写的话拦腰截断，而且看不出被截了。
+      // 先缩字号（最小 20px），实在放不下才截断并补一个省略号 —— 省略号至少诚实。
+      const maxW = w - 44;
+      const fontOf = (px) => `bold ${px}px system-ui, -apple-system, "Microsoft YaHei", sans-serif`;
+      let size = 46;
+      let shown = [...String(text)].join('');
+      g.font = fontOf(size);
+      while (size > 20 && g.measureText(shown).width > maxW) {
+        size -= 2;
+        g.font = fontOf(size);
+      }
+      if (g.measureText(shown).width > maxW) {
+        let chars = [...shown];
+        while (chars.length > 1 && g.measureText(chars.join('') + '…').width > maxW) chars = chars.slice(0, -1);
+        shown = chars.join('') + '…';
+      }
       g.textAlign = 'center';
       g.textBaseline = 'middle';
-      g.fillText(String(text).slice(0, 6), w / 2, (y0 + y1) / 2 + 2);
+      g.fillText(shown, w / 2, (y0 + y1) / 2 + 2);
     }
     bubbleTex.needsUpdate = true;
   }
@@ -2156,18 +2342,21 @@ if (host && renderer) {
   // 皮肤切换：重新生成身体主色与暗色的做旧纹理。
   window.addEventListener('bao:skin', (e) => {
     const name = e.detail && e.detail.skin;
-    if (SKINS[name]) applySkin(name);
+    if (name === '自定义') applySkin('自定义', e.detail && e.detail.hex);
+    else if (SKINS[name]) applySkin(name);
   });
 
   // 动作风格切换。
-  // 眼睛配色 / 履带配色切换。
+  // 眼睛配色 / 履带配色切换。「自定义」只带一个主色，其余明暗由此推导。
   window.addEventListener('bao:eyestyle', (e) => {
     const name = e.detail && e.detail.eyestyle;
-    if (EYE_STYLES[name]) applyEyeStyle(name);
+    if (name === '自定义') applyEyeStyle('自定义', e.detail && e.detail.hex);
+    else if (EYE_STYLES[name]) applyEyeStyle(name);
   });
   window.addEventListener('bao:trackstyle', (e) => {
     const name = e.detail && e.detail.trackstyle;
-    if (TRACK_SKINS[name]) applyTrackSkin(name);
+    if (name === '自定义') applyTrackSkin('自定义', e.detail && e.detail.hex);
+    else if (TRACK_SKINS[name]) applyTrackSkin(name);
   });
 
   // 某个状态的手势切换（动作系统：每个状态可单独配手势）。
@@ -2180,7 +2369,8 @@ if (host && renderer) {
   // 配件配色（手臂/手爪/镜筒）与手爪形状切换。
   window.addEventListener('bao:armskin', (e) => {
     const name = e.detail && e.detail.armskin;
-    if (ARM_SKINS[name]) applyArmSkin(name);
+    if (name === '自定义') applyArmSkin('自定义', e.detail && e.detail.hex);
+    else if (ARM_SKINS[name]) applyArmSkin(name);
   });
   window.addEventListener('bao:claw', (e) => {
     const name = e.detail && e.detail.claw;
@@ -2424,7 +2614,12 @@ if (host && renderer) {
 
   // ------------------------------------------------------------------ loop
   const clock = { last: performance.now(), t: 0 };
-  const reduceMotion = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)').matches : false;
+  // 跟着系统设置实时变：用户中途打开「减少动态效果」不该要求重启应用。
+  const motionQuery = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+  let reduceMotion = !!(motionQuery && motionQuery.matches);
+  if (motionQuery && motionQuery.addEventListener) {
+    motionQuery.addEventListener('change', (e) => { reduceMotion = !!e.matches; });
+  }
   // 定时勿扰：ui 在进入/离开时段时派发。效果和系统 reduced-motion 一样把
   // 帧率压到 8fps —— 深夜里一个没人的桌面不需要 60 帧的呼吸灯。
   let dnd = false;
@@ -2671,7 +2866,9 @@ if (host && renderer) {
     const greetRise = greeting ? Math.min(1, greet / 0.3) * (1 - Math.max(0, greet - 1.45) / 0.55) : 0;
     const done = t - doneAt;
     const doneNod = !reduceMotion && done >= 0 && done < 1.6 ? Math.sin(done * 9) * 0.07 * (1 - done / 1.6) : 0;
-    const hop = poke >= 0 && poke < 0.85 ? Math.sin((poke / 0.85) * Math.PI) * 0.075 : 0;
+    // 减少动态效果时连「戳一下的弹跳」也去掉：同一段里 done / crazy / anxiety
+    // 都判了 reduceMotion，只有这里漏了 —— 系统里关了动效，点一下还是会跳。
+    const hop = !reduceMotion && poke >= 0 && poke < 0.85 ? Math.sin((poke / 0.85) * Math.PI) * 0.075 : 0;
     // 完成时原地转一圈 + 两下小跳：动作确认，不换颜色（绿只代表运行）。
     const doneSpin = !reduceMotion && done >= 0 && done < 1.4 ? Math.min(1, done / 1.4) * Math.PI * 2 : 0;
     const doneHop = !reduceMotion && done >= 0 && done < 1.4
@@ -3202,7 +3399,8 @@ if (host && renderer) {
     }
 
     // 气泡说人话：出错 / 需要你 / 临时提示（切模型等）。文字变化时才重绘纹理。
-    let bubbleWord = off ? '' : error ? '出错啦' : waiting ? '需要你' : '';
+    // 用户写了台词就用那句：气泡上和耳朵里听到的必须是同一句话。
+    let bubbleWord = off ? '' : error ? (phrases.error || '出错啦') : waiting ? (phrases.waiting || '需要你') : '';
     if (!bubbleWord && !off && noticeText && (t - noticeAt) < 2.2) bubbleWord = noticeText;
     if (bubbleWord !== bubbleText) drawBubble(bubbleWord);
     bubbleMat.color.copy(tint);

@@ -9,6 +9,9 @@ const ccSwitch = require('./adapters/ccswitch');
 const selfcheck = require('./selfcheck');
 const sysinfo = require('./sysinfo');
 const auth = require('./auth');
+// 开机自启只能在 **node** 进程里装：autostart.js 用 process.execPath 写启动项，
+// 在 Electron 主进程里会写成 Electron 可执行文件，登录时根本起不来。
+const autostart = require('./autostart');
 
 const OVERLAY_DIR = path.join(__dirname, 'overlay');
 // `.mjs` 必须声明成 JS，否则浏览器把模块当二进制下载，import 直接失败。
@@ -97,7 +100,15 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
 
   // `presence` is evidence, not state: true means "a Claude process exists",
   // false means "we could not prove one does" (see src/presence.js).
-  const frame = () => ({ ...store.snapshot(), presence: presence.lastValue(), ccSwitch: ccSwitch.lastValue(), selfcheck: currentSelfcheck() });
+  // `cheap` 只给心跳用：心跳唯一目的是把 quietFor 推新，为它每 30 秒摸一次磁盘
+  // 不值当，所以用缓存的 selfcheck 结果。
+  const frame = (cheap = false) => ({
+    ...store.snapshot(),
+    presence: presence.lastValue(),
+    ccSwitch: ccSwitch.lastValue(),
+    selfcheck: cheap ? selfcheckResult : currentSelfcheck(),
+    heartbeat: cheap,
+  });
 
   const send = (res, code, obj) => {
     const body = JSON.stringify(obj);
@@ -148,6 +159,23 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
 
       if (p === '/selfcheck') return send(res, 200, currentSelfcheck());
 
+      // 开机自启：设置里那个开关。GET 只读（免 token），POST 走既有的写入校验。
+      // 真正的安装必须在 server 这个 **node** 进程里做（见顶部 require 的注释）。
+      if (p === '/autostart') {
+        if (req.method === 'GET') return send(res, 200, autostart.status());
+        if (req.method === 'POST') {
+          const raw = await readBody(req);
+          let payload = {};
+          try { payload = raw ? JSON.parse(raw) : {}; } catch { payload = {}; }
+          try {
+            if (payload.on) autostart.install(); else autostart.uninstall();
+          } catch (err) {
+            return send(res, 500, { error: String(err.message || err) });
+          }
+          return send(res, 200, autostart.status());
+        }
+      }
+
       // 本机 CPU / 内存。面板每 2 秒取一次，所以它是一条独立通道 —— 混进
       // SSE 快照会让「资源占用」变成「代理状态变化」的副产品，忙碌时每秒
       // 推好几帧，闲置时又完全不更新。
@@ -158,6 +186,11 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
       if (p === '/state' && req.method === 'POST') {
         const raw = await readBody(req);
         const payload = raw ? JSON.parse(raw) : {};
+        // 既没有 state 也没有 fuel 的 body 一定是拼错了：store 会把它 normalise 成
+        // idle，凭空在面板上点亮一个「就绪」槽位，而调用方以为自己报的是 busy。
+        if (payload.state === undefined && payload.fuel === undefined) {
+          return send(res, 400, { error: 'state or fuel required' });
+        }
         const session = payload.session || 'default';
         const prev = store.sessions.get(session);
         const result = store.set(payload);
@@ -248,9 +281,12 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
 
       if (p === '/quit' && req.method === 'POST') {
         send(res, 200, { ok: true });
+        // 告诉所有客户端「这是计划内关闭」：窗口收到就自己退出。否则它会以一个
+        // 「未连接」的孤儿进程留在桌面上，继续占着单实例锁和全局快捷键。
+        for (const c of clients) { try { c.write('event: quit\ndata: {}\n\n'); } catch { clients.delete(c); } }
         // 先把防抖里那 2 秒的今日统计写下去，再退出。
         flushStats();
-        return setTimeout(() => process.exit(0), 50);
+        return setTimeout(() => process.exit(0), 150);
       }
 
       // Static: the same overlay UI Electron loads, so a plain browser tab works too.
@@ -282,6 +318,17 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
     const line = `data: ${JSON.stringify(frame())}\n\n`;
     for (const c of clients) { try { c.write(line); } catch { clients.delete(c); } }
   });
+
+  // 心跳：snapshot 里的 quietFor 是「算的那一刻」的静止时长，而 change 只在
+  // 真的变化时广播。一个不再上报的 busy 会话不会产生任何事件，客户端手里的
+  // quietFor 就永远停在最后一帧 —— 「卡住 5 分钟」的提醒永远到不了点。
+  // 只重发一帧（不 emit change，免得每 30 秒白写一次 stats），并标记 heartbeat。
+  const aliveTimer = setInterval(() => {
+    if (!clients.size) return;
+    const line = `data: ${JSON.stringify(frame(true))}\n\n`;
+    for (const c of clients) { try { c.write(line); } catch { clients.delete(c); } }
+  }, 30_000);
+  if (aliveTimer.unref) aliveTimer.unref();
 
   // Probing only matters when nothing is reporting — that is exactly when the
   // display is about to claim "nothing is running". With a live session the

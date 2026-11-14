@@ -344,6 +344,49 @@ test('installing hooks preserves existing config and is idempotent', () => {
   }
 });
 
+// watcher 重启后要能恢复「还在等你」：一个 waiting 的会话不会再写任何一行，
+// 而旧实现启动时直接跳到文件末尾 —— 最该被看见的那盏黄灯自己熄了。
+test('a restarted watcher recovers a waiting session instead of going dark', async () => {
+  const logWatch = require('../src/adapters/log-watch');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-restart-'));
+  const file = path.join(dir, 'rollout-restart.jsonl');
+  fs.writeFileSync(file, [
+    JSON.stringify({ type: 'session_meta', payload: { id: 'restart-1', cwd: '/tmp/x' } }),
+    JSON.stringify({ type: 'event_msg', payload: { type: 'approval_request' } }),
+  ].join('\n') + '\n');
+  // 把它变成「不是刚写的」：watcher 启动时会走回读尾部的分支。
+  const old = new Date(Date.now() - 60_000);
+  fs.utimesSync(file, old, old);
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const previousPort = process.env.BAOANLIGHT_PORT;
+  process.env.BAOANLIGHT_PORT = String(PORT);
+  const handle = logWatch.run({
+    agent: 'codex', dir, interval: 100, quiet: true, manual: true, lookback: 3_600_000,
+  });
+
+  try {
+    let found = null;
+    for (let i = 0; i < 40 && !found; i++) {
+      const snap = await api('/state');
+      found = snap.sessions.find((s) => s.session === 'codex:restart-1') || null;
+      if (!found) await sleep(100);
+    }
+    assert.ok(found, 'the waiting session came back');
+    assert.equal(found.state, 'waiting', 'and it says what it was last doing');
+  } finally {
+    handle.stop();
+    await api('/state', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: 'codex:restart-1', state: 'offline' }),
+    });
+    if (previousPort === undefined) delete process.env.BAOANLIGHT_PORT;
+    else process.env.BAOANLIGHT_PORT = previousPort;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // End-to-end for the agent that has no hooks to install: a dsh session
 // projection on disk, and the real HTTP store on the other side.
 test('the dsh watcher follows a session projection through a whole turn', async () => {

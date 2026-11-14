@@ -229,6 +229,12 @@ function run(opts = {}) {
 
     const type = typeOf(rec);
     const session = `${name}:${t.sessionId || fallbackId(file)}`;
+    // 之前用文件名兜底报过状态、现在才学到真实 id：旧键必须收摊。否则同一个
+    // 会话在列表里占两格，多出来的那格停在最后状态直到 TTL，忙碌时长也会重复计。
+    if (!t.recovering && t.session && t.session !== session && t.state) {
+      setState({ session: t.session, agent: name, state: 'offline' });
+      t.state = null;
+    }
     // 记住「这个文件到底用了哪个会话名」：收摊时要靠它发 offline。只存
     // t.sessionId 的话，靠文件名兜底的那些会话永远收不了摊，灯上留一个残影。
     t.session = session;
@@ -239,7 +245,7 @@ function run(opts = {}) {
         // 记住这次读数：server 重启后 store 是空的，要靠 onRecover 把它重报
         // 回去，否则电量条要等下一条 fuel 日志才重新出现。
         t.fuel = f;
-        setState({ session, fuel: f });
+        if (!t.recovering) setState({ session, fuel: f });
       }
       return;
     }
@@ -253,7 +259,7 @@ function run(opts = {}) {
     if (next) {
       if (next === t.state) return;
       t.state = next;
-      setState({
+      const payload = {
         session,
         agent: name,
         state: next,
@@ -261,13 +267,17 @@ function run(opts = {}) {
           : next === 'busy' ? 'working'
             : '',
         cwd: t.cwd || '',
-      });
+      };
+      // 回读历史时只记「最后是什么状态」，不逐条上报：中间状态早已过期，
+      // 而且会让今日统计/通知把几分钟前的事重放一遍。
+      if (t.recovering) { t.pending = payload; return; }
+      setState(payload);
       if (!quiet) console.log(`  ${new Date().toISOString().slice(11, 19)}  ${type || next} -> ${next}`);
       return;
     }
 
     // Ambient event: keep a busy session from being swept as stale, nothing more.
-    if (t.state === 'busy') {
+    if (!t.recovering && t.state === 'busy') {
       setState({
         session, agent: name, state: 'busy', detail: 'working',
         cwd: t.cwd || '',
@@ -280,6 +290,35 @@ function run(opts = {}) {
   // 几千次系统调用，一个常驻后台的进程一直在磨磁盘。
   let dirCache = [];
   let dirCacheAt = 0;
+
+  // 已经存在、但不是刚写的文件：回读尾部，恢复「它最后一次在做什么」并且只上报
+  // 这一次。原来直接跳到文件末尾 —— 而一个 waiting 的会话不会再写任何一行，
+  // watcher 一重启，最该被看见的那盏黄灯就自己熄了。
+  // 只恢复 waiting / busy：error/idle/done 描述的是过去时，重启后重放只会让
+  // 灯说一句迟到的话。
+  const RECOVER_BYTES = 16 * 1024;
+  const recoverFromTail = (f, t) => {
+    const from = Math.max(0, f.size - RECOVER_BYTES);
+    let chunk = '';
+    try {
+      const fd = fs.openSync(f.path, 'r');
+      const buf = Buffer.alloc(f.size - from);
+      fs.readSync(fd, buf, 0, buf.length, from);
+      fs.closeSync(fd);
+      chunk = buf.toString('utf8');
+    } catch { return; }
+    let lines = chunk.split(/\r?\n/);
+    if (from > 0) lines = lines.slice(1);   // 第一条可能从半行开始
+    t.recovering = true;
+    try {
+      for (const line of lines) if (line.trim()) handleLine(f.path, line);
+    } finally {
+      t.recovering = false;
+    }
+    const p = t.pending;
+    t.pending = null;
+    if (p && (p.state === 'waiting' || p.state === 'busy')) setState(p);
+  };
 
   const tick = () => {
     const now = Date.now();
@@ -318,7 +357,10 @@ function run(opts = {}) {
         const fresh = Date.now() - f.mtimeMs < pollMs * 3;
         t = { offset: fresh ? 0 : f.size, state: null, buffer: '' };
         tracked.set(f.path, t);
-        if (!fresh) continue;
+        if (!fresh) {
+          recoverFromTail(f, t);
+          continue;
+        }
       }
       // 文件被截断/轮转（日志轮转、Codex 重写 rollout）之后 offset 会比 size 还大。
       // 直接 continue 会让这个文件永久失明，而且不报任何错 —— 灯就停在最后一次

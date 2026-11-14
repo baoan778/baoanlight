@@ -362,12 +362,14 @@ async function cmdStart(flags) {
 }
 
 async function cmdOverlay(flags) {
-  const port = Number(flags.port) || config.port();
   const running = await client.health();
   if (!running) {
-    console.error(`${c.red('●')} no server on port ${port}. Run: bao start`);
+    console.error(`${c.red('●')} no server on port ${Number(flags.port) || config.runningPort()}. Run: bao start`);
     process.exit(1);
   }
+  // 用服务端**自报**的端口开窗口：它可能和配置端口不同（`--port 5000`、`port: 0`）。
+  // 用配置端口算的话，overlay 会连一个不存在的地址，然后静默退出。
+  const port = Number(running.port) || Number(flags.port) || config.runningPort();
   const child = spawnOverlay(port);
   if (!child) {
     console.error('Electron is not installed. Run `npm install` here, or `bao start --browser`.');
@@ -385,7 +387,15 @@ function cmdToken() {
 async function cmdStop() {
   const running = await client.health();
   if (!running) return console.log(c.dim('nothing running'));
-  await client.quitServer();
+  // 「stopped」必须等价于「它真的停了」：401、超时、连接被拒都返回 null，
+  // 以前照样打印 stopped —— 用户以为关了，机器人还在桌面上跑。
+  const r = await client.quitServer();
+  if (!r || !r.ok) {
+    console.error(`${c.red('●')} stop failed — the server did not confirm. It is probably still running.`);
+    console.error(c.dim('  check the token:  bao token  ·  or end the process manually'));
+    process.exitCode = 1;
+    return;
+  }
   console.log('stopped');
 }
 
@@ -824,7 +834,17 @@ async function main() {
   const { flags, positional, rest } = parse(process.argv.slice(2));
   const cmd = positional.shift();
 
-  if (flags.port) process.env.BAOANLIGHT_PORT = String(Number(flags.port));
+  // `--port` 必须在进任何命令前校验：`bao start --port 70000` 或 `50o` 以前会
+  // 一路漏到 server.listen()，要么抛一个裸 RangeError 堆栈，要么静默退回默认端口。
+  // 0 表示「让系统挑一个」。
+  if (flags.port !== undefined && flags.port !== '') {
+    const p = Number(flags.port);
+    if (!Number.isInteger(p) || p < 0 || p > 65535) {
+      console.error(`${c.red('●')} invalid port: ${JSON.stringify(flags.port)} (must be an integer 0-65535)`);
+      process.exit(2);
+    }
+    process.env.BAOANLIGHT_PORT = String(p);
+  }
 
   switch (cmd) {
     case 'start':      return flags.foreground ? cmdStart(flags) : cmdStartDetached(flags);

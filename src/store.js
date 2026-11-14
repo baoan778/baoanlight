@@ -19,7 +19,8 @@ const STATES = ['error', 'waiting', 'busy', 'done', 'idle', 'unknown', 'offline'
 const ALIASES = {
   running: 'busy',
   working: 'busy',
-  blocked: 'error',
+  // 「被挡住」是等你，不是坏了：日志观察器和文档都把它归在 waiting。
+  blocked: 'waiting',
   failed: 'error',
   failure: 'error',
   success: 'done',

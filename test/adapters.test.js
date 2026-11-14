@@ -234,7 +234,8 @@ const tasks = require('../src/adapters/task-watch');
 
 test('the workbuddy task board reports only what it can prove', () => {
   assert.equal(tasks.deriveTaskState([{ status: 'completed' }, { status: 'in_progress' }]), 'busy');
-  assert.equal(tasks.deriveTaskState([{ status: 'completed' }, { status: 'done' }]), 'idle');
+  // 全部完成 = done（紫），不是 idle：完成值得被看见一次，也才有「已完成」通知。
+  assert.equal(tasks.deriveTaskState([{ status: 'completed' }, { status: 'done' }]), 'done');
   assert.equal(tasks.deriveTaskState([{ status: 'failed' }, { status: 'completed' }]), 'error');
   assert.equal(tasks.deriveTaskState([{ status: 'blocked' }, { status: 'completed' }]), 'waiting');
   assert.equal(tasks.deriveTaskState([{ status: 'pending' }, { status: 'pending' }]), null);

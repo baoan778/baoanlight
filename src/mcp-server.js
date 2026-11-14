@@ -26,7 +26,9 @@ const { z } = require('zod');
 const config = require('./config');
 const auth = require('./auth');
 
-const PORT = Number(process.env.BAOANLIGHT_PORT) || config.port() || 4747;
+// MCP 是 agent 自己拉起的进程，读不到 `bao start --port` 的环境变量 ——
+// runningPort() 会接着读运行中服务端写下的端口文件。
+const PORT = Number(process.env.BAOANLIGHT_PORT) || config.runningPort() || 4747;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 // The robot's state vocabulary. Anything else is rejected, not guessed — a
@@ -45,19 +47,25 @@ function writeErrorHint(err) {
   return `Robot not reachable at ${BASE} (is \`bao start\` running?)`;
 }
 
+// 上报通道不能比别的通道更“黏”：钩子走 client.js 是 1200ms 超时就放弃，而 MCP
+// 之前只靠 undici 默认的数百秒 —— 服务端卡住时，agent 的工具调用会一直挂着，
+// 看起来像它自己死机了。1.5 秒足够，超时就按「机器人没响应」返回给模型。
+const MCP_TIMEOUT_MS = 1500;
+
 async function postJson(path, body) {
   const res = await fetch(BASE + path, {
     method: 'POST',
     // 写接口要证明「我在这台机器上」：token 与钩子读的是同一个文件。
     headers: { 'content-type': 'application/json', 'x-bao-token': auth.token() },
     body: JSON.stringify(body || {}),
+    signal: AbortSignal.timeout(MCP_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`robot replied ${res.status}`);
   return res.json();
 }
 
 async function getJson(path) {
-  const res = await fetch(BASE + path);
+  const res = await fetch(BASE + path, { signal: AbortSignal.timeout(MCP_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`robot replied ${res.status}`);
   return res.json();
 }

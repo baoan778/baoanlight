@@ -16,11 +16,14 @@
 //   bao:skin        { skin }                  bao:eyestyle  { eyestyle }
 //   bao:trackstyle  { trackstyle }            bao:tracktype { tracktype }
 //   bao:armskin     { armskin }               bao:armtype   { armtype }
+//   上面四条在值为「自定义」时多带一个 hex（#rrggbb），机器人据此推导明暗。
 //   bao:body        { body }                  bao:headtype  { headtype }
 //   bao:claw        { claw }                  bao:eyeshape  { eyeshape }
 //   bao:scene       { scene }                 bao:decoration{ decoration }
 //   bao:halo        { halo }                  bao:effect    { effect }
 //   bao:motion      { motion }                bao:pose      { state, pose }
+//   bao:wear        { wear }                  bao:finish    { finish }
+//   bao:phrase      { state, text }           bao:say       { text }
 //   bao:sign        { mode, pos, color, shape }
 //   bao:bubble / bao:nameplate / bao:brightness / bao:scale —— { text } / { text } / { brightness } / { scale }
 //   bao:greet / bao:poke / bao:drag / bao:done / bao:crazy / bao:comfort / bao:companion / bao:milestone

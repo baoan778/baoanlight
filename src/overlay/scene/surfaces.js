@@ -207,11 +207,19 @@ export function rng(seed) {
 // running down, and a few chips of bare metal. Flat, saturated yellow is what
 // made the old robot read as a toy; the shape was never the whole problem.
 // 只在本文件内被 paint() 使用：不导出，避免 API 面比实际需要大一圈。
-function weatherTexture(base, { seed = 1, amount = 1 } = {}) {
+function weatherTexture(base, { seed = 1, amount = 1, wear = 1 } = {}) {
   return canvasTexture(256, 256, (g, w, h) => {
     const r = rng(seed);
     g.fillStyle = base;
     g.fillRect(0, 0, w, h);
+
+    // `amount` 是这快材质的固有强度（轮子比车身脏），`wear` 是用户调的做旧
+    // 程度（0 = 刚出厂）。两者相乘才决定「有几处锈」和「锈得多深」——
+    // 只改透明度的话，150% 和 100% 在 300px 的窗口里几乎看不出区别。
+    // wear=1 时条目数与透明度都与旧版逐像素一致，出厂外观不会变。
+    const wearClamped = Math.max(0, Math.min(1.5, Number.isFinite(wear) ? wear : 1));
+    const count = (n) => Math.round(n * wearClamped);
+    const alpha = (a) => a * amount * wearClamped;
 
     const blob = (x, y, rad, rgb, a) => {
       const grad = g.createRadialGradient(x, y, 0, x, y, rad);
@@ -225,34 +233,34 @@ function weatherTexture(base, { seed = 1, amount = 1 } = {}) {
     };
 
     // grime
-    for (let i = 0; i < 26; i++) {
-      blob(r() * w, r() * h, 10 + r() * 46, '58,42,22', (0.05 + r() * 0.12) * amount);
+    for (let i = 0; i < count(26); i++) {
+      blob(r() * w, r() * h, 10 + r() * 46, '58,42,22', alpha(0.05 + r() * 0.12));
     }
     // rust, biased low: that is where water sits
-    for (let i = 0; i < 16; i++) {
-      blob(r() * w, h * (0.4 + r() * 0.58), 4 + r() * 12, '124,62,30', (0.22 + r() * 0.32) * amount);
+    for (let i = 0; i < count(16); i++) {
+      blob(r() * w, h * (0.4 + r() * 0.58), 4 + r() * 12, '124,62,30', alpha(0.22 + r() * 0.32));
     }
     // streaks
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < count(12); i++) {
       const x = r() * w;
       const y = r() * h * 0.55;
       const len = 24 + r() * 70;
       const grad = g.createLinearGradient(0, y, 0, y + len);
-      grad.addColorStop(0, `rgba(86,56,26,${0.14 * amount})`);
+      grad.addColorStop(0, `rgba(86,56,26,${0.14 * amount * wearClamped})`);
       grad.addColorStop(1, 'rgba(86,56,26,0)');
       g.fillStyle = grad;
       g.fillRect(x, y, 1.5 + r() * 2.5, len);
     }
     // chips of bare metal
-    for (let i = 0; i < 20; i++) {
-      g.fillStyle = `rgba(204,194,174,${(0.08 + r() * 0.14) * amount})`;
+    for (let i = 0; i < count(20); i++) {
+      g.fillStyle = `rgba(204,194,174,${alpha(0.08 + r() * 0.14)})`;
       g.fillRect(r() * w, r() * h, 1 + r() * 3, 1 + r() * 1.4);
     }
   });
 }
 
-export function paint(base, { seed = 1, amount = 1, repeat = [1, 1] } = {}) {
-  const tex = weatherTexture(base, { seed, amount });
+export function paint(base, { seed = 1, amount = 1, wear = 1, repeat = [1, 1] } = {}) {
+  const tex = weatherTexture(base, { seed, amount, wear });
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(repeat[0], repeat[1]);
   return tex;

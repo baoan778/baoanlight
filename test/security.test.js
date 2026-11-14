@@ -76,6 +76,25 @@ test('a write without the token is refused and changes nothing', async () => {
   assert.equal(snap.sessions.some((s) => s.session === 'attacker'), false);
 });
 
+// 开机自启是「写」：没有 token 的页面不能给自己装一个登录启动项。
+// 校验发生在路由之前，所以这条不会真的改动机器上的启动项。
+test('autostart cannot be enabled without the token', async () => {
+  const res = await raw({
+    method: 'POST',
+    path: '/autostart',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ on: true }),
+  });
+  assert.equal(res.status, 401);
+});
+
+// 状态是只读的，和 /state 一样免 token。
+test('autostart status is readable without a token', async () => {
+  const res = await raw({ path: '/autostart' });
+  assert.equal(res.status, 200);
+  assert.equal(typeof JSON.parse(res.body).enabled, 'boolean');
+});
+
 // 这就是 <img src="…/set/busy"> 的形状：GET、没有 Origin、没有 body。
 test('a tokenless GET /set/* is refused, so an <img> tag cannot light the lamp', async () => {
   const res = await raw({ path: '/set/busy?agent=claude' });

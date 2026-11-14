@@ -95,6 +95,23 @@ test('a body that is not JSON falls back to the defaults instead of failing', as
   assert.equal(s.agent, 'agent');
 });
 
+// 少了 state 的上报不是「idle」：以前会被 normalise 成就绪，凭空在面板上点亮
+// 一个槽位（直到 unusedTtl 才消失），而调用方以为自己报的是 busy。
+test('/state without a state is refused instead of becoming idle', async () => {
+  const r = await api('/state', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session: 'no-state', agent: 'ghost' }),
+  });
+  assert.equal(r.error, 'state or fuel required');
+  const snap = await api('/state');
+  assert.equal(
+    snap.sessions.some((s) => s.session === 'no-state'),
+    false,
+    'no session may be created from a body without a state'
+  );
+});
+
 // ---------------------------------------------------------------- config write
 
 test('a config write lands atomically and leaves no temp file behind', () => {

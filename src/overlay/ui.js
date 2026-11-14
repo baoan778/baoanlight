@@ -29,7 +29,12 @@ import {
     if (!Object.keys(pendingPatch).length) return;
     const patch = pendingPatch;
     pendingPatch = {};
-    rawSave(patch);
+    // 写盘失败（配置目录只读、磁盘满、杀软短暂锁文件）必须说出来：界面会一直
+    // 显示「已改好」，重启却全部回滚，而用户直到下次开机才知道，且毫无线索。
+    const p = rawSave(patch);
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => flashNote('设置未能保存：检查 ~/.baoanlight 是否可写'));
+    }
   };
   const saveConfig = (patch, { flush = false } = {}) => {
     if (!rawSave) return;
@@ -72,7 +77,12 @@ import {
     workbuddy: 'WorkBuddy',
     deepseek: 'DeepSeek Harness',
   };
-  const displayName = (agent) => LABEL[agent] || String(agent || '');
+  // 显示名：用户改过名就用改过的，否则用内置名。这是唯一的取名入口 —— 列表、
+  // 铭牌、通知、语音、广告牌都从这里拿名字，改名才不会漏掉某一块。
+  const displayName = (agent) => {
+    const alias = agent && cfg.aliases && cfg.aliases[agent];
+    return alias || LABEL[agent] || String(agent || '');
+  };
   // 今日时长分布堆叠条里的「每个软件一种颜色」。刻意用低饱和、和状态色
   // 分明的色相：红黄绿紫已经被状态占满，这里借用会让人误读成状态。
   const AGENT_COLORS = ['#7ea6e0', '#e0a96d', '#7ec8b0', '#c98bb8', '#a9a6e0', '#9aa7b8'];
@@ -81,6 +91,15 @@ import {
   const TXT = english
     ? { waiting: 'needs you', error: 'failed', done: 'finished', doneNotify: 'completed' }
     : { waiting: '需要你处理', error: '出错了', done: '完成了', doneNotify: '完成了' };
+  // 台词：机器人冒泡和语音共用同一句话 —— 两处说法不一致，比不说话更像坏了。
+  // 空串 = 内置那句（跟着界面语言走）。上限 10 个字：气泡会按字数缩字号，
+  // 再多就不是一句话，而是贴在头上的一条通知。
+  const PHRASE_MAX = 10;
+  const PHRASE_STATES = ['waiting', 'error', 'done'];
+  const phraseOf = (state) => {
+    const v = cfg.phrases && cfg.phrases[state];
+    return typeof v === 'string' ? v.trim().slice(0, PHRASE_MAX) : '';
+  };
 
   // cc-switch 接管某个软件后，它的名字会撒谎：Claude Code 可能实际跑在 DeepSeek
   // 上。这一行把「实际在用什么模型/供应商」说清楚；没被接管时返回 null，不显示。
@@ -116,6 +135,10 @@ import {
   const sysMem  = document.getElementById('sys-mem');
   const sysCpuBar = document.getElementById('sys-cpu-bar');
   const sysMemBar = document.getElementById('sys-mem-bar');
+  // 设置搜索框的引用放在最前面：动态重建的软件顺序/名称块也要按当前过滤词
+  // 重新过滤（见 renderAliasUI 末尾），而那块在模块求值时就会画一次。
+  const findInput = document.getElementById('m-find');
+  const findEmpty = document.getElementById('m-find-empty');
 
   let cfg = {
     showLabels: true, theme: 'full', collapsed: false, scale: 1,
@@ -166,7 +189,11 @@ import {
       // 悬停工具栏只在「光标真的靠近机器人」时才进热区（见下面的 cursor 处理）。
       // 无条件放进来的话，stage 顶部那条 340×26 的带子即使什么都没画，也会
       // 让窗口停止点击穿透——用户点在编辑器上的那一下就被这团空气吃掉了。
-      const barVisible = bar.classList.contains('menu-open') || document.body.classList.contains('hovering');
+      // `:focus-within` 也要算：键盘 Tab 进工具栏时它是可见的（见 CSS），
+      // 若不进热区，鼠标点得到的是后面的编辑器，而回车却真的会触发。
+      const barVisible = bar.classList.contains('menu-open')
+        || document.body.classList.contains('hovering')
+        || bar.matches(':focus-within');
       const boxes = [robot.getBoundingClientRect()];
       if (barVisible) boxes.push(bar.getBoundingClientRect());
       // The per-software list is interactive (click to focus), so it must be
@@ -186,6 +213,11 @@ import {
       bridge.hotRect({ x: left, y: top, w: right - left, h: bottom - top });
     });
   }
+
+  // 焦点进/出工具栏时重算热区：键盘 Tab 会让工具栏现身（CSS :focus-within），
+  // 但热区是 fit() 算出来的。不重算就是「看得见、鼠标点不到」，而回车却有效。
+  bar.addEventListener('focusin', () => fit());
+  bar.addEventListener('focusout', () => fit());
 
   // 「光标靠近机器人了吗」——驱动悬停工具栏与它的热区。
   // 主进程每 80ms 推一次坐标；只有从这里得到的答案，才能在「窗口默认穿透」
@@ -262,6 +294,8 @@ import {
     // busy → idle（本来静默）会把 2.5 秒窗口吃掉，紧接着另一个软件报
     // error 就没声了 —— 安静的状态不该消费告警的配额。
     if (!TONES[kind]) return;   // idle / offline 静默：安静是刻意的
+    // 「完成」不是需要你处理的事：有人希望它只亮灯、不出声。
+    if (kind === 'done' && cfg.soundDone === false) return;
     const now = Date.now();
     if (now - lastCue < 2500) return;      // one cue per incident, not per event
     lastCue = now;
@@ -483,6 +517,8 @@ import {
   // 菜单关着的时候重建等于往一个看不见的地方扔几十个节点 —— 常驻窗口里每次
   // 状态变化（忙碌时很密）都白做一次。记一个脏标记，等菜单真的打开再画。
   let panelDirty = false;
+  // 今日战绩的数据签名：内容没变就不重建整块 DOM（理由见 renderScore）。
+  let scoreSig = '';
 
   function renderRecent() {
     const box = document.getElementById('m-recent');
@@ -510,8 +546,26 @@ import {
     const box = document.getElementById('m-score');
     if (!box) return;
     if (menu.hidden) { panelDirty = true; return; }
+    // 忙碌时 render() 每帧都会走到这里，而这块内容是「今天」的累计值，分钟级
+    // 才变。数据没变就不重建：否则菜单开着时每来一条事件就把战绩列表推倒重画，
+    // 高度一抖用户正在看的行就跳了。
+    //
+    // 签名里的时长要按**分钟**取整：store 的 byAgent 每帧都加上 `now - since`
+    // 的实时忙碌毫秒，拿原始值当签名等于每帧都「变了」，去重形同虚设。
     const byAgent = snap?.stats?.byAgent || {};
     const events = snap?.stats?.events || {};
+    const byMin = Object.fromEntries(
+      Object.entries(byAgent).map(([a, ms]) => [a, Math.floor((ms || 0) / 60000)])
+    );
+    const sig = JSON.stringify([
+      snap?.stats?.day || '', cfg.firstRun || '', Number(cfg.dailyGoalHours) || 0,
+      // 改名也要算进签名：这面板里每一行都显示 displayName，漏掉它就会出现
+      // 「列表已经叫新名字了，战绩里还是旧的」，最长要等一分钟。
+      cfg.aliases || {},
+      byMin, events, snap?.stats?.history || {},
+    ]);
+    if (sig === scoreSig) return;
+    scoreSig = sig;
     const names = [...new Set([...Object.keys(byAgent), ...Object.keys(events)])]
       .filter((a) => (byAgent[a] || 0) > 30000 || (events[a] && (events[a].done || events[a].error)));
     box.innerHTML = '';
@@ -525,6 +579,23 @@ import {
         box.appendChild(head);
       }
     }
+    const totalMs = Object.values(byAgent).reduce((a, b) => a + (b || 0), 0);
+    // 每日目标：用户自己定的一个「今天够了」的刻度。它只是把同一份时长换成
+    // 进度展示，不参与任何状态判断 —— 达成了也不会把灯变绿，绿只代表在运行。
+    const goalH = Number(cfg.dailyGoalHours) || 0;
+    if (goalH > 0) {
+      const pct = Math.min(100, Math.round((totalMs / (goalH * 3600000)) * 100));
+      const goal = document.createElement('div');
+      goal.className = pct >= 100 ? 'goal reached' : 'goal';
+      const label = document.createElement('span');
+      label.textContent = `每日目标 ${fmtDur(totalMs)} / ${goalH} 时 · ${pct}%`;
+      const track = document.createElement('em');
+      const fill = document.createElement('i');
+      fill.style.width = pct + '%';
+      track.appendChild(fill);
+      goal.append(label, track);
+      box.appendChild(goal);
+    }
     if (!names.length) {
       const row = document.createElement('div');
       row.className = 'recent';
@@ -534,7 +605,6 @@ import {
     }
     // 堆叠条：把今天的忙碌时长按软件切成一段，一眼看出「今天谁吃了时间」。
     // 行内条形是各自按今日最长归一化的，这里的段长才是真实占比。
-    const totalMs = Object.values(byAgent).reduce((a, b) => a + (b || 0), 0);
     if (totalMs > 0) {
       const stack = document.createElement('div');
       stack.className = 'stack';
@@ -619,6 +689,11 @@ import {
   // 「已运行 X 分钟」也要会走：busy 且长时间无上报时，靠这个定时器推进分钟数。
   setInterval(() => { if (lastSnap) render(lastSnap); }, 30000);
   function announceDone(sessions) {
+    // 会话被 /clear、`bao set offline` 或 TTL 清掉后，这里不能留着它的旧状态：
+    // 否则同一个软件下次以 idle 出现时会被判成「刚完成」，为一个没发生的事转圈
+    // 庆祝，还往「最近动态」里写一条假的完成记录。
+    const live = new Set(sessions.map((s) => s.agent));
+    for (const a of [...lastByAgent.keys()]) if (!live.has(a)) lastByAgent.delete(a);
     for (const s of sessions) {
       const prev = lastByAgent.get(s.agent);
       lastByAgent.set(s.agent, s.state);
@@ -651,6 +726,8 @@ import {
     // 唯一漏掉 isMuted() 的一条 —— 开会时最不该弹的恰好是它（卡住提醒）。
     const canNotify = inElectron && bridge.notify && !isMuted();
     for (const s of sessions) {
+      // 关掉通知的软件，卡住提醒也不弹（否则「静音」只是少了一类噪音）。
+      if (isAgentMuted(s.agent)) continue;
       if (s.state === 'busy' && s.quiet && s.quietFor > 5 * 60 * 1000) {
         stuckAgents.add(s.agent);
         if (!stuckNotified.has(s.agent)) {
@@ -684,6 +761,7 @@ import {
   const MILESTONES = [1, 2, 3, 4, 6, 8, 12];
   let lastMilestone = 0;
   let lastMilestoneDay = '';
+  let goalDoneDay = '';   // 今天的目标达成提醒已经发过（按 stats.day 去重）
   const dayDiff = (a, b) => {
     const da = new Date(a + 'T00:00:00').getTime();
     const db = new Date(b + 'T00:00:00').getTime();
@@ -708,9 +786,11 @@ import {
     if (!cfg.voice) return;
     if (isMuted()) return;
     if (state === lastAnnounced) return;
-    const msg = state === 'waiting' ? TXT.waiting
+    // 用户写了台词就念用户那句；没写才念内置的。气泡用同一个取值函数，
+    // 于是「屏幕上写的」和「耳朵里听到的」永远是一句话。
+    const msg = phraseOf(state) || (state === 'waiting' ? TXT.waiting
       : state === 'error' ? TXT.error
-        : state === 'done' ? TXT.done : '';
+        : state === 'done' ? TXT.done : '');
     // 先记账再判断要不要出声：busy/idle 这些「不值得念」的状态也要把上一次
     // 的 waiting 清掉，否则同一状态第二次出现（waiting → busy → waiting）
     // 会被当成「和上次一样」永远不播 —— 而第二次「需要你」往往才是真的。
@@ -742,6 +822,14 @@ import {
   }
   let dndOn = false;
   function applyDnd() {
+    // 起止相同 = isDnd() 永远为 false。这是个合法的选择（等于不设勿扰），但没人
+    // 猜得到，所以把原因写在开关下面，而不是让「已开启」和一个永不到来的时段并排。
+    const note = document.getElementById('m-dnd-note');
+    if (note) {
+      const s = toMin(cfg.dndStart);
+      const e = toMin(cfg.dndEnd);
+      note.hidden = !(cfg.doNotDisturb && s != null && e != null && s === e);
+    }
     const on = isDnd();
     if (on === dndOn) return;
     dndOn = on;
@@ -761,16 +849,31 @@ import {
   const slotNotifiedAt = new Map();  // agent -> 上次通知的时间
   const NOTIFY_TEXT = { waiting: TXT.waiting, error: TXT.error, done: TXT.doneNotify };
 
+  // 单独关掉某个软件的系统通知：有些软件状态翻来覆去，通知比灯烦人得多。
+  // 只关「弹窗」这一条通道 —— 灯、列表、铭牌、广告牌照常，提示音也不受影响
+  // （它是按聚合状态播的，不是按软件）。
+  const isAgentMuted = (agent) => (cfg.mutedAgents || []).includes(agent);
+
   function notifySlots(slots) {
     if (!inElectron || !bridge.notify) return;
     if (isDnd()) return;
     for (const s of slots || []) {
-      if (!s || !s.count) continue;
+      // 离线槽位 = 这个软件的状态归零。必须把它记的状态清掉：否则软件关掉再
+      // 打开、第一个事件又是同一种 waiting/error 时，会被当成「没变化」而永远
+      // 吞掉通知 —— 灯是红的，通知却一次都不弹。
+      if (!s || !s.count) {
+        if (s) { slotSeen.delete(s.agent); slotNotifiedAt.delete(s.agent); }
+        continue;
+      }
       const prev = slotSeen.get(s.agent);
       slotSeen.set(s.agent, s.state);
       if (prev === undefined || prev === s.state) continue;
+      // 状态照常记账（上面那行），只是不弹：解除静音后下一次变化能正常提醒。
+      if (isAgentMuted(s.agent)) continue;
       const text = NOTIFY_TEXT[s.state];
       if (!text) continue;
+      // 「完成」可以单独关通知：和「完成也响一声」是同一件事的两条通道。
+      if (s.state === 'done' && cfg.notifyDone === false) continue;
       const now = Date.now();
       if (now - (slotNotifiedAt.get(s.agent) || 0) < 6000) continue;
       // 静音期间不弹，也不记时间戳：解除静音后如果状态还在，下一次变化自然会提醒。
@@ -790,6 +893,8 @@ import {
     if (!inElectron || !bridge.notify) return;
     if (isMuted()) return;
     if (isDnd()) return;
+    // 额度提醒也归属某个软件：关掉它的通知就别弹。
+    if (f && f.agent && isAgentMuted(f.agent)) return;
     const low = !!(f && typeof f.remaining === 'number' && f.remaining <= 5);
     if (low && lastFuelLow === false) {
       bridge.notify('额度快用完了', `${f.agent ? displayName(f.agent) + ' ' : ''}只剩 ${Math.round(f.remaining)}%`);
@@ -868,7 +973,8 @@ import {
       el.tabIndex = 0;
       el.setAttribute('role', 'button');
       el.setAttribute('aria-pressed', String(agent === focusedAgent));
-      el.setAttribute('aria-label', `${displayName(agent)} — ${VERB[s.state] || s.state}`);
+      el.setAttribute('aria-label', `${displayName(agent)} — ${VERB[s.state] || s.state}`
+        + (isAgentMuted(agent) ? '，系统通知已关闭' : ''));
       el.removeAttribute('aria-disabled');
     }
     refs.dot.dataset.color = COLOR[s.state] || 'grey';
@@ -893,11 +999,15 @@ import {
       refs.fuelWrap.style.visibility = 'hidden';
     }
     const quietFor = s.quiet ? ` — 已静默 ${Math.round(s.quietFor / 60000)} 分钟` : '';
+    // 关掉通知的软件在 tooltip 里说清楚：否则「为什么它出错了我没收到通知」
+    // 会变成一个查不出来的问题。
+    const mutedNote = isAgentMuted(agent) ? ' — 系统通知已关闭' : '';
     el.title = offline
-      ? `${displayName(agent)} — 未运行`
+      ? `${displayName(agent)} — 未运行${mutedNote}`
       : (cc ? `用 ${cc} — ` : '') + (s.cwd ? s.cwd + ' — ' : '') + detail + quietFor
         + (s.cwd ? ' — 右键在终端打开' : '')
-        + (agent === focusedAgent ? ' — 点击取消聚焦' : ' — 点击聚焦');
+        + (agent === focusedAgent ? ' — 点击取消聚焦' : ' — 点击聚焦')
+        + mutedNote;
   }
 
   // 一次绑定：点击聚焦、键盘聚焦、右键开终端。行被复用时不需要重绑。
@@ -988,11 +1098,15 @@ import {
     // 第二条输出通道：同上，只在真实状态变化时说一次，不跟着每帧念。
     if (realChanged) speakState(displayState, slots[mainSlotIdx] && slots[mainSlotIdx].agent);
 
+    // 预览期间冻结真实状态的这三条出口（镜面灯、槽位、3D 事件）。否则任何
+    // 一条 SSE 帧都会把槽位和 3D 拉回真实颜色，而 --state 还是预览色：同一台
+    // 机器人上两处说法不一致，正是这个文件最反对的事。
     const color = COLOR[displayState] || null;
-    led.dataset.color = color || 'red';
-    led.classList.toggle('on', !!color);
-
-    renderSlots(slots);
+    if (!previewing) {
+      led.dataset.color = color || 'red';
+      led.classList.toggle('on', !!color);
+      renderSlots(slots);
+    }
     announceDone(sessions);
     if (!previewing) checkStuck(sessions);
     announceCC(snap);
@@ -1018,11 +1132,20 @@ import {
     const totalBusyMs = Object.values(snap.stats?.byAgent || {}).reduce((a, b) => a + b, 0);
     const statsDay = snap.stats?.day || '';
     if (statsDay !== lastMilestoneDay) {
+      const firstFrame = !lastMilestoneDay;
       lastMilestoneDay = statsDay;
-      lastMilestone = 0;
-      // 陪伴天数：跨天时问候一次「陪你第 N 天啦」。
-      const days = dayDiff(cfg.firstRun || statsDay, statsDay);
-      if (days >= 1) window.dispatchEvent(new CustomEvent('bao:companion', { detail: { days } }));
+      // 首帧只是「知道今天几号」：stats 是持久化的，重启时累计时长已经可能是
+      // 五小时 —— 从 0 起算会把今天早已跨过的里程碑重新庆祝一遍；陪伴问候同理，
+      // 每次开应用都说「陪你第 N 天啦」不是问候，是噪音。
+      lastMilestone = firstFrame ? Math.floor(totalBusyMs / 3600000) : 0;
+      if (firstFrame) {
+        // 重启时今天可能早就超过目标了：只记账，不补发一条「目标达成」。
+        const goalH = Number(cfg.dailyGoalHours) || 0;
+        if (goalH > 0 && totalBusyMs >= goalH * 3600000) goalDoneDay = statsDay;
+      } else {
+        const days = dayDiff(cfg.firstRun || statsDay, statsDay);
+        if (days >= 1) window.dispatchEvent(new CustomEvent('bao:companion', { detail: { days } }));
+      }
     }
     // 一次跨过多档（比如午休回来一次涨了 3 小时）时只庆祝最高那一档：
     // 用 find 会挑最低的，然后在接下来几帧里一档一档补庆祝，看起来像卡住了。
@@ -1030,6 +1153,16 @@ import {
     if (crossed) {
       lastMilestone = crossed;
       window.dispatchEvent(new CustomEvent('bao:milestone', { detail: { hours: crossed } }));
+    }
+
+    // 每日目标达成：一天只提醒一次。用系统通知而不是 3D 庆祝 —— 4/6/8 小时
+    // 同时也是内置里程碑，两个庆祝叠在同一帧看起来像卡住了。
+    const goalH = Number(cfg.dailyGoalHours) || 0;
+    if (goalH > 0 && totalBusyMs >= goalH * 3600000 && goalDoneDay !== statsDay) {
+      goalDoneDay = statsDay;
+      if (!isMuted() && !isDnd() && inElectron && bridge.notify) {
+        bridge.notify(`今日目标达成 · ${goalH} 小时`, `今天累计工作 ${fmtDur(totalBusyMs)}，可以去歇一会儿了`);
+      }
     }
 
     // Whose panel is this? Focused software when focused, otherwise the worst.
@@ -1052,9 +1185,11 @@ import {
     if (!previewing) notifyFuel(snap.fuel);
     // sessions arrive newest-first, so [0] is the software that spoke last
     const liveTop = sessions[0];
-    publish(displayState, color, slots, agentLabel,
-      liveTop ? HEX[COLOR[liveTop.state]] : null,
-      activeAgents(snap, slots, worstKey));
+    if (!previewing) {
+      publish(displayState, color, slots, agentLabel,
+        liveTop ? HEX[COLOR[liveTop.state]] : null,
+        activeAgents(snap, slots, worstKey));
+    }
 
     // 按软件聚合：同一软件多个会话只占一行（取最坏状态），否则一个多会话的软件
     // 会把别的软件挤出前几行——workbuddy 同时有「idle」和「error」两个会话时，
@@ -1161,8 +1296,23 @@ import {
       // 藏起来时别重建 DOM：把快照记下，等可见了再 render 一次补齐。
       if (document.hidden) { snapDirty = true; return; }
       snapDirty = false;
+      // 心跳帧的唯一作用是让 quietFor 往前走（卡住检测依赖它）。状态没变时
+      // 不重写 pill / 槽位 / 铭牌 —— 一个常驻窗口每次心跳都重排 DOM 是要耗电的，
+      // 而这条通道每 30 秒就来一次。
+      if (snap.heartbeat) {
+        if (!previewing) checkStuck(snap.sessions || []);
+        if (!menu.hidden) renderScore(snap);
+        return;
+      }
       render(snap);
     };
+    // 计划内关闭（`bao stop`）：服务端先发一条 quit 事件再退出。窗口必须跟着
+    // 退出 —— 否则它变成「未连接」的孤儿，还占着单实例锁与全局快捷键，下次
+    // `bao start` 只能复用它。崩溃断线不发这条，界面照旧显示「未连接」。
+    es.addEventListener('quit', () => {
+      try { es.close(); } catch { /* 已经关了 */ }
+      if (inElectron && bridge.quit) bridge.quit();
+    });
     es.onerror = () => {
       document.body.classList.add('disconnected');
       disconnectedEl.hidden = false;
@@ -1199,6 +1349,10 @@ import {
     menuOpen = open;
     menu.hidden = !open;
     bar.classList.toggle('menu-open', open);
+    // 关菜单时清掉过滤：下次打开应该是一份完整菜单，而不是上次搜索的残留。
+    if (!open && findInput.value) { findInput.value = ''; applyFind(); }
+    // 每次打开都重读一次：用户可能在终端里用 `bao autostart on/off` 改过。
+    if (open) refreshAutostart();
     if (open) setSizer(false);
     // 菜单关着时那两块面板不重建（见 renderRecent / renderScore），所以打开
     // 的这一刻必须补画一次，否则看到的是上次打开时的旧内容。
@@ -1223,20 +1377,40 @@ import {
     // 高亮当前正在预览的那个按钮，一眼知道「我现在看的是哪个状态」。
     preview.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.st === state));
     clearTimeout(previewTimer);
-    previewTimer = setTimeout(() => {
-      previewing = false;
-      preview.querySelectorAll('button').forEach((b) => b.classList.remove('active'));
-      if (lastSnap) render(lastSnap);
-    }, 3000);
+    previewTimer = setTimeout(stopPreview, 3000);
+  }
+  // 立刻结束预览并回到真实状态。面板被收起/Esc 时必须调它：否则预览的 3 秒
+  // 会继续把假状态挂在机器人身上，而这期间真实状态是被冻结的 —— 面板已经关了，
+  // 用户却看到一盏在说谎的灯。
+  function stopPreview() {
+    if (!previewing) return;
+    clearTimeout(previewTimer);
+    previewing = false;
+    preview.querySelectorAll('button').forEach((b) => b.classList.remove('active'));
+    if (lastSnap) render(lastSnap);
   }
   preview.querySelectorAll('button').forEach((b) => {
     b.addEventListener('click', () => previewState(b.dataset.st));
   });
 
+  // 空闲多久自动收起尺寸条/预览：窗口在热区外是点击穿透的，用户去点桌面或
+  // 别的窗口时，document 根本收不到 pointerdown —— 没有超时的话它们会一直挂着，
+  // 而它们占的那条带子仍在热区里，继续吃掉桌面点击。
+  // 20 秒而不是几秒：面板刚打开、光标停在上面思考时被自动收走，比一直挂着
+  // 更像 bug。20 秒足够看完，也足够让「忘了关」的局面自己结束。
+  const SIZER_IDLE_MS = 20000;
+  let sizerIdleTimer = 0;
+  function armSizerIdle() {
+    clearTimeout(sizerIdleTimer);
+    if (!sizerOpen) return;
+    sizerIdleTimer = setTimeout(() => setSizer(false), SIZER_IDLE_MS);
+  }
+
   const setSizer = (open) => {
     if (open === sizerOpen && open) return;
     sizerOpen = open;
     clearTimeout(sizerTimer);
+    clearTimeout(sizerIdleTimer);
     if (open) {
       sizer.hidden = false;
       preview.hidden = false;
@@ -1246,9 +1420,11 @@ import {
         bar.classList.remove('menu-open');
       }
       requestAnimationFrame(() => {
-        if (sizerOpen) { sizer.classList.add('on'); preview.classList.add('on'); }
+        if (sizerOpen) { sizer.classList.add('on'); preview.classList.add('on'); armSizerIdle(); }
       });
     } else {
+      // 收起面板 = 用户不再看预览，假状态必须马上结束（见 stopPreview）。
+      stopPreview();
       sizer.classList.remove('on');
       preview.classList.remove('on');
       sizerTimer = setTimeout(() => {
@@ -1257,6 +1433,11 @@ import {
     }
     fit();
   };
+  // 鼠标在面板里动一动/按一下都算「还在用」，重新计时。
+  for (const el of [sizer, preview]) {
+    el.addEventListener('pointermove', armSizerIdle);
+    el.addEventListener('pointerdown', armSizerIdle);
+  }
 
   document.getElementById('btn-menu').onclick = (e) => {
     e.stopPropagation();
@@ -1302,6 +1483,16 @@ import {
     if (inElectron) saveConfig({ brightness: b });
   });
 
+  // 「自定义」配色 + 十六进制归一化：广告牌和四部位配色共用同一套规则。
+  // 定义在这里（而不是四部位那一节）是因为下面的广告牌先用到它们。
+  const CUSTOM = '自定义';
+  const HEX_RE = /^#?([0-9a-f]{6})$/i;
+  // 取色器只认 #rrggbb；配置里手写的 "3aa5c9"、大写、带空格都收，归一化后再比较。
+  const normHex = (v) => {
+    const m = HEX_RE.exec(String(v == null ? '' : v).trim());
+    return m ? `#${m[1].toLowerCase()}` : null;
+  };
+
   // 今日时长广告牌：显示哪个软件、放哪一侧、什么颜色、什么形状。
   const SIGN_MODES = { '最多': 'top', '合计': 'total', '轮播': 'cycle', '关闭': 'off' };
   const SIGN_POS = { '右侧': 'right', '左侧': 'left' };
@@ -1321,24 +1512,60 @@ import {
   };
   fillSignOpts(signSel, Object.keys(SIGN_MODES));
   fillSignOpts(signPosSel, Object.keys(SIGN_POS));
-  fillSignOpts(signColorSel, Object.keys(SIGN_COLORS));
+  // 颜色也支持「自定义」：牌面颜色只是画在 canvas 上的描边/文字，任意十六进制
+  // 都能直接用，没有理由把它锁在八色调色板里。
+  fillSignOpts(signColorSel, [...Object.keys(SIGN_COLORS), CUSTOM]);
   fillSignOpts(signShapeSel, Object.keys(SIGN_SHAPES));
   signSel.value = '最多';
   signPosSel.value = '右侧';
   signColorSel.value = '金色';
   signShapeSel.value = '圆角';
+  const signCustomInput = document.getElementById('m-sign-color-custom');
+  const signCustomRow = document.getElementById('custom-sign-row');
+  signCustomInput.value = SIGN_COLORS['金色'];
+  // 当前牌面颜色：选「自定义」时读取色器，否则读调色板。归一化失败回落到金色，
+  // 与 dispatch、落盘、cfg 用的是同一个值。
+  const signColorValue = () => (signColorSel.value === CUSTOM
+    ? (normHex(signCustomInput.value) || SIGN_COLORS['金色'])
+    : (SIGN_COLORS[signColorSel.value] || SIGN_COLORS['金色']));
   function applySign() {
     const mode = SIGN_MODES[signSel.value] || 'top';
     const pos = SIGN_POS[signPosSel.value] || 'right';
-    const color = SIGN_COLORS[signColorSel.value] || '#ffd54a';
     const shape = SIGN_SHAPES[signShapeSel.value] || '圆角';
+    const custom = signColorSel.value === CUSTOM;
+    signCustomRow.hidden = !custom;
+    if (custom) signCustomInput.value = signColorValue();   // 归一化：取色器只认 #rrggbb
+    const color = signColorValue();
     window.dispatchEvent(new CustomEvent('bao:sign', { detail: { mode, pos, color, shape } }));
     if (inElectron) saveConfig({ signMode: mode, signPos: pos, signColor: color, signShape: shape });
+    return custom;
   }
   signSel.addEventListener('change', applySign);
   signPosSel.addEventListener('change', applySign);
-  signColorSel.addEventListener('change', applySign);
+  signColorSel.addEventListener('change', (e) => {
+    const custom = applySign();
+    // 与四部位配色一致：选中「自定义」就把取色器弹出来，并立刻记住颜色。
+    if (custom && e.isTrusted && typeof signCustomInput.showPicker === 'function') {
+      try { signCustomInput.showPicker(); } catch { /* 没有用户手势：不弹 */ }
+    }
+    if (custom && inElectron) saveConfig({ customSign: signColorValue() });
+  });
   signShapeSel.addEventListener('change', applySign);
+  // 拖动取色器实时预览（松手才落盘）。牌面重绘要重画 320×96 的 canvas，
+  // 所以同样限速，别让一次拖动把菜单拖成幻灯片。
+  let signPreviewAt = 0;
+  signCustomInput.addEventListener('input', () => {
+    if (signColorSel.value !== CUSTOM) return;
+    const now = Date.now();
+    if (now - signPreviewAt < 80) return;
+    signPreviewAt = now;
+    applySign();
+  });
+  signCustomInput.addEventListener('change', () => {
+    if (signColorSel.value !== CUSTOM) return;
+    applySign();
+    if (inElectron) saveConfig({ customSign: signColorValue() });
+  });
 
 
 
@@ -1389,46 +1616,158 @@ import {
     if (el) el.style.background = color || 'transparent';
   };
 
-  // 皮肤列表来自 palette。换皮肤只改身体主色/暗色，做旧纹理保留。
+  // 皮肤/眼睛/履带/配件的列表来自 palette。固定配色只换材质色，做旧纹理保留。
+  // 每一项还多一个「自定义」：用户可以随手挑任意颜色（存 config.customSkin 等），
+  // 明暗由主色推导。四个部位共用一条规则，色块、事件、落盘读的是同一个值。
   const SKIN_NAMES = names(SKIN_TONES);
-  const skinSel = document.getElementById('m-skin');
-  for (const n of SKIN_NAMES) {
-    const o = document.createElement('option');
-    o.value = n;
-    o.textContent = n;
-    skinSel.appendChild(o);
-  }
-  skinSel.addEventListener('change', (e) => {
-    window.dispatchEvent(new CustomEvent('bao:skin', { detail: { skin: e.target.value } }));
-    if (inElectron) saveConfig({ skin: e.target.value });
-    updateSwatch('skin-swatch', SKIN_COLORS[e.target.value]);
-    syncThemeLabel();
-  });
-
-  // 眼睛配色 / 履带配色也来自 palette。
   const EYESTYLE_NAMES = names(EYE_TONES);
   const TRACKSTYLE_NAMES = names(TRACK_TONES);
-  const eyestyleSel = document.getElementById('m-eyestyle');
-  for (const n of EYESTYLE_NAMES) {
-    const o = document.createElement('option');
-    o.value = n; o.textContent = n; eyestyleSel.appendChild(o);
+  const ARMSKIN_NAMES = names(ARM_TONES);
+  // 事件名与载荷都写成字面量：test/events.test.js 用文本匹配守住「发出的事件
+  // 都有人听、两边读的字段一致」。表驱动能少写几行，但那条守卫会失效 ——
+  // 而它守的正是「点了没反应、控制台一片安静」这类最难查的故障。
+  const EMIT = {
+    skin: (custom, hex, value) => {
+      if (custom) window.dispatchEvent(new CustomEvent('bao:skin', { detail: { skin: CUSTOM, hex } }));
+      else window.dispatchEvent(new CustomEvent('bao:skin', { detail: { skin: value } }));
+    },
+    eyestyle: (custom, hex, value) => {
+      if (custom) window.dispatchEvent(new CustomEvent('bao:eyestyle', { detail: { eyestyle: CUSTOM, hex } }));
+      else window.dispatchEvent(new CustomEvent('bao:eyestyle', { detail: { eyestyle: value } }));
+    },
+    trackstyle: (custom, hex, value) => {
+      if (custom) window.dispatchEvent(new CustomEvent('bao:trackstyle', { detail: { trackstyle: CUSTOM, hex } }));
+      else window.dispatchEvent(new CustomEvent('bao:trackstyle', { detail: { trackstyle: value } }));
+    },
+    armskin: (custom, hex, value) => {
+      if (custom) window.dispatchEvent(new CustomEvent('bao:armskin', { detail: { armskin: CUSTOM, hex } }));
+      else window.dispatchEvent(new CustomEvent('bao:armskin', { detail: { armskin: value } }));
+    },
+  };
+  const PARTS = [
+    { key: 'skin', detailKey: 'skin', configKey: 'customSkin',
+      options: SKIN_NAMES, fixed: SKIN_COLORS, swatch: 'skin-swatch',
+      ids: ['m-skin', 'm-skin-custom', 'custom-skin-row'], fallback: SKIN_TONES[0].hex },
+    { key: 'eye', detailKey: 'eyestyle', configKey: 'customEye',
+      options: EYESTYLE_NAMES, fixed: EYE_COLORS, swatch: 'eye-swatch',
+      ids: ['m-eyestyle', 'm-eyestyle-custom', 'custom-eye-row'], fallback: EYE_TONES[0].iris },
+    { key: 'track', detailKey: 'trackstyle', configKey: 'customTrack',
+      options: TRACKSTYLE_NAMES, fixed: TRACK_COLORS, swatch: 'track-swatch',
+      ids: ['m-trackstyle', 'm-trackstyle-custom', 'custom-track-row'], fallback: TRACK_TONES[0].rubber },
+    { key: 'arm', detailKey: 'armskin', configKey: 'customArm',
+      options: ARMSKIN_NAMES, fixed: ARM_COLORS, swatch: 'arm-swatch',
+      ids: ['m-armskin', 'm-armskin-custom', 'custom-arm-row'], fallback: ARM_TONES[0].arm },
+  ];
+  // 出厂颜色取自 palette 第一项（也是机器人的初始外观），不在这里另抄一份，
+  // 否则改了 palette 的默认色，取色器会停在一个机器人从来不用的颜色上。
+  for (const p of PARTS) {
+    const [selId, inputId, rowId] = p.ids;
+    p.sel = document.getElementById(selId);
+    p.input = document.getElementById(inputId);
+    p.row = document.getElementById(rowId);
+    for (const n of [...p.options, CUSTOM]) {
+      const o = document.createElement('option');
+      o.value = n;
+      o.textContent = n;
+      p.sel.appendChild(o);
+    }
+    p.input.value = p.fallback;
+    p.hex = () => normHex(p.input.value) || p.fallback;
+    p.color = () => (p.sel.value === CUSTOM ? p.hex() : p.fixed[p.sel.value]);
+    p.paint = () => updateSwatch(p.swatch, p.color());
+    p.apply = () => {
+      const custom = p.sel.value === CUSTOM;
+      p.row.hidden = !custom;
+      if (custom) p.input.value = p.hex();    // 归一化：取色器只认 #rrggbb
+      EMIT[p.detailKey](custom, p.hex(), p.sel.value);
+      p.paint();
+      return custom ? p.hex() : null;
+    };
+    p.sel.addEventListener('change', (e) => {
+      const custom = p.apply();
+      // 选「自定义」就直接把取色器弹出来：用户下一个动作必然是挑颜色，
+      // 省掉「再点一下输入框」。只对真实操作弹 —— 应用方案 / 重置外观是用
+      // 脚本派发 change 的，那时突然弹一个系统取色器只会打断用户。
+      if (custom && e.isTrusted && typeof p.input.showPicker === 'function') {
+        try { p.input.showPicker(); } catch { /* 没有用户手势：不弹 */ }
+      }
+      // 选「自定义」的同一刻就把颜色落盘：否则配置里只留下「自定义」这个名字，
+      // 重启后没有颜色可用，界面只能悄悄回落到出厂色。
+      if (inElectron) {
+        saveConfig(custom ? { [p.detailKey]: CUSTOM, [p.configKey]: custom } : { [p.detailKey]: p.sel.value });
+      }
+      syncThemeLabel();
+    });
+    // 拖动取色器时实时预览，松手（change）才落盘，避免一拖写几十次配置。
+    // 预览本身也要限速：皮肤每次上色要重画两张 256×256 的做旧纹理，而拖动
+    // 一分钟能发上百次 input；不限速会把窗口拖成幻灯片。松手那一下补最终值。
+    let lastPreview = 0;
+    p.input.addEventListener('input', () => {
+      if (p.sel.value !== CUSTOM) return;
+      const now = Date.now();
+      if (now - lastPreview < 80) return;
+      lastPreview = now;
+      p.apply();
+    });
+    p.input.addEventListener('change', () => {
+      if (p.sel.value !== CUSTOM) return;
+      p.apply();
+      const v = p.hex();
+      p.input.value = v;
+      if (inElectron) saveConfig({ [p.configKey]: v });
+    });
   }
-  eyestyleSel.addEventListener('change', (e) => {
-    window.dispatchEvent(new CustomEvent('bao:eyestyle', { detail: { eyestyle: e.target.value } }));
-    if (inElectron) saveConfig({ eyestyle: e.target.value });
-    updateSwatch('eye-swatch', EYE_COLORS[e.target.value]);
-    syncThemeLabel();
+  const partOf = (key) => PARTS.find((p) => p.key === key);
+  const skinSel = partOf('skin').sel;
+  const eyestyleSel = partOf('eye').sel;
+  const trackstyleSel = partOf('track').sel;
+  const armskinSel = partOf('arm').sel;
+
+  // ---- 材质 --------------------------------------------------------------
+  // 做旧程度（锈迹/掉漆/污渍的强度）与表面质感（金属度/粗糙度）。这是「外观」
+  // 之外的第二个维度：前者改贴图，后者改光照响应，两者都不改颜色 —— 红黄绿在
+  // 这台机器上只能表示状态，自定义再多也不能借用它们。
+  const WEAR_MIN = 0;
+  const WEAR_MAX = 150;                // 百分比，100 = 出厂强度
+  const wearInput = document.getElementById('m-wear');
+  const wearOut = document.getElementById('m-wear-val');
+  const FINISH_NAMES = ['哑光', '标准', '精工'];
+  const finishSel = document.getElementById('m-finish');
+  for (const n of FINISH_NAMES) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n; finishSel.appendChild(o);
+  }
+  finishSel.value = '标准';
+  // 滑杆的合法范围只在这里判一次：落盘、派发、导出、套用方案读的都是它。
+  const wearValue = () => {
+    const n = Number(wearInput.value);
+    if (!Number.isFinite(n)) return 1;                       // 读不出就回出厂强度
+    const pct = Math.max(WEAR_MIN, Math.min(WEAR_MAX, n));
+    return Math.round(pct) / 100;
+  };
+  const pushWear = () => {
+    const w = wearValue();
+    wearOut.textContent = Math.round(w * 100) + '%';
+    window.dispatchEvent(new CustomEvent('bao:wear', { detail: { wear: w } }));
+    return w;
+  };
+  // 拖动时实时预览，但一次重绘要重画八张 256×256 的做旧纹理；不限速会把设置
+  // 面板拖成幻灯片。松手（change）那一下补最终值并落盘。
+  let lastWearPush = 0;
+  wearInput.addEventListener('input', () => {
+    const w = wearValue();
+    wearOut.textContent = Math.round(w * 100) + '%';
+    const now = Date.now();
+    if (now - lastWearPush < 90) return;
+    lastWearPush = now;
+    window.dispatchEvent(new CustomEvent('bao:wear', { detail: { wear: w } }));
   });
-  const trackstyleSel = document.getElementById('m-trackstyle');
-  for (const n of TRACKSTYLE_NAMES) {
-    const o = document.createElement('option');
-    o.value = n; o.textContent = n; trackstyleSel.appendChild(o);
-  }
-  trackstyleSel.addEventListener('change', (e) => {
-    window.dispatchEvent(new CustomEvent('bao:trackstyle', { detail: { trackstyle: e.target.value } }));
-    if (inElectron) saveConfig({ trackstyle: e.target.value });
-    updateSwatch('track-swatch', TRACK_COLORS[e.target.value]);
-    syncThemeLabel();
+  wearInput.addEventListener('change', () => {
+    if (inElectron) saveConfig({ wear: pushWear() });
+  });
+  finishSel.addEventListener('change', (e) => {
+    window.dispatchEvent(new CustomEvent('bao:finish', { detail: { finish: e.target.value } }));
+    if (inElectron) saveConfig({ finish: e.target.value });
   });
 
   // 履带形状（圆角矩形/三角形/梯形）。
@@ -1443,20 +1782,8 @@ import {
     if (inElectron) saveConfig({ tracktype: e.target.value });
   });
 
-  // 配件配色（手臂/手爪/镜筒）与手爪形状。
-  const ARMSKIN_NAMES = names(ARM_TONES);
+  // 手爪形状。
   const CLAW_NAMES = ['铲形', '三指', '钳形', '四指', '五指'];
-  const armskinSel = document.getElementById('m-armskin');
-  for (const n of ARMSKIN_NAMES) {
-    const o = document.createElement('option');
-    o.value = n; o.textContent = n; armskinSel.appendChild(o);
-  }
-  armskinSel.addEventListener('change', (e) => {
-    window.dispatchEvent(new CustomEvent('bao:armskin', { detail: { armskin: e.target.value } }));
-    if (inElectron) saveConfig({ armskin: e.target.value });
-    updateSwatch('arm-swatch', ARM_COLORS[e.target.value]);
-    syncThemeLabel();
-  });
   const clawSel = document.getElementById('m-claw');
   for (const n of CLAW_NAMES) {
     const o = document.createElement('option');
@@ -1496,7 +1823,10 @@ import {
   }
   themeSel.addEventListener('change', (e) => {
     const t = THEMES[e.target.value];
-    if (!t) return;   // 「自定义」：保持当前配色，不做任何套用
+    // 「自定义」不是一套可套用的配色，只是 syncThemeLabel 推导出来的标记。
+    // 用户主动选它时保持现有配色，但下拉要立刻退回**真实**的那一项，否则它会
+    // 一直显示「自定义」而机器人还是原主题，直到下一次改配色才被纠正。
+    if (!t) { syncThemeLabel(); return; }
     skinSel.value = t.skin; skinSel.dispatchEvent(new Event('change'));
     eyestyleSel.value = t.eye; eyestyleSel.dispatchEvent(new Event('change'));
     trackstyleSel.value = t.track; trackstyleSel.dispatchEvent(new Event('change'));
@@ -1580,6 +1910,19 @@ import {
     window.dispatchEvent(new CustomEvent('bao:motion', { detail: { motion: e.target.value } }));
     if (inElectron) saveConfig({ motion: e.target.value });
   });
+  // 点一下机器人时的反应：戳一下 / 挥挥手 / 不反应。三连击彩蛋不受影响。
+  const clickActionSel = document.getElementById('m-clickaction');
+  clickActionSel.addEventListener('change', (e) => {
+    cfg.clickAction = ['poke', 'greet', 'none'].includes(e.target.value) ? e.target.value : 'poke';
+    if (inElectron) saveConfig({ clickAction: cfg.clickAction });
+  });
+  // 双击的反应：打招呼是这里唯一「纯粹为人」的动作，但不是每个人都想在工作时
+  // 被一只小机器人挥手。
+  const dblClickSel = document.getElementById('m-dblclick');
+  dblClickSel.addEventListener('change', (e) => {
+    cfg.doubleClick = e.target.value === 'none' ? 'none' : 'greet';
+    if (inElectron) saveConfig({ doubleClick: cfg.doubleClick });
+  });
 
   // 待机动作开关 + 频率。
   const idleSel = document.getElementById('m-idle');
@@ -1595,12 +1938,14 @@ import {
     }));
   }
   idleSel.addEventListener('change', (e) => {
+    cfg.idleActions = e.target.checked;
     pushIdle();
-    if (inElectron) saveConfig({ idleActions: e.target.checked });
+    if (inElectron) saveConfig({ idleActions: cfg.idleActions });
   });
   idlefreqSel.addEventListener('change', (e) => {
+    cfg.idleFreq = e.target.value;
     pushIdle();
-    if (inElectron) saveConfig({ idleFreq: e.target.value });
+    if (inElectron) saveConfig({ idleFreq: cfg.idleFreq });
   });
 
   // 光环样式（环形/圆形/星形/无）。
@@ -1615,13 +1960,76 @@ import {
     if (inElectron) saveConfig({ halo: e.target.value });
   });
 
+  // 设置搜索：菜单里已经五十多个控件、十个分组，记得住名字但记不住位置。
+  // 只改可见性 —— 没命中的行收起，整组没命中就收起整组；清空后恢复过滤前的
+  // 展开状态，别把用户手动展开的分组弄乱。
+  let groupsWereOpen = null;
+  function applyFind() {
+    const q = findInput.value.trim().toLowerCase();
+    menu.classList.toggle('searching', !!q);
+    const groups = [...menu.querySelectorAll('details.group')];
+    if (q && !groupsWereOpen) groupsWereOpen = new Map(groups.map((g) => [g, g.open]));
+    if (!q && groupsWereOpen) {
+      for (const [g, was] of groupsWereOpen) g.open = was;
+      groupsWereOpen = null;
+    }
+    // 一行可搜的文字：可见文本 + 输入框的占位符/无障碍标签（改名输入框的
+    // value 不是文本，只靠 textContent 会让「软件」这一组永远搜不到）。
+    const rowText = (row) => {
+      let t = row.textContent;
+      for (const el of row.querySelectorAll('input, select')) {
+        t += ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.placeholder || '');
+      }
+      return t.toLowerCase();
+    };
+    let hits = 0;
+    for (const g of groups) {
+      // 分组名或组内小标题命中时，整组都算命中：「名称」「顺序」「外观」这类
+      // 词本来就是在指一个区块，而不是某一行。
+      const groupText = `${g.querySelector('summary')?.textContent || ''} ${
+        [...g.querySelectorAll(':scope > .title')].map((t) => t.textContent).join(' ')}`.toLowerCase();
+      const groupMatch = !!q && groupText.includes(q);
+      let inGroup = 0;
+      for (const row of g.querySelectorAll('.row')) {
+        const match = !q || groupMatch || rowText(row).includes(q);
+        // 用 `.no-find` 而不是 `hidden`：后者是「是不是自定义配色」的地盘，
+        // 搜索清空时把取色器行一起放出来，它就会永远露在设置里。
+        row.classList.toggle('no-find', !!q && !match);
+        if (match) inGroup += 1;
+      }
+      g.hidden = !!q && inGroup === 0;
+      if (q && inGroup) g.open = true;
+      hits += inGroup;
+    }
+    // 分组之外的散行。现在菜单里已经没有这种行（每日目标已经归进「基础」），
+    // 但保留这条兜底：分组是手写的 HTML，下一次加控件时漏写一层 wrapper，
+    // 它至少还能被搜到，而不是永远显示在那里。
+    for (const row of menu.querySelectorAll(':scope > .row')) {
+      const match = !q || rowText(row).includes(q);
+      row.classList.toggle('no-find', !!q && !match);
+      if (match) hits += 1;
+    }
+    findEmpty.hidden = !q || hits > 0;
+  }
+  findInput.addEventListener('input', applyFind);
+  findInput.addEventListener('keydown', (e) => {
+    // Esc 在搜索框里先清空过滤；空的时候让给全局的「关菜单」。
+    if (e.key === 'Escape' && findInput.value) {
+      e.stopPropagation();
+      findInput.value = '';
+      applyFind();
+    }
+  });
+
   // 软件顺序：动态生成排序行，↑/↓ 调整软件在灯环/列表里的前后顺序。
-  function renderOrderUI() {
+  function renderOrderUI(focusAgent, focusDir) {
     const box = document.getElementById('m-order');
     box.innerHTML = '';
     agentOrder.forEach((agent, idx) => {
       const row = document.createElement('div');
       row.className = 'row';
+      // 改名时要就地更新这一行的名字（见 renderAliasUI 的 commit），不整块重建。
+      row.dataset.agent = agent;
       const label = document.createElement('span');
       label.textContent = displayName(agent);
       row.appendChild(label);
@@ -1632,7 +2040,80 @@ import {
       down.textContent = '↓'; down.disabled = idx === agentOrder.length - 1; down.onclick = () => moveAgent(agent, 1);
       row.appendChild(down);
       box.appendChild(row);
+      if (agent === focusAgent) {
+        // 整块重建会连焦点一起扔掉：键盘用户每按一次 ↑ 就得重新 Tab 回来。
+        // 把焦点还给刚操作的那一行（到顶/到底时那个按钮 disabled，就退到另一个）。
+        const target = focusDir < 0 ? up : down;
+        const other = focusDir < 0 ? down : up;
+        requestAnimationFrame(() => (target.disabled ? other : target).focus({ preventScroll: true }));
+      }
     });
+    // 两个块共用同一份 agentOrder（服务端新增软件时两边一起长出来）。
+    renderAliasUI();
+  }
+  // 软件改名：一个软件一个输入框，占位符是内置名，留空即恢复默认。
+  // 只改显示名（列表/铭牌/通知/广告牌都走 displayName），服务端上报的 agent
+  // 键不变 —— 改名不该影响任何状态匹配。
+  function renderAliasUI() {
+    const box = document.getElementById('m-alias');
+    if (!box) return;
+    box.innerHTML = '';
+    for (const agent of agentOrder) {
+      const builtin = LABEL[agent] || agent;
+      const row = document.createElement('div');
+      row.className = 'row';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.maxLength = 10;
+      input.placeholder = builtin;
+      input.value = (cfg.aliases && cfg.aliases[agent]) || '';
+      input.setAttribute('aria-label', `给「${builtin}」改名`);
+      let applied = input.value;
+      const commit = () => {
+        const v = input.value.trim().slice(0, 10);
+        if (v !== input.value) input.value = v;
+        if (v === applied) return;
+        applied = v;
+        const aliases = { ...(cfg.aliases || {}) };
+        // 改回内置名就等于没改名：删掉键，别在配置里留一条同名的无效项。
+        if (v && v !== builtin) aliases[agent] = v; else delete aliases[agent];
+        cfg.aliases = aliases;
+        if (inElectron) saveConfig({ aliases });
+        // 顺序列表里那一行的名字就地改掉：整块重建会把焦点从这个输入框上抢走。
+        for (const orderRow of document.querySelectorAll('#m-order .row')) {
+          if (orderRow.dataset.agent === agent) {
+            orderRow.querySelector('span').textContent = displayName(agent);
+            break;
+          }
+        }
+        // 立刻把新名字推到列表/铭牌：改名最怕「设置里变了、桌面上没变」。
+        if (lastSnap) render(lastSnap);
+      };
+      input.addEventListener('input', commit);
+      input.addEventListener('change', commit);
+      row.appendChild(input);
+      // 通知开关：只关这个软件的系统通知，灯/列表/铭牌照旧。
+      const bell = document.createElement('input');
+      bell.type = 'checkbox';
+      bell.className = 'notify-toggle';
+      bell.checked = !isAgentMuted(agent);
+      bell.title = `接收「${builtin}」的系统通知`;
+      bell.setAttribute('aria-label', `接收「${builtin}」的系统通知`);
+      bell.addEventListener('change', () => {
+        const next = new Set(cfg.mutedAgents || []);
+        if (bell.checked) next.delete(agent); else next.add(agent);
+        cfg.mutedAgents = [...next];
+        row.classList.toggle('muted', !bell.checked);
+        if (inElectron) saveConfig({ mutedAgents: cfg.mutedAgents });
+        // 列表的 tooltip/无障碍标签会说明「通知已关闭」，改完立刻刷新。
+        if (lastSnap) render(lastSnap);
+      });
+      row.classList.toggle('muted', !bell.checked);
+      row.appendChild(bell);
+      box.appendChild(row);
+    }
+    // 重建出来的行默认是可见的：正在搜索时要把它们也过一遍过滤。
+    applyFind();
   }
   function moveAgent(agent, dir) {
     const idx = agentOrder.indexOf(agent);
@@ -1643,9 +2124,13 @@ import {
     // 人排过之后，服务端下发的顺序不再覆盖它。
     customOrder = true;
     if (inElectron) saveConfig({ agentOrder });
-    renderOrderUI();
+    renderOrderUI(agent, dir);
     if (lastSnap) render(lastSnap);
   }
+  // 先按内置顺序画一次：浏览器模式没有 getConfig（设置面板不初始化），
+  // 不在这里画的话「软件顺序/软件名称」会是一块空白，而这些控件本身是可用的。
+  // Electron 里 config 读回来后会再画一次。
+  renderOrderUI();
 
   // 状态手势：五个状态各配一种手势（动作系统核心）。
   const POSE_NAMES = ['环抱', '举手', '泵动', '摊开', '垂放', '叉腰', '鼓掌', '托下巴', '握拳'];
@@ -1695,12 +2180,16 @@ import {
     if (cfg.voice) { lastAnnounced = ''; say('语音播报已开启'); }
   });
 
-  // 静音 1 小时：开会/专注时一键暂停通知、提示音、语音；再点一次立即恢复。
+  // 静音：开会/专注时一键暂停通知、提示音、语音；再点一次立即恢复。
+  // 时长可选 30 分钟 / 1 小时 / 2 小时 —— 开半小时的会和出两小时的门不一样。
+  const MUTE_CHOICES = { 30: '30 分钟', 60: '1 小时', 120: '2 小时' };
   const muteBtn = document.getElementById('m-mute');
+  const muteDurSel = document.getElementById('m-mutedur');
   let muteResetTimer = null;
+  const muteMinutes = () => (MUTE_CHOICES[Number(cfg.muteMinutes)] ? Number(cfg.muteMinutes) : 60);
   function refreshMuteButton() {
     const on = isMuted();
-    muteBtn.textContent = on ? '已静音 · 点击恢复' : '静音 1 小时（暂停通知/提示音）';
+    muteBtn.textContent = on ? '已静音 · 点击恢复' : `静音 ${MUTE_CHOICES[muteMinutes()]}（暂停通知与声音）`;
     // 静音中把按钮按「危险/已触发」的样子标出来，而不是一直同一副面孔。
     muteBtn.classList.toggle('danger', on);
     muteBtn.style.opacity = on ? '0.7' : '';
@@ -1709,11 +2198,16 @@ import {
       muteResetTimer = setTimeout(refreshMuteButton, Math.max(0, mutedUntil - Date.now()) + 500);
     }
   }
+  muteDurSel.addEventListener('change', (e) => {
+    cfg.muteMinutes = MUTE_CHOICES[Number(e.target.value)] ? Number(e.target.value) : 60;
+    if (inElectron) saveConfig({ muteMinutes: cfg.muteMinutes });
+    refreshMuteButton();
+  });
   muteBtn.addEventListener('click', () => {
     if (isMuted()) {
       mutedUntil = 0;
     } else {
-      mutedUntil = Date.now() + 60 * 60 * 1000;
+      mutedUntil = Date.now() + muteMinutes() * 60 * 1000;
     }
     if (inElectron) saveConfig({ mutedUntil });
     refreshMuteButton();
@@ -1729,12 +2223,77 @@ import {
   soundstyleSel.addEventListener('change', (e) => {
     cfg.soundStyle = e.target.value;
     if (inElectron) saveConfig({ soundStyle: e.target.value });
-    if (cfg.sound) cue('waiting');
+    // 试听一次新音色，但用中性的上扬音：换成「需要你」的音等于凭空报一次警，
+    // 还会占掉 2.5 秒的告警限流，把紧随其后的真实等待吞掉（和上面的开关同理）。
+    if (cfg.sound) { lastCue = 0; cue('busy'); }
   });
 
-  document.getElementById('m-click').addEventListener('change', (e) => {
-    if (inElectron) saveConfig({ clickThrough: e.target.checked });
+  // 提示音音量：config.soundVolume 一直是 cue() 真正读取的值，却从来没有入口。
+  // 0.22 在安静的桌前刚好，在放着音乐的桌上等于没有 —— 而用户无从调整。
+  const soundvolInput = document.getElementById('m-soundvol');
+  const soundvolOut = document.getElementById('m-soundvol-val');
+  const soundVolPct = (v) => Math.round(Math.max(0.05, Math.min(0.6, Number(v) || 0.22)) * 100);
+  soundvolInput.addEventListener('input', (e) => {
+    const pct = Math.max(5, Math.min(60, Number(e.target.value) || 22));
+    cfg.soundVolume = pct / 100;
+    soundvolOut.textContent = pct + '%';
   });
+  soundvolInput.addEventListener('change', () => {
+    if (inElectron) saveConfig({ soundVolume: cfg.soundVolume });
+    // 松手试听一次：音量是唯一「看不见、只能听」的设置，不试听等于没调。
+    if (cfg.sound) { lastCue = 0; cue('busy'); }
+  });
+  // 完成音：完成不是「需要你」，有人只想要灯、不想听声。打开时试听一下完成音，
+  // 否则用户根本不知道这一项关掉的是什么。
+  const soundDoneInput = document.getElementById('m-sounddone');
+  soundDoneInput.addEventListener('change', (e) => {
+    cfg.soundDone = e.target.checked;
+    if (inElectron) saveConfig({ soundDone: cfg.soundDone });
+    if (cfg.sound && cfg.soundDone) { lastCue = 0; cue('done'); }
+  });
+  // 「完成」通知与「完成」音是两回事：有人要灯要声、不要通知，有人反过来。
+  const notifyDoneInput = document.getElementById('m-notifydone');
+  notifyDoneInput.addEventListener('change', (e) => {
+    cfg.notifyDone = e.target.checked;
+    if (inElectron) saveConfig({ notifyDone: cfg.notifyDone });
+  });
+  document.getElementById('m-click').addEventListener('change', (e) => {
+    // 内存里的 cfg 也要跟着走：只写盘的控件会让「导出配置」导出一份旧值。
+    cfg.clickThrough = e.target.checked;
+    if (inElectron) saveConfig({ clickThrough: cfg.clickThrough });
+  });
+
+  // 开机自启：真正的安装由 server（node 进程）完成，主进程只代发一条带 token
+  // 的本地请求 —— 在 Electron 里装会把启动项写成 Electron 可执行文件。
+  // 它是机器状态而不是配置，所以不进 config / 导出文件。
+  const autostartInput = document.getElementById('m-autostart');
+  function refreshAutostart() {
+    if (!inElectron || !bridge.getAutostart) return;
+    bridge.getAutostart().then((st) => {
+      if (st && !st.error) autostartInput.checked = !!st.enabled;
+    }).catch(() => { /* 服务没起来：保持原样 */ });
+  }
+  if (!inElectron || !bridge.getAutostart) {
+    autostartInput.disabled = true;
+    autostartInput.title = '只在桌面版可用';
+  } else {
+    refreshAutostart();
+    autostartInput.addEventListener('change', async () => {
+      const want = autostartInput.checked;
+      autostartInput.disabled = true;
+      try {
+        const st = await bridge.setAutostart(want);
+        if (!st || st.error) throw new Error(st && st.error);
+        autostartInput.checked = !!st.enabled;
+        flashNote(st.enabled ? '已开启开机自启' : '已关闭开机自启');
+      } catch {
+        autostartInput.checked = !want;   // 安装失败就把勾回去，别骗人
+        flashNote('开机自启设置失败');
+      } finally {
+        autostartInput.disabled = false;
+      }
+    });
+  }
   document.getElementById('m-labels').addEventListener('change', (e) => {
     cfg.showLabels = e.target.checked;
     if (inElectron) saveConfig({ showLabels: cfg.showLabels });
@@ -1763,6 +2322,15 @@ import {
   maxrowsSel.addEventListener('change', (e) => {
     cfg.maxRows = Number(e.target.value);
     if (inElectron) saveConfig({ maxRows: cfg.maxRows });
+    if (lastSnap) render(lastSnap);
+  });
+
+  // 每日目标（0 = 关闭）：只影响「今日战绩」里的进度条和达成提醒，不参与任何
+  // 状态判断 —— 达成了也不会把灯变绿，绿只代表「正在运行」。
+  const goalSel = document.getElementById('m-goal');
+  goalSel.addEventListener('change', (e) => {
+    cfg.dailyGoalHours = Number(e.target.value) || 0;
+    if (inElectron) saveConfig({ dailyGoalHours: cfg.dailyGoalHours });
     if (lastSnap) render(lastSnap);
   });
 
@@ -1805,6 +2373,25 @@ import {
     if (inElectron) saveConfig({ showSys: cfg.showSys });
     if (cfg.showSys) pollSys(); else renderSys(null);
   });
+
+  // 菜单底部两块面板的可见性：纯显示开关。不关心战绩/动态的用户收起它们，
+  // 菜单短一截；对状态、灯、通知没有任何影响。
+  const panelScore = document.getElementById('panel-score');
+  const panelRecent = document.getElementById('panel-recent');
+  const scorePanelInput = document.getElementById('m-score-panel');
+  const recentPanelInput = document.getElementById('m-recent-panel');
+  scorePanelInput.addEventListener('change', (e) => {
+    cfg.showScore = e.target.checked;
+    panelScore.hidden = !e.target.checked;
+    if (inElectron) saveConfig({ showScore: cfg.showScore });
+    fit();
+  });
+  recentPanelInput.addEventListener('change', (e) => {
+    cfg.showRecent = e.target.checked;
+    panelRecent.hidden = !e.target.checked;
+    if (inElectron) saveConfig({ showRecent: cfg.showRecent });
+    fit();
+  });
   // 定时勿扰：开关与两个时间都立即生效并落盘。改时间后立刻重算一次边界。
   document.getElementById('m-dnd').addEventListener('change', (e) => {
     cfg.doNotDisturb = e.target.checked;
@@ -1827,7 +2414,7 @@ import {
     skin: '做旧黄', eyestyle: '默认黑', eyeshape: '圆', trackstyle: '黑', tracktype: '圆角矩形',
     armskin: '枪灰', claw: '铲形', armtype: '双板', headtype: '双筒', scene: '无',
     motion: '标准', halo: '环形', body: '标准', baseEffect: '状态色', brightness: 1,
-    decoration: '无',
+    decoration: '无', wear: 1, finish: '标准',
     poses: { error: '环抱', waiting: '举手', busy: '泵动', done: '摊开', idle: '垂放' },
   };
   // 把一套外观即时套用到界面（不整页刷新）：逐个设置控件值并触发 change，
@@ -1835,11 +2422,16 @@ import {
   function applyLook(look) {
     if (inElectron) saveConfig(look);
     Object.assign(cfg, look);
+    // 自定义颜色要先于对应下拉的 change 就位：change 会立刻按取色器上色。
+    for (const p of PARTS) {
+      const v = normHex(look[p.configKey]);
+      if (v) p.input.value = v;
+    }
     const sets = {
       skin: skinSel, eyestyle: eyestyleSel, eyeshape: eyeshapeSel, trackstyle: trackstyleSel,
       tracktype: tracktypeSel, armskin: armskinSel, claw: clawSel, armtype: armtypeSel,
       headtype: headtypeSel, scene: sceneSel, motion: motionSel, halo: haloSel, body: bodySel,
-      baseEffect: effectSel, decoration: decorationSel,
+      baseEffect: effectSel, decoration: decorationSel, finish: finishSel,
     };
     for (const [k, sel] of Object.entries(sets)) {
       if (look[k] != null && [...sel.options].some((o) => o.value === String(look[k]))) {
@@ -1856,6 +2448,12 @@ import {
       document.getElementById('m-brightness').value = String(v);
       document.getElementById('m-brightness-val').textContent = v + '%';
       window.dispatchEvent(new CustomEvent('bao:brightness', { detail: { brightness: v / 100 } }));
+    }
+    // 做旧程度是滑杆而不是下拉，和亮度一样单独处理：先落到界面，再派发。
+    if (typeof look.wear === 'number') {
+      const v = Math.round(Math.max(0, Math.min(1.5, look.wear)) * 100);
+      wearInput.value = String(v);
+      pushWear();
     }
   }
 
@@ -1878,19 +2476,22 @@ import {
   const presetList = document.getElementById('m-preset-list');
   const presetName = document.getElementById('m-preset-name');
   const LOOK_KEYS = ['skin', 'eyestyle', 'eyeshape', 'trackstyle', 'tracktype', 'armskin',
-    'claw', 'armtype', 'headtype', 'scene', 'motion', 'halo', 'body', 'baseEffect', 'brightness', 'decoration'];
+    'claw', 'armtype', 'headtype', 'scene', 'motion', 'halo', 'body', 'baseEffect', 'brightness',
+    'decoration', 'finish'];
   function currentLook() {
     const poses = {};
     for (const st of POSE_STATE_KEYS) poses[st] = poseSels[st].value;
     const brightness = Math.max(0.5, Math.min(1, Number(document.getElementById('m-brightness').value) / 100));
-    const look = { poses, brightness };
+    const look = { poses, brightness, wear: wearValue() };
     const dom = {
       skin: skinSel, eyestyle: eyestyleSel, eyeshape: eyeshapeSel, trackstyle: trackstyleSel,
       tracktype: tracktypeSel, armskin: armskinSel, claw: clawSel, armtype: armtypeSel,
       headtype: headtypeSel, scene: sceneSel, motion: motionSel, halo: haloSel, body: bodySel,
-      baseEffect: effectSel, decoration: decorationSel,
+      baseEffect: effectSel, decoration: decorationSel, finish: finishSel,
     };
     for (const k of LOOK_KEYS) if (dom[k]) look[k] = dom[k].value;
+    // 方案也要记住自定义颜色本身，否则存下「自定义」却存不下「是什么颜色」。
+    for (const p of PARTS) if (p.sel.value === CUSTOM) look[p.configKey] = p.hex();
     return look;
   }
   // 把「只在界面上」的值同步回内存里的 cfg。
@@ -1898,17 +2499,42 @@ import {
   // 只写盘、不回写 cfg，于是「导出配置」导出的是**启动时**的旧值 —— 用户改过的
   // 设置导入回来会静默消失，而这正是导出功能存在的意义。
   function syncCfg() {
+    // 外观类下拉的 handler 只写盘、不回写 cfg（见上方注释）。整组从界面读回来，
+    // 否则「本次运行改成 Q 版 / 换了皮肤」后点导出，文件里还是启动时的旧值。
+    Object.assign(cfg, currentLook());
     cfg.scale = scale;
-    const bEl = document.getElementById('m-brightness');
-    if (bEl) cfg.brightness = Number(bEl.value) / 100;
     cfg.nameplate = nameplateInput.value;
+    // 台词从界面读回来（空串 = 用内置），否则导出的是启动时的那几句。
+    cfg.phrases = {};
+    for (const st of PHRASE_STATES) {
+      const v = document.getElementById('m-phrase-' + st).value;
+      cfg.phrases[st] = String(v || '').replace(/\s+/g, ' ').trim().slice(0, PHRASE_MAX);
+    }
     cfg.clickThrough = document.getElementById('m-click').checked;
     cfg.idleActions = idleSel.checked;
     cfg.idleFreq = idlefreqSel.value;
     cfg.signMode = SIGN_MODES[signSel.value] || cfg.signMode;
     cfg.signPos = SIGN_POS[signPosSel.value] || cfg.signPos;
-    cfg.signColor = SIGN_COLORS[signColorSel.value] || cfg.signColor;
+    cfg.signColor = signColorValue();
+    // 只有取色器真的在用时才更新「上次挑的色」。否则导出会把当前生效的调色板
+    // 颜色写进 customSign，用户的自定义色就再也回不来了。
+    if (signColorSel.value === CUSTOM) cfg.customSign = normHex(signCustomInput.value) || cfg.customSign;
     cfg.signShape = SIGN_SHAPES[signShapeSel.value] || cfg.signShape;
+    // 取色器里的颜色即使当前没选「自定义」也要记住：用户切回自定义时应当
+    // 看到自己上次调的那个色，而不是出厂色。
+    for (const p of PARTS) cfg[p.configKey] = p.hex();
+    cfg.dailyGoalHours = Number(goalSel.value) || 0;
+    cfg.clickAction = clickActionSel.value || 'poke';
+    cfg.doubleClick = dblClickSel.value === 'none' ? 'none' : 'greet';
+    cfg.soundDone = soundDoneInput.checked;
+    cfg.notifyDone = notifyDoneInput.checked;
+    cfg.muteMinutes = muteMinutes();
+    cfg.showSys = document.getElementById('m-sys').checked;
+    cfg.showScore = scorePanelInput.checked;
+    cfg.showRecent = recentPanelInput.checked;
+    cfg.doNotDisturb = document.getElementById('m-dnd').checked;
+    cfg.dndStart = document.getElementById('m-dnd-start').value || cfg.dndStart;
+    cfg.dndEnd = document.getElementById('m-dnd-end').value || cfg.dndEnd;
     cfg.agentOrder = [...agentOrder];
     cfg.personality = cfg.personality || document.body.dataset.personality;
     return cfg;
@@ -1929,11 +2555,15 @@ import {
   document.getElementById('m-preset-save').onclick = () => {
     const name = presetName.value.trim().slice(0, 12);
     if (!name) return;
+    const existed = Object.prototype.hasOwnProperty.call(cfg.presets || {}, name);
     cfg.presets = { ...(cfg.presets || {}), [name]: currentLook() };
     if (inElectron) saveConfig({ presets: cfg.presets });
     renderPresetList();
     presetList.value = name;
     presetName.value = '';
+    // 同名直接覆盖是这里唯一的行为，但必须说出来：否则用户以为「又存了一套」，
+    // 而旧方案已经没了、并且已落盘 —— 没有任何可撤销的地方。
+    flashNote(existed ? `已覆盖方案「${name}」` : `已保存方案「${name}」`);
   };
   document.getElementById('m-preset-apply').onclick = () => {
     const look = (cfg.presets || {})[presetList.value];
@@ -1982,14 +2612,146 @@ import {
     if (inElectron) saveConfig({ nameplate: e.target.value });
   });
 
+  // ---- 台词：气泡与语音共用同一句 -----------------------------------------
+  // 只给三种「要人处理」的状态开入口。busy / idle 冒泡是噪音而不是台词，
+  // 让用户去自定义噪音只会让这台机器更难懂。
+  const pushPhrase = (state) => {
+    window.dispatchEvent(new CustomEvent('bao:phrase', { detail: { state, text: phraseOf(state) } }));
+  };
+  for (const state of PHRASE_STATES) {
+    const input = document.getElementById('m-phrase-' + state);
+    // 空白折成一个空格：台词是要显示在一张小气泡上的，换行和连串空格都会
+    // 变成一块看不懂的黑斑。截断用 PHRASE_MAX，和气泡的自适应字号对齐。
+    const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, PHRASE_MAX);
+    // 边打边预览：气泡立刻换成这句话，不必等失焦。
+    input.addEventListener('input', (e) => {
+      window.dispatchEvent(new CustomEvent('bao:phrase', { detail: { state, text: clean(e.target.value) } }));
+    });
+    input.addEventListener('change', (e) => {
+      const text = clean(e.target.value);
+      e.target.value = text;
+      cfg.phrases = { ...(cfg.phrases || {}), [state]: text };
+      if (inElectron) saveConfig({ phrases: cfg.phrases });
+      pushPhrase(state);
+    });
+  }
+  document.getElementById('m-phrase-try').onclick = () => {
+    // 读输入框而不是 cfg：用户刚打完字还没失焦时，cfg 还是上一句。
+    const typed = String(document.getElementById('m-phrase-waiting').value || '').replace(/\s+/g, ' ').trim();
+    const text = typed.slice(0, PHRASE_MAX) || TXT.waiting;
+    // 走「临时提示」通道：不改变任何真实状态，也不占用告警限流。
+    window.dispatchEvent(new CustomEvent('bao:say', { detail: { text } }));
+    say(text);
+  };
+  document.getElementById('m-phrase-reset').onclick = () => {
+    cfg.phrases = { waiting: '', error: '', done: '' };
+    for (const state of PHRASE_STATES) {
+      document.getElementById('m-phrase-' + state).value = '';
+      pushPhrase(state);
+    }
+    if (inElectron) saveConfig({ phrases: cfg.phrases });
+  };
+
   // 配置导出/导入：把当前自定义导出为 JSON 文件，导入后整页重载应用。
   // 导出要覆盖「设置」里的每一类自定义，否则导入回来会静默丢项：
   // 之前就漏了列表显示（是否显示未运行/模型/行数）、外观方案和语音播报。
   const EXPORT_KEYS = ['scale', 'brightness', 'baseEffect', 'body', 'theme', 'skin', 'eyestyle', 'trackstyle',
     'tracktype', 'armskin', 'claw', 'armtype', 'headtype', 'eyeshape', 'scene', 'motion',
-    'idleActions', 'idleFreq', 'halo', 'agentOrder', 'poses', 'nameplate', 'sound', 'soundStyle',
-    'voice', 'clickThrough', 'showLabels', 'showOffline', 'showModel', 'maxRows',
-    'presets', 'signMode', 'signPos', 'signColor', 'signShape', 'decoration'];
+    'idleActions', 'idleFreq', 'halo', 'agentOrder', 'poses', 'phrases', 'nameplate', 'sound', 'soundStyle',
+    'soundVolume', 'soundDone', 'notifyDone', 'dailyGoalHours', 'clickAction', 'doubleClick', 'muteMinutes', 'wear', 'finish',
+    'voice', 'clickThrough', 'showLabels', 'showOffline', 'showModel', 'maxRows', 'showSys',
+    'showScore', 'showRecent', 'doNotDisturb', 'dndStart', 'dndEnd', 'customSkin', 'customEye', 'customTrack', 'customArm',
+    'customSign', 'presets', 'aliases', 'mutedAgents', 'signMode', 'signPos', 'signColor', 'signShape', 'decoration'];
+  // "HH:MM"（24 小时制）。勿扰时间是要拿去和当前时间比较的，一个随手写的
+  // "abc" 会让整段时间静默失效：界面显示「已开启」，而那段时间永远不会来。
+  const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+  // 导入的是别人给的文件，不能假设类型正确：一条 "scale": 1e9、一个列表里混进
+  // 数字、或者十万字的铭牌，都能把布局撑坏，而 reload 之后没有撤销按钮。
+  // 所以按已知键逐个归一化，坏值直接丢弃（保留当前设置），绝不原样落盘。
+  function sanitizeImport(data) {
+    const out = {};
+    for (const k of EXPORT_KEYS) {
+      const v = data[k];
+      if (v === undefined) continue;
+      // 台词是对象：必须先拦下，否则下面「长度 ≤ 64 的字符串」那条通用分支
+      // 会把一个 "phrases": "x" 当成合法值收下，气泡那边再去读字符串的字段。
+      // 只收三个已知状态键，顺手挡掉 __proto__ 之类的脏键。
+      if (k === 'phrases') {
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+          const map = {};
+          for (const st of PHRASE_STATES) {
+            const s = v[st];
+            if (typeof s !== 'string') continue;
+            const text = s.replace(/\s+/g, ' ').trim().slice(0, PHRASE_MAX);
+            if (text) map[st] = text;
+          }
+          out[k] = map;
+        }
+        continue;
+      }
+      if (typeof v === 'boolean') out[k] = v;
+      else if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+      else if (typeof v === 'string' && v.length <= 64) out[k] = v;
+      else if (Array.isArray(v) && v.length <= 32
+        && v.every((x) => typeof x === 'string' && x.length <= 64)) out[k] = v;
+      else if (k === 'poses' && v && typeof v === 'object' && !Array.isArray(v)
+        && Object.values(v).every((x) => typeof x === 'string' && x.length <= 16)) out[k] = v;
+      else if (k === 'presets' && v && typeof v === 'object' && !Array.isArray(v)
+        && JSON.stringify(v).length <= 20000) out[k] = v;
+      else if (k === 'aliases' && v && typeof v === 'object' && !Array.isArray(v)) {
+        // 只收「agent 键 → 短名字」，并重新建一个干净对象：不把文件里的
+        // __proto__ / constructor 之类的键原样带进配置。
+        const map = {};
+        for (const [agent, name] of Object.entries(v)) {
+          if (agent === '__proto__' || !/^[\w-]{1,32}$/.test(agent)) continue;
+          if (typeof name !== 'string' || !name.trim()) continue;
+          map[agent] = name.trim().slice(0, 10);
+        }
+        out[k] = map;
+      }
+    }
+    // 长度上限挡不住 1e9：数值与颜色再夹一次。
+    if (out.scale !== undefined) out.scale = Math.max(0.7, Math.min(1.7, out.scale));
+    if (out.brightness !== undefined) out.brightness = Math.max(0.5, Math.min(1, out.brightness));
+    if (out.soundVolume !== undefined) out.soundVolume = Math.max(0.05, Math.min(0.6, out.soundVolume));
+    // 目标只能是下拉里那几档：别的值界面上表示不出来。
+    if (out.dailyGoalHours !== undefined) {
+      out.dailyGoalHours = [0, 2, 4, 6, 8].includes(out.dailyGoalHours) ? out.dailyGoalHours : 0;
+    }
+    if (out.clickAction !== undefined) {
+      out.clickAction = ['poke', 'greet', 'none'].includes(out.clickAction) ? out.clickAction : 'poke';
+    }
+    if (out.doubleClick !== undefined) {
+      out.doubleClick = out.doubleClick === 'none' ? 'none' : 'greet';
+    }
+    if (out.muteMinutes !== undefined) {
+      out.muteMinutes = [30, 60, 120].includes(out.muteMinutes) ? out.muteMinutes : 60;
+    }
+    if (out.finish !== undefined) {
+      out.finish = FINISH_NAMES.includes(out.finish) ? out.finish : '标准';
+    }
+    if (out.wear !== undefined) out.wear = Math.max(0, Math.min(1.5, out.wear));
+    // 行数是下拉里 2–8 那几档，超出范围会让列表被裁掉或多出空行。
+    if (out.maxRows !== undefined) {
+      const n = Math.round(out.maxRows);
+      out.maxRows = n >= 2 && n <= 8 ? n : 4;
+    }
+    // 勿扰时间必须是真时间：写不出 HH:MM 就整条丢掉（保留当前设置），
+    // 而不是存一个让这段静音永远不触发的字符串。
+    for (const k of ['dndStart', 'dndEnd']) {
+      if (out[k] === undefined) continue;
+      if (!TIME_RE.test(out[k])) delete out[k];
+    }
+    // 铭牌在机器人身上只画得下 16 个字（robot3d 会硬截断）。这里就截到同一个
+    // 长度，否则设置里看到的和机器人身上写的永远不是同一句话。
+    if (out.nameplate !== undefined) out.nameplate = out.nameplate.slice(0, 16);
+    for (const k of ['customSkin', 'customEye', 'customTrack', 'customArm', 'customSign', 'signColor']) {
+      if (out[k] === undefined) continue;
+      const hex = normHex(out[k]);
+      if (hex) out[k] = hex; else delete out[k];
+    }
+    return out;
+  }
   document.getElementById('m-export').onclick = () => {
     syncCfg();
     const data = {};
@@ -2009,18 +2771,28 @@ import {
   document.getElementById('m-import-file').addEventListener('change', (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
+    // 配置文件本该只有几 KB。一个几百 MB 的 JSON 会在主线程上解析到窗口假死，
+    // 而这里没有「取消」按钮 —— 直接拒绝，比让用户等一个卡死的窗口好。
+    if (file.size > 256 * 1024) {
+      e.target.value = '';
+      flashNote('导入失败：文件过大（限 256KB）');
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       try {
         const data = JSON.parse(String(reader.result));
         // 只接受已知的外观键：挡住 __proto__ / window 之类的脏键，避免污染配置。
-        const clean = {};
-        for (const k of EXPORT_KEYS) if (data[k] !== undefined) clean[k] = data[k];
+        const clean = sanitizeImport(data);
         Object.assign(cfg, clean);
         // 立刻落盘：下一行就是 reload，延迟写会被丢掉。
         if (inElectron) saveConfig(clean, { flush: true });
         location.reload();   // 重新加载，getConfig 会按新配置逐项应用
-      } catch { /* 坏文件：静默忽略 */ }
+      } catch {
+        // 坏文件不能静默：文件选择框一闪而过，用户分不清是「文件不对」还是
+        // 「按钮没反应」，而这两件事的下一步动作完全不同。
+        flashNote('导入失败：不是有效的配置文件');
+      }
     };
     reader.readAsText(file);
     e.target.value = '';
@@ -2040,8 +2812,11 @@ import {
     if (e.button !== 0) return;
     if (e.target.closest('button, input, .pill')) return;
     pressAt = Date.now();
-    pressX = e.clientX;
-    pressY = e.clientY;
+    // 用**屏幕坐标**判断「松手时有没有移动过」。窗口是跟着光标走的，所以拖动
+    // 机器人时 clientX/clientY 几乎不变 —— 拿它判断的话，每次拖拽都会被当成
+    // 「戳一下」，顺手把当前这次告警静音掉。
+    pressX = e.screenX;
+    pressY = e.screenY;
     // 长按 1 秒触发「安抚」；松手（endDrag）会清掉这个计时器。
     clearTimeout(comfortTimer);
     comfortTimer = setTimeout(() => {
@@ -2067,18 +2842,22 @@ import {
     }
     // A press that never became a drag is a poke: he looks up and hops once.
     // A threshold rather than a click listener, because a click never arrives
-    // once the window has been dragged across the desk.
+    // once the window has been dragged across the desk. 比较屏幕坐标（见 press
+    // 处注释）：窗口跟着光标走时，相对坐标是骗人的。
     if (e && e.type === 'pointerup' && pressAt &&
         Date.now() - pressAt < 400 &&
-        Math.hypot(e.clientX - pressX, e.clientY - pressY) < 5) {
+        Math.hypot(e.screenX - pressX, e.screenY - pressY) < 5) {
       // 三连击彩蛋：原地抓狂（快速转圈 + 抖动）；否则就是普通戳一下。
       const now = Date.now();
       pokeTimes = pokeTimes.filter((x) => now - x < 900);
       pokeTimes.push(now);
       if (pokeTimes.length >= 3) {
+        // 三连击彩蛋不受「点击反应」影响：那是一个刻意的隐藏动作，不是一次点击。
         pokeTimes = [];
         window.dispatchEvent(new CustomEvent('bao:crazy'));
-      } else {
+      } else if (cfg.clickAction === 'greet') {
+        window.dispatchEvent(new CustomEvent('bao:greet'));
+      } else if (cfg.clickAction !== 'none') {
         window.dispatchEvent(new CustomEvent('bao:poke'));
       }
     }
@@ -2090,6 +2869,12 @@ import {
   window.addEventListener('pointercancel', endDrag);
   document.addEventListener('lostpointercapture', endDrag);
   window.addEventListener('blur', endDrag);
+  // 按下后真的移动了（拖窗口）就取消长按安抚：否则按住拖过 1 秒，机器人会在
+  // 被搬动的过程中突然眯眼+抖动（安抚的抖动叠在位移上），像卡住了一样。
+  window.addEventListener('pointermove', (e) => {
+    if (!pressAt || !e.buttons) return;
+    if (Math.hypot(e.screenX - pressX, e.screenY - pressY) > 5) clearTimeout(comfortTimer);
+  });
 
   // A double click is a greeting, not a command: both arms up for two seconds.
   // It is the only interaction here that is purely for the human, which is the
@@ -2097,6 +2882,7 @@ import {
   // the arms already exist.
   robot.addEventListener('dblclick', (e) => {
     if (e.target.closest('button, input, .pill')) return;
+    if (cfg.doubleClick === 'none') return;
     window.dispatchEvent(new CustomEvent('bao:greet'));
   });
 
@@ -2106,11 +2892,19 @@ import {
     setCollapsed(!collapsed);
     if (inElectron) saveConfig({ collapsed });
   };
-  document.getElementById('btn-theme').onclick = () => {
-    cfg.theme = cfg.theme === 'mini' ? 'full' : 'mini';
+  // 尺寸模式：工具栏里那个图标按钮和设置里的下拉必须是同一个开关（按钮标题只
+  // 写「切换尺寸」，很多人不知道它切的是什么）。两处都走 setThemeMode。
+  const themeModeSel = document.getElementById('m-thememode');
+  const setThemeMode = (mode, { persist = false } = {}) => {
+    cfg.theme = mode === 'mini' ? 'mini' : 'full';
     document.body.dataset.theme = cfg.theme;
-    if (inElectron) saveConfig({ theme: cfg.theme });
+    themeModeSel.value = cfg.theme;
+    if (persist && inElectron) saveConfig({ theme: cfg.theme });
     fit();
+  };
+  themeModeSel.addEventListener('change', (e) => setThemeMode(e.target.value, { persist: true }));
+  document.getElementById('btn-theme').onclick = () => {
+    setThemeMode(cfg.theme === 'mini' ? 'full' : 'mini', { persist: true });
   };
 
   if (inElectron) {
@@ -2130,38 +2924,92 @@ import {
         cfg.personality = PERSONALITIES[Math.floor(Math.random() * PERSONALITIES.length)];
         saveConfig({ personality: cfg.personality });
       }
+      // 软件改名：只保留短字符串，脏值（手改配置、旧版本导入、空名字）丢掉。
+      const rawAliases = cfg.aliases && typeof cfg.aliases === 'object' && !Array.isArray(cfg.aliases)
+        ? cfg.aliases : {};
+      const cleanAliases = {};
+      for (const [agent, name] of Object.entries(rawAliases)) {
+        if (agent === '__proto__') continue;
+        if (typeof name === 'string' && name.trim()) cleanAliases[agent] = name.trim().slice(0, 10);
+      }
+      cfg.aliases = cleanAliases;
+      // 通知开关名单：只收合法的 agent 键，去重。手改配置塞进来的脏值丢掉。
+      cfg.mutedAgents = Array.isArray(cfg.mutedAgents)
+        ? [...new Set(cfg.mutedAgents.filter((a) => typeof a === 'string' && /^[\w-]{1,32}$/.test(a)))]
+        : [];
       document.body.dataset.personality = cfg.personality;
-      document.body.dataset.theme = cfg.theme === 'mini' ? 'mini' : 'full';
+      setThemeMode(cfg.theme);
       setCollapsed(!!cfg.collapsed);
+      goalSel.value = String([0, 2, 4, 6, 8].includes(Number(cfg.dailyGoalHours)) ? Number(cfg.dailyGoalHours) : 0);
       document.getElementById('m-sound').checked = !!cfg.sound;
+      const sv = soundVolPct(cfg.soundVolume);
+      soundvolInput.value = String(sv);
+      soundvolOut.textContent = sv + '%';
       document.getElementById('m-voice').checked = !!cfg.voice;
       mutedUntil = Number(cfg.mutedUntil) || 0;
+      muteDurSel.value = String(muteMinutes());
       refreshMuteButton();
       if (SOUND_STYLES[cfg.soundStyle]) soundstyleSel.value = cfg.soundStyle;
+      soundDoneInput.checked = cfg.soundDone !== false;
+      notifyDoneInput.checked = cfg.notifyDone !== false;
       document.getElementById('m-click').checked = cfg.clickThrough !== false;
       document.getElementById('m-labels').checked = cfg.showLabels !== false;
       document.getElementById('m-offline').checked = cfg.showOffline !== false;
       document.getElementById('m-model').checked = cfg.showModel !== false;
       document.getElementById('m-sys').checked = cfg.showSys !== false;
       if (cfg.showSys === false) renderSys(null);
+      scorePanelInput.checked = cfg.showScore !== false;
+      panelScore.hidden = cfg.showScore === false;
+      recentPanelInput.checked = cfg.showRecent !== false;
+      panelRecent.hidden = cfg.showRecent === false;
       document.getElementById('m-dnd').checked = !!cfg.doNotDisturb;
-      document.getElementById('m-dnd-start').value = cfg.dndStart || '22:00';
-      document.getElementById('m-dnd-end').value = cfg.dndEnd || '08:00';
+      // 手改过的配置里可能是一个写不出 HH:MM 的值。直接塞进 input[type=time]
+      // 会得到一个空框，而空框让这段勿扰永远不生效 —— 回落到出厂时段更诚实。
+      document.getElementById('m-dnd-start').value = TIME_RE.test(cfg.dndStart) ? cfg.dndStart : '22:00';
+      document.getElementById('m-dnd-end').value = TIME_RE.test(cfg.dndEnd) ? cfg.dndEnd : '08:00';
       applyDnd();
       maxrowsSel.value = String(Math.max(2, Math.min(8, Number(cfg.maxRows) || 4)));
       renderPresetList();
-      nameplateInput.value = cfg.nameplate || '';
-      if (cfg.nameplate) window.dispatchEvent(new CustomEvent('bao:nameplate', { detail: { text: cfg.nameplate } }));
+      // 铭牌最长 16 个字（3D 那边画不下更多）。配置里更长时在这里就截断，
+      // 界面和机器人身上才不会写着两句不一样的话。
+      nameplateInput.value = String(cfg.nameplate || '').slice(0, 16);
+      if (cfg.nameplate) window.dispatchEvent(new CustomEvent('bao:nameplate', { detail: { text: nameplateInput.value } }));
+      // 台词：把配置里的值归一化后再交出去。手改配置写进来的超长串、非字符串、
+      // 或者夹着换行的句子，都会在气泡上变成一块看不懂的黑斑。
+      cfg.phrases = cfg.phrases && typeof cfg.phrases === 'object' ? cfg.phrases : {};
+      for (const st of PHRASE_STATES) {
+        const raw = typeof cfg.phrases[st] === 'string' ? cfg.phrases[st] : '';
+        cfg.phrases[st] = raw.replace(/\s+/g, ' ').trim().slice(0, PHRASE_MAX);
+        document.getElementById('m-phrase-' + st).value = cfg.phrases[st];
+        pushPhrase(st);
+      }
       const b = Math.max(0.5, Math.min(1, cfg.brightness ?? 1));
       document.getElementById('m-brightness').value = String(Math.round(b * 100));
       document.getElementById('m-brightness-val').textContent = Math.round(b * 100) + '%';
       window.dispatchEvent(new CustomEvent('bao:brightness', { detail: { brightness: b } }));
+      // 材质：做旧程度 0–1.5，质感三档。脏值一律回出厂（1 / 标准）。
+      const wr = Number(cfg.wear);
+      wearInput.value = String(Math.round((Number.isFinite(wr) ? Math.max(0, Math.min(1.5, wr)) : 1) * 100));
+      pushWear();
+      const fn = FINISH_NAMES.includes(cfg.finish) ? cfg.finish : '标准';
+      finishSel.value = fn;
+      window.dispatchEvent(new CustomEvent('bao:finish', { detail: { finish: fn } }));
       const sm = ['top', 'total', 'cycle', 'off'].includes(cfg.signMode) ? cfg.signMode : 'top';
       signSel.value = Object.keys(SIGN_MODES).find((k) => SIGN_MODES[k] === sm) || '最多';
       const sp = cfg.signPos === 'left' ? 'left' : 'right';
       signPosSel.value = Object.keys(SIGN_POS).find((k) => SIGN_POS[k] === sp) || '右侧';
-      const scol = cfg.signColor || '#ffd54a';
-      signColorSel.value = Object.keys(SIGN_COLORS).find((k) => SIGN_COLORS[k] === scol) || '金色';
+      // 牌面颜色：先认调色板里的名字，认不出但仍是合法十六进制就落到「自定义」
+      // 并填进取色器（不再像上一版那样强行改成金色，把用户挑的颜色丢掉）。
+      // 取色器要恢复成**上次挑的那个自定义色**（customSign），而不是当前生效的
+      // 牌面色：后者可能是一个调色板颜色，填进去就等于把用户自己的色覆盖掉，
+      // 于是「切回自定义用上次挑的色」这句承诺永远不会兑现。
+      const signHex = normHex(cfg.signColor);
+      const lastCustom = normHex(cfg.customSign) || signHex || SIGN_COLORS['金色'];
+      signColorSel.value = Object.keys(SIGN_COLORS).find((k) => SIGN_COLORS[k] === cfg.signColor)
+        || (signHex ? CUSTOM : '金色');
+      signCustomInput.value = signColorSel.value === CUSTOM ? (signHex || lastCustom) : lastCustom;
+      signCustomRow.hidden = signColorSel.value !== CUSTOM;
+      const scol = signColorValue();
       const sh = ['圆角', '胶囊', '方正'].includes(cfg.signShape) ? cfg.signShape : '圆角';
       signShapeSel.value = sh;
       window.dispatchEvent(new CustomEvent('bao:sign', { detail: { mode: sm, pos: sp, color: scol, shape: sh } }));
@@ -2171,22 +3019,20 @@ import {
       const eff = EFFECT_NAMES.includes(cfg.baseEffect) ? cfg.baseEffect : '状态色';
       effectSel.value = eff;
       window.dispatchEvent(new CustomEvent('bao:effect', { detail: { effect: eff } }));
-      const sk = SKIN_NAMES.includes(cfg.skin) ? cfg.skin : '做旧黄';
-      skinSel.value = sk;
-      window.dispatchEvent(new CustomEvent('bao:skin', { detail: { skin: sk } }));
+      // 四个部位的配色：自定义色必须是合法十六进制，否则回落到出厂固定色 ——
+      // 配置里只留下「自定义」这个名字而没有颜色时，界面不能停在一个渲染不出来
+      // 的状态（那正是上一版只存名字不存颜色的样子）。
+      for (const p of PARTS) {
+        const custom = normHex(cfg[p.configKey]);
+        if (custom) p.input.value = custom;
+        const fixed = p.options.includes(cfg[p.detailKey]) ? cfg[p.detailKey] : p.options[0];
+        p.sel.value = cfg[p.detailKey] === CUSTOM && custom ? CUSTOM : fixed;
+        p.apply();
+      }
       // 主题下拉由 syncThemeLabel 在所有配色就位后自动判定（匹配主题或「自定义」）。
-      const es = EYESTYLE_NAMES.includes(cfg.eyestyle) ? cfg.eyestyle : '默认黑';
-      eyestyleSel.value = es;
-      window.dispatchEvent(new CustomEvent('bao:eyestyle', { detail: { eyestyle: es } }));
-      const ts = TRACKSTYLE_NAMES.includes(cfg.trackstyle) ? cfg.trackstyle : '黑';
-      trackstyleSel.value = ts;
-      window.dispatchEvent(new CustomEvent('bao:trackstyle', { detail: { trackstyle: ts } }));
       const tt = TRACKTYPE_NAMES.includes(cfg.tracktype) ? cfg.tracktype : '圆角矩形';
       tracktypeSel.value = tt;
       window.dispatchEvent(new CustomEvent('bao:tracktype', { detail: { tracktype: tt } }));
-      const ask = ARMSKIN_NAMES.includes(cfg.armskin) ? cfg.armskin : '枪灰';
-      armskinSel.value = ask;
-      window.dispatchEvent(new CustomEvent('bao:armskin', { detail: { armskin: ask } }));
       // 四项配色都已就位，现在才能判定主题；否则下拉停在第一项「经典战损黄」，
       // 与机器人实际配色不符，用户也没法靠「再选一次」纠正。
       syncThemeLabel();
@@ -2211,6 +3057,8 @@ import {
       const mo = MOTION_NAMES.includes(cfg.motion) ? cfg.motion : '标准';
       motionSel.value = mo;
       window.dispatchEvent(new CustomEvent('bao:motion', { detail: { motion: mo } }));
+      clickActionSel.value = ['poke', 'greet', 'none'].includes(cfg.clickAction) ? cfg.clickAction : 'poke';
+      dblClickSel.value = cfg.doubleClick === 'none' ? 'none' : 'greet';
       idleSel.checked = cfg.idleActions !== false;
       idlefreqSel.value = ['慢', '标准', '快'].includes(cfg.idleFreq) ? cfg.idleFreq : '标准';
       pushIdle();
@@ -2232,11 +3080,8 @@ import {
         poseSels[st].value = p;
         window.dispatchEvent(new CustomEvent('bao:pose', { detail: { state: st, pose: p } }));
       }
-      updateSwatch('skin-swatch', SKIN_COLORS[skinSel.value]);
+      for (const p of PARTS) p.paint();
       updateSwatch('scene-swatch', SCENE_COLORS[sceneSel.value]);
-      updateSwatch('eye-swatch', EYE_COLORS[eyestyleSel.value]);
-      updateSwatch('track-swatch', TRACK_COLORS[trackstyleSel.value]);
-      updateSwatch('arm-swatch', ARM_COLORS[armskinSel.value]);
       applyScale(cfg.scale || 1, { persist: false, anchor: 'top', expand: false });
       fit();
     });

@@ -411,6 +411,34 @@ test('the size bar closes when the click lands somewhere else', async ({ page })
   await expect(page.locator('#sizer')).not.toHaveClass(/on/);
 });
 
+// 预览只该活 3 秒，或者活到面板收起为止。以前关掉面板（Esc / 再右键）不会结束
+// 它：假状态继续挂满 3 秒，而这期间真实状态是被冻结的 —— 灯在说谎。
+test('closing the quick panel ends a state preview immediately', async ({ page }) => {
+  await api('/state', { session: 'a', agent: 'claude', state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+
+  await page.locator('#robot').click({ button: 'right', position: { x: 30, y: 30 } });
+  await expect(page.locator('#preview')).toHaveClass(/on/);
+  await page.locator('#preview button[data-st="error"]').click();
+  await expect(page.locator('body')).toHaveAttribute('data-state', 'error');
+
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#sizer')).not.toHaveClass(/on/);
+  await expect(page.locator('body')).toHaveAttribute('data-state', 'busy');
+});
+
+// Regression: `body[data-theme="mini"] #bot` 与 `body.collapsed #bot` 特异性相同、
+// 且写在后面 —— mini 下点「收起」只收走软件列表，机器人仍是 210px。
+test('collapsing in mini mode still shrinks the robot', async ({ page }) => {
+  const w = await page.evaluate(() => {
+    document.body.dataset.theme = 'mini';
+    document.body.classList.add('collapsed');
+    return document.getElementById('bot').getBoundingClientRect().width;
+  });
+  // mini = 210px；收起后必须是 150px（此时缩放为 100%）。
+  expect(w).toBeLessThan(190);
+});
+
 // Regression: the slider used to overflow its pill and the window. Chromium
 // gives <input type=range> a ~129px content minimum, and without min-width:0 the
 // track and thumb spilled out of the bar and off the screen.
@@ -844,4 +872,476 @@ test('the scoreboard stays inside the frame in every body type', async ({ page }
       { timeout: 4000 }
     ).toBeLessThan(0.98);
   }
+});
+
+// 自定义皮肤：挑一个任意颜色当身体主色，色块与取色器即时跟随；换回固定皮肤时
+// 取色器收起。做旧纹理由机器人侧保留，这里只钉住 UI 契约。
+test('a custom skin colour is applied and the picker follows the selection', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  // 皮肤下拉在「外观」details 里，默认折叠；先展开，否则不可交互。
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '外观') s.parentElement.open = true;
+    }
+  });
+
+  // 出厂状态：取色器行是收起的（它只在选了「自定义」之后才该出现）
+  await expect(page.locator('#custom-skin-row')).toBeHidden();
+
+  // 选「自定义」→ 取色器行现身
+  await page.selectOption('#m-skin', '自定义');
+  await expect(page.locator('#custom-skin-row')).toBeVisible();
+
+  // 改颜色 → 色块即时变成这个颜色（rgb(58,165,201) = #3aa5c9）
+  await page.evaluate(() => {
+    const el = document.getElementById('m-skin-custom');
+    el.value = '#3aa5c9';
+    el.dispatchEvent(new Event('input'));
+    el.dispatchEvent(new Event('change'));
+  });
+  await expect(page.locator('#skin-swatch')).toHaveCSS('background-color', 'rgb(58, 165, 201)');
+
+  // 换回固定皮肤 → 取色器行收起，色块回到固定色
+  await page.selectOption('#m-skin', '做旧黄');
+  await expect(page.locator('#custom-skin-row')).toBeHidden();
+  await expect(page.locator('#skin-swatch')).toHaveCSS('background-color', 'rgb(201, 162, 56)');
+});
+
+// 自定义配色覆盖四个部位，而不只是皮肤：每条取色器只影响自己那一项，
+// 换回固定配色就收起；「重置外观」把它们全部收回出厂值。
+test('custom colours are per part and reset with the look', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '外观') s.parentElement.open = true;
+    }
+  });
+
+  const setColor = (id, value) => page.evaluate(({ id, value }) => {
+    const el = document.getElementById(id);
+    el.value = value;
+    el.dispatchEvent(new Event('input'));
+    el.dispatchEvent(new Event('change'));
+  }, { id, value });
+
+  // 眼睛
+  await page.selectOption('#m-eyestyle', '自定义');
+  await expect(page.locator('#custom-eye-row')).toBeVisible();
+  await setColor('m-eyestyle-custom', '#3aa5c9');
+  await expect(page.locator('#eye-swatch')).toHaveCSS('background-color', 'rgb(58, 165, 201)');
+
+  // 履带与配件各自独立：换一个部位不会把上一个颜色带走。
+  await page.selectOption('#m-trackstyle', '自定义');
+  await setColor('m-trackstyle-custom', '#223344');
+  await expect(page.locator('#track-swatch')).toHaveCSS('background-color', 'rgb(34, 51, 68)');
+  await page.selectOption('#m-armskin', '自定义');
+  await setColor('m-armskin-custom', '#8899aa');
+  await expect(page.locator('#arm-swatch')).toHaveCSS('background-color', 'rgb(136, 153, 170)');
+  // 上一项仍然是刚才那个颜色，没有被后一次覆盖。
+  await expect(page.locator('#eye-swatch')).toHaveCSS('background-color', 'rgb(58, 165, 201)');
+
+  // 四项都没对上任何主题 → 主题下拉自动落到「自定义」。
+  await expect(page.locator('#m-theme')).toHaveValue('自定义');
+
+  // 把皮肤换回固定色，只收起皮肤那条取色器。
+  await page.selectOption('#m-skin', '做旧黄');
+  await expect(page.locator('#custom-skin-row')).toBeHidden();
+  await expect(page.locator('#custom-eye-row')).toBeVisible();
+
+  // 重置外观：四条取色器全部收起，色块回到 palette 的出厂值。
+  await page.evaluate(() => document.getElementById('m-reset-look').click());
+  for (const row of ['#custom-skin-row', '#custom-eye-row', '#custom-track-row', '#custom-arm-row']) {
+    await expect(page.locator(row)).toBeHidden();
+  }
+  await expect(page.locator('#eye-swatch')).toHaveCSS('background-color', 'rgb(27, 36, 44)');
+  await expect(page.locator('#m-theme')).toHaveValue('经典战损黄');
+});
+
+// 广告牌颜色也能自定义：任意十六进制直接下发给场景（牌子是 canvas 画的，
+// 没有理由锁死在八色调色板里）。切回固定颜色时取色器收起。
+test('the sign colour accepts a custom hex', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '广告牌') s.parentElement.open = true;
+    }
+  });
+  await page.evaluate(() => {
+    window.__signs = [];
+    window.addEventListener('bao:sign', (e) => window.__signs.push(e.detail));
+  });
+
+  await page.selectOption('#m-sign-color', '自定义');
+  await expect(page.locator('#custom-sign-row')).toBeVisible();
+  await page.evaluate(() => {
+    const el = document.getElementById('m-sign-color-custom');
+    el.value = '#12ab34';
+    el.dispatchEvent(new Event('input'));
+    el.dispatchEvent(new Event('change'));
+  });
+  await expect.poll(() => page.evaluate(() => window.__signs.at(-1)?.color)).toBe('#12ab34');
+
+  // 切回调色板里的颜色：收起取色器，下发的颜色回到那个固定值。
+  await page.selectOption('#m-sign-color', '青色');
+  await expect(page.locator('#custom-sign-row')).toBeHidden();
+  await expect.poll(() => page.evaluate(() => window.__signs.at(-1)?.color)).toBe('#4ad5ff');
+});
+
+// 提示音音量过去只有配置项、没有入口。滑块要即时反映在百分比上（松手才落盘）。
+test('the cue volume slider reports its own value', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '系统') s.parentElement.open = true;
+    }
+  });
+  await page.evaluate(() => {
+    const el = document.getElementById('m-soundvol');
+    el.value = '45';
+    el.dispatchEvent(new Event('input'));
+  });
+  await expect(page.locator('#m-soundvol-val')).toHaveText('45%');
+});
+
+// 静音时长可选：开半小时的会和出两小时的门不是一回事，按钮上要写清楚。
+test('the mute duration is configurable and shown on the button', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '系统') s.parentElement.open = true;
+    }
+  });
+  await page.selectOption('#m-mutedur', '30');
+  await expect(page.locator('#m-mute')).toContainText('30 分钟');
+  await page.selectOption('#m-mutedur', '120');
+  await expect(page.locator('#m-mute')).toContainText('2 小时');
+});
+
+// 菜单底部的「今日战绩 / 最近动态」两块面板可以各自收起：纯显示开关，
+// 不影响灯与通知，只是让菜单短一截。
+test('the score and recent panels can be hidden independently', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '系统') s.parentElement.open = true;
+    }
+  });
+
+  await page.evaluate(() => {
+    const el = document.getElementById('m-score-panel');
+    el.checked = false;
+    el.dispatchEvent(new Event('change'));
+  });
+  await expect(page.locator('#panel-score')).toBeHidden();
+  await expect(page.locator('#panel-recent')).toBeVisible();
+
+  await page.evaluate(() => {
+    const el = document.getElementById('m-recent-panel');
+    el.checked = false;
+    el.dispatchEvent(new Event('change'));
+  });
+  await expect(page.locator('#panel-recent')).toBeHidden();
+
+  await page.evaluate(() => {
+    for (const id of ['m-score-panel', 'm-recent-panel']) {
+      const el = document.getElementById(id);
+      el.checked = true;
+      el.dispatchEvent(new Event('change'));
+    }
+  });
+  await expect(page.locator('#panel-score')).toBeVisible();
+  await expect(page.locator('#panel-recent')).toBeVisible();
+});
+
+// 尺寸模式现在有两个入口（工具栏图标 + 设置下拉）。两个入口必须指向同一个开关，
+// 否则「点了按钮，下拉还写着完整」这种自相矛盾会一直存在。
+test('the size mode select and the toolbar button agree', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await expect(page.locator('#m-thememode')).toHaveValue('full');
+
+  await page.evaluate(() => document.getElementById('btn-theme').click());
+  await expect(page.locator('#m-thememode')).toHaveValue('mini');
+  await expect(page.locator('body')).toHaveAttribute('data-theme', 'mini');
+
+  await page.selectOption('#m-thememode', 'full');
+  await expect(page.locator('body')).toHaveAttribute('data-theme', 'full');
+});
+
+// 每日目标是用户自己定的刻度：只出现在战绩面板里，不参与任何状态判断。
+test('a daily goal shows as progress in the scoreboard', async ({ page }) => {
+  await api('/state', { session: 'a', agent: 'claude', state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+
+  await page.selectOption('#m-goal', '2');
+  const goal = page.locator('#m-score .goal');
+  await expect(goal).toHaveCount(1);
+  await expect(goal).toContainText('每日目标');
+  await expect(goal).toContainText('/ 2 时');
+
+  await page.selectOption('#m-goal', '0');
+  await expect(page.locator('#m-score .goal')).toHaveCount(0);
+});
+
+// 软件改名只改显示名：列表、顺序列表、铭牌/通知都拿这一个名字，而服务端
+// 上报的 agent 键不变（状态匹配不能因为改名而失效）。清空即恢复默认。
+test('renaming a software changes its label, not its state key', async ({ page }) => {
+  await api('/state', { session: 'a', agent: 'claude', state: 'busy' });
+  await settled(page, () => document.querySelector('.pill[data-agent="claude"] b')?.textContent).toBe('Claude Code');
+
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '软件') s.parentElement.open = true;
+    }
+  });
+
+  const input = page.getByLabel('给「Claude Code」改名');
+  await input.fill('项目A');
+  await expect(page.locator('.pill[data-agent="claude"] b')).toHaveText('项目A');
+  await expect(page.locator('#m-order .row[data-agent="claude"] span')).toHaveText('项目A');
+
+  // agent 键没变：同一条会话进入 waiting，颜色照常变。
+  await api('/state', { session: 'a', agent: 'claude', state: 'waiting' });
+  await settled(page, () => {
+    const el = document.querySelector('.pill[data-agent="claude"]');
+    return el ? el.querySelector('i').dataset.color : null;
+  }).toBe('amber');
+
+  // 清空 → 回到内置名。
+  await input.fill('');
+  await expect(page.locator('.pill[data-agent="claude"] b')).toHaveText('Claude Code');
+});
+
+// 逐个软件的通知开关：关掉只影响通知，灯与列表照旧；列表行会说明「通知已关闭」，
+// 否则「它出错了我怎么没收到通知」会变成一个查不出来的问题。
+test('a software can have its notifications turned off', async ({ page }) => {
+  await api('/state', { session: 'a', agent: 'claude', state: 'error' });
+  await settled(page, () => document.body.dataset.state).toBe('error');
+
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '软件') s.parentElement.open = true;
+    }
+  });
+
+  const bell = page.getByLabel('接收「Claude Code」的系统通知');
+  await bell.uncheck();
+  await expect(page.locator('.pill[data-agent="claude"]')).toHaveAttribute('aria-label', /系统通知已关闭/);
+  // 灯的颜色不受影响：关的是通知，不是状态。
+  await expect(page.locator('.pill[data-agent="claude"] i')).toHaveAttribute('data-color', 'red');
+
+  await bell.check();
+  await expect(page.locator('.pill[data-agent="claude"]')).not.toHaveAttribute('aria-label', /系统通知已关闭/);
+});
+
+// 设置搜索：控件已经过五十个、分组十个，记得住名字但记不住位置。过滤只改
+// 可见性，清空后必须回到完整菜单（包括用户原本展开的分组）。
+test('the settings search filters rows and restores them', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  const find = page.locator('#m-find');
+
+  await find.fill('亮度');
+  await expect(page.locator('#m-brightness')).toBeVisible();
+  await expect(page.locator('#m-body')).toBeHidden();
+  await expect(page.locator('#m-find-empty')).toBeHidden();
+
+  // 分组名/组内小标题也算命中：输入「名称」应该露出改名那一块，而不是报「没有」。
+  await find.fill('名称');
+  await expect(page.locator('#m-alias input').first()).toBeVisible();
+  await expect(page.locator('#m-find-empty')).toBeHidden();
+
+  await find.fill('没有这个词');
+  await expect(page.locator('#m-find-empty')).toBeVisible();
+  await expect(page.locator('#m-brightness')).toBeHidden();
+
+  await find.fill('');
+  await expect(page.locator('#m-body')).toBeVisible();
+  await expect(page.locator('#m-brightness')).toBeVisible();
+  await expect(page.locator('#m-find-empty')).toBeHidden();
+
+  // 回归：搜索清空时不能顺手把「自定义配色」的取色器行放出来 —— 那一行的
+  // 隐藏状态属于配色本身，不属于搜索。
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '外观') s.parentElement.open = true;
+    }
+  });
+  await find.fill('皮肤');
+  await expect(page.locator('#custom-skin-row')).toBeHidden();
+  await find.fill('');
+  await expect(page.locator('#custom-skin-row')).toBeHidden();
+});
+
+// 点一下机器人的反应可以关掉：不是所有人都想在工作时被一只小机器人弹一下。
+test('the click reaction can be changed', async ({ page }) => {
+  await page.evaluate(() => {
+    window.__react = [];
+    for (const e of ['bao:poke', 'bao:greet']) window.addEventListener(e, () => window.__react.push(e));
+  });
+  const pick = (value) => page.evaluate((v) => {
+    const el = document.getElementById('m-clickaction');
+    el.value = v;
+    el.dispatchEvent(new Event('change'));
+  }, value);
+
+  await pick('none');
+  await page.locator('#robot').click({ position: { x: 30, y: 30 } });
+  await page.waitForTimeout(120);
+  expect(await page.evaluate(() => window.__react)).toEqual([]);
+
+  await pick('greet');
+  await page.locator('#robot').click({ position: { x: 30, y: 30 } });
+  await expect.poll(() => page.evaluate(() => window.__react)).toContain('bao:greet');
+});
+
+// 双击的「挥手」也可以关掉：它是唯一纯粹为人的动作，但不是每个人都想在
+// 工作时被一只小机器人挥手。
+test('the double-click reaction can be turned off', async ({ page }) => {
+  await page.evaluate(() => {
+    window.__greets = 0;
+    window.addEventListener('bao:greet', () => { window.__greets += 1; });
+  });
+  const pick = (value) => page.evaluate((v) => {
+    const el = document.getElementById('m-dblclick');
+    el.value = v;
+    el.dispatchEvent(new Event('change'));
+  }, value);
+
+  await pick('none');
+  await page.locator('#robot').dblclick({ position: { x: 30, y: 30 } });
+  await page.waitForTimeout(150);
+  expect(await page.evaluate(() => window.__greets)).toBe(0);
+
+  await pick('greet');
+  await page.locator('#robot').dblclick({ position: { x: 30, y: 30 } });
+  await expect.poll(() => page.evaluate(() => window.__greets)).toBe(1);
+});
+
+// 开机自启只属于桌面版：浏览器页里没有 bridge，勾选框必须禁用并说明原因，
+// 而不是给一个点了没反应的勾。
+test('autostart is desktop-only and says so', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '系统') s.parentElement.open = true;
+    }
+  });
+  await expect(page.locator('#m-autostart')).toBeDisabled();
+  await expect(page.locator('#m-autostart')).toHaveAttribute('title', '只在桌面版可用');
+});
+
+// 每一行设置都必须在某个可折叠分组里。每日目标曾经是唯一的例外：它游离在
+// 所有 <details> 之外，既不能随分组收起，搜索时也只能靠一段特判才被藏起来。
+test('every settings row lives inside a collapsible group', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  const looseRows = await page.evaluate(() => document.querySelectorAll('#menu > .row').length);
+  expect(looseRows, 'no row may sit outside a group').toBe(0);
+  const grouped = await page.evaluate(() => !!document.getElementById('m-goal').closest('details.group'));
+  expect(grouped, 'the daily goal belongs to 基础').toBe(true);
+});
+
+// 材质是新的自定义维度：做旧程度改贴图、表面质感改反光，两者都不碰颜色。
+// 拖到 40% 要能派发 0.4；「重置外观」把它一起收回出厂值。
+test('the wear slider drives the scene and resets with the look', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '材质') s.parentElement.open = true;
+    }
+  });
+  await page.evaluate(() => {
+    window.__wear = [];
+    window.addEventListener('bao:wear', (e) => window.__wear.push(e.detail.wear));
+  });
+
+  await page.evaluate(() => {
+    const el = document.getElementById('m-wear');
+    el.value = '40';
+    el.dispatchEvent(new Event('input'));
+    el.dispatchEvent(new Event('change'));
+  });
+  await expect(page.locator('#m-wear-val')).toHaveText('40%');
+  await expect.poll(() => page.evaluate(() => window.__wear.at(-1))).toBe(0.4);
+
+  // 重置外观：滑杆回到 100%，机器人也回到出厂锈迹。
+  await page.evaluate(() => document.getElementById('m-reset-look').click());
+  await expect(page.locator('#m-wear-val')).toHaveText('100%');
+  await expect.poll(() => page.evaluate(() => window.__wear.at(-1))).toBe(1);
+});
+
+// 表面质感只有三档，且必须是白名单：配置文件里的脏值不能变出一个不存在的档位。
+test('the surface finish has three values and dispatches the one picked', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '材质') s.parentElement.open = true;
+    }
+  });
+  await expect(page.locator('#m-finish option')).toHaveCount(3);
+  await page.evaluate(() => {
+    window.__finish = [];
+    window.addEventListener('bao:finish', (e) => window.__finish.push(e.detail.finish));
+  });
+  await page.selectOption('#m-finish', '精工');
+  await expect.poll(() => page.evaluate(() => window.__finish.at(-1))).toBe('精工');
+});
+
+// 台词：设置里写的一句话要同时到达气泡和语音（两边读同一个值），
+// 「试一句」只冒泡不改状态，「恢复内置」把三条都清空。
+test('a custom phrase reaches the robot and can be reset', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '台词') s.parentElement.open = true;
+    }
+  });
+  await page.evaluate(() => {
+    window.__phrase = [];
+    window.__say = [];
+    window.addEventListener('bao:phrase', (e) => window.__phrase.push(e.detail));
+    window.addEventListener('bao:say', (e) => window.__say.push(e.detail.text));
+  });
+
+  const input = page.locator('#m-phrase-waiting');
+  await input.fill('老板等你');
+  await input.blur();
+  await expect.poll(() => page.evaluate(() => window.__phrase.at(-1)))
+    .toEqual({ state: 'waiting', text: '老板等你' });
+
+  // 「试一句」：读输入框的当前内容，走临时提示通道。
+  await page.locator('#m-phrase-try').click();
+  await expect.poll(() => page.evaluate(() => window.__say.at(-1))).toBe('老板等你');
+
+  await page.locator('#m-phrase-reset').click();
+  await expect(input).toHaveValue('');
+  await expect.poll(() => page.evaluate(() => window.__phrase.at(-1).text)).toBe('');
+  // 恢复内置要三条一起清空：只清一条，另外两条还会念着用户写的话。
+  expect(await page.evaluate(() =>
+    [...document.querySelectorAll('#m-phrase-waiting, #m-phrase-error, #m-phrase-done')].map((i) => i.value)))
+    .toEqual(['', '', '']);
+});
+
+// 勿扰的起止时间相同 = 这段永远不生效。合法，但没人猜得到，所以必须写在开关下面。
+test('the dnd note explains a window whose ends are the same', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '系统') s.parentElement.open = true;
+    }
+  });
+  const set = (id, value) => page.evaluate(([i, v]) => {
+    const el = document.getElementById(i);
+    if (el.type === 'checkbox') el.checked = v === 'on'; else el.value = v;
+    el.dispatchEvent(new Event('change'));
+  }, [id, value]);
+
+  await set('m-dnd', 'on');
+  await set('m-dnd-start', '22:00');
+  await set('m-dnd-end', '22:00');
+  await expect(page.locator('#m-dnd-note')).toBeVisible();
+
+  await set('m-dnd-end', '07:30');
+  await expect(page.locator('#m-dnd-note')).toBeHidden();
 });

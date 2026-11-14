@@ -17,7 +17,7 @@ function post(pathname, payload, { timeout = 1200 } = {}) {
     const req = http.request(
       {
         host: '127.0.0.1',
-        port: config.port(),
+        port: config.runningPort(),
         path: pathname,
         method: 'POST',
         headers: {
@@ -56,7 +56,7 @@ function post(pathname, payload, { timeout = 1200 } = {}) {
 function get(pathname, { timeout = 1200 } = {}) {
   return new Promise((resolve) => {
     const req = http.get(
-      { host: '127.0.0.1', port: config.port(), path: pathname, timeout },
+      { host: '127.0.0.1', port: config.runningPort(), path: pathname, timeout },
       (res) => {
         let out = '';
         res.on('data', (c) => (out += c));
@@ -73,7 +73,13 @@ function get(pathname, { timeout = 1200 } = {}) {
 
 const setState = (payload) => post('/state', payload);
 const noteUnknown = (payload) => post('/unknown', payload);
-const health = () => get('/health');
+// 端口上应答的不一定是 baoanlight：别的本地服务也可能占着同一个端口。不认名字
+// 的话，`bao start` 会以为「已经在运行」，然后把一个陌生页面装进带 quit / 开终端
+// 权限的 Electron 壳里；`bao stop` 也会对着别人的服务发 /quit。
+const health = async () => {
+  const r = await get('/health');
+  return r && r.name === 'baoanlight' ? r : null;
+};
 const snapshot = () => get('/state');
 const quitServer = () => post('/quit', {});
 

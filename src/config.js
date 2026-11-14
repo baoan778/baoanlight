@@ -57,6 +57,58 @@ const DEFAULTS = {
   // 人格种子：首次启动随机固定一个（活泼/沉稳/话痨/害羞），决定动作频率与语气。
   personality: null,
   soundVolume: 0.22,
+  // 提示音风格（清脆叮咚 / 低沉机械 / 电子脉冲）。
+  soundStyle: '清脆叮咚',
+  // 「完成」也响一声 / 也弹通知：完成不是「需要你」，有人希望它安静。
+  soundDone: true,
+  notifyDone: true,
+  // 点一下 / 双击机器人的反应。
+  clickAction: 'poke',
+  doubleClick: 'greet',
+  // 静音按钮按多久：30 / 60 / 120 分钟。
+  muteMinutes: 60,
+  // 每日目标（小时，0 = 关闭）：只影响战绩面板进度与达成提醒，不参与状态判断。
+  dailyGoalHours: 0,
+  // 菜单底部两块面板的可见性：纯显示开关，不影响任何状态。
+  showScore: true,
+  showRecent: true,
+  // 软件顺序（空 = 内置顺序）、改名、逐个软件通知开关。
+  agentOrder: [],
+  aliases: {},
+  mutedAgents: [],
+  // 铭牌文字（空 = 显示主灯代表的软件名）。
+  nameplate: '',
+  // 人格用语覆盖（phrases[state]）；首次运行日期（用于陪伴天数）。
+  phrases: null,
+  firstRun: null,
+  // ---- 外观 ----
+  body: '标准',
+  skin: '做旧黄',
+  eyestyle: '默认黑',
+  eyeshape: '圆',
+  trackstyle: '黑',
+  tracktype: '圆角矩形',
+  armskin: '枪灰',
+  claw: '铲形',
+  armtype: '双板',
+  headtype: '双筒',
+  scene: '无',
+  motion: '标准',
+  halo: '环形',
+  baseEffect: '状态色',
+  brightness: 1,
+  wear: 1,
+  finish: '标准',
+  poses: { error: '环抱', waiting: '举手', busy: '泵动', done: '摊开', idle: '垂放' },
+  idleActions: true,
+  idleFreq: '标准',
+  // 自定义配色：对应 skin/eyestyle/trackstyle/armskin === '自定义' 时生效。
+  customSkin: null,
+  customEye: null,
+  customTrack: null,
+  customArm: null,
+  // 广告牌「自定义」颜色。
+  customSign: null,
   sessionTtlMs: 6 * 60 * 60 * 1000,
   // A green session nobody has touched in this long is treated as gone.
   idleTtlMs: 30 * 60 * 1000,
@@ -142,13 +194,36 @@ function save(patch) {
   return next;
 }
 
+// 端口必须是 0–65535 的整数：`--port 50o` 之类会被 Number() 变成 NaN，直接
+// 塞进 http.get 就是一个 ERR_SOCKET_BAD_PORT，而且是在 Promise 里同步抛出的。
+const asPort = (v) => {
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 0 && n < 65536 ? n : null;
+};
+
 function port() {
   const env = process.env.BAOANLIGHT_PORT || process.env.SIGNALHEAD_PORT;
-  if (env) return Number(env);
+  const fromEnv = env ? asPort(env) : null;
+  if (fromEnv != null) return fromEnv;
   return load().port;
+}
+
+// 运行中服务端的端口。server 启动时会把**真实**端口写进 PORT_FILE（`port: 0`
+// 时尤其重要，`--port 5000` 也只改启动进程的环境变量）—— 一个新终端里的
+// `bao stop / status / token` 读不到那份环境变量，只能靠这个文件。
+// 没有文件（还没跑过）时退回配置端口。0 对「连接」来说不合法，跳过。
+function runningPort() {
+  const env = process.env.BAOANLIGHT_PORT || process.env.SIGNALHEAD_PORT;
+  const fromEnv = env ? asPort(env) : null;
+  if (fromEnv) return fromEnv;
+  try {
+    const n = asPort(fs.readFileSync(PORT_FILE, 'utf8').trim());
+    if (n) return n;
+  } catch { /* 还没启动过 */ }
+  return port();
 }
 
 module.exports = {
   DIR, CONFIG_FILE, PORT_FILE, LOG_FILE, DEFAULTS,
-  ensureDir, load, save, port,
+  ensureDir, load, save, port, runningPort,
 };
