@@ -140,9 +140,14 @@ async function run() {
       'bao connect claude   (rewrites the paths for this machine)');
     check('  hook script exists', exists(script) ? 'pass' : 'fail', script || '(unparsed)',
       'bao connect claude   (rewrites the paths for this machine)');
-    if (script && !script.startsWith(ROOT.replace(/\\/g, '/'))) {
-      check('  hook points at this checkout', 'warn',
-        `points outside ${ROOT}`, 'bao connect claude   (if you moved the project)');
+    // 钩子指向「既不是这个 checkout、也不是任何 node_modules/baoanlight 安装」的
+    // 地方，多半是移动过项目 / 从别的机器同步了配置 —— 旧路径已经失效。
+    // 全局安装（npm i -g baoanlight）恰恰是推荐位置，不该被这条误报成异常。
+    const rooted = script.startsWith(ROOT.replace(/\\/g, '/'));
+    const inInstall = /[\\/]node_modules[\\/]baoanlight[\\/]/i.test(script.replace(/\\/g, '/'));
+    if (script && !rooted && !inInstall) {
+      check('  hook points outside this project', 'warn',
+        `points at ${script}`, 'bao connect claude   (rewrites the paths for this machine)');
     }
 
     // Hooks fire on every tool call. If they run a script from a git checkout,
