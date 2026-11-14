@@ -601,7 +601,9 @@ import {
       row.className = 'recent';
       row.innerHTML = '<span>今天还没有干活记录</span>';
       box.appendChild(row);
-      return;
+      // 不 return：跨天/早上「今天」还没数据时，历史里的本周合计与 7 天柱状图
+      // 仍该显示 —— 那是用户最想看周报的时候。下面的堆叠条/每软件行在 names
+      // 为空时本就会自然跳过（totalMs=0、空循环）。
     }
     // 堆叠条：把今天的忙碌时长按软件切成一段，一眼看出「今天谁吃了时间」。
     // 行内条形是各自按今日最长归一化的，这里的段长才是真实占比。
@@ -2807,6 +2809,7 @@ import {
   let pressX = 0;
   let pressY = 0;
   let pokeTimes = [];   // 三连击彩蛋的时间戳
+  let pendingReaction = null;   // 延迟派发的单击/双击反应（等确认不是连击再发）
   let comfortTimer = null;   // 长按 1 秒 = 安抚
   robot.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
@@ -2847,18 +2850,31 @@ import {
     if (e && e.type === 'pointerup' && pressAt &&
         Date.now() - pressAt < 400 &&
         Math.hypot(e.screenX - pressX, e.screenY - pressY) < 5) {
-      // 三连击彩蛋：原地抓狂（快速转圈 + 抖动）；否则就是普通戳一下。
+      // 一下 = 戳/挥手，两下 = 挥手，三下 = 彩蛋。原来每次 pointerup 都立刻派发，
+      // 结果双击 = 两次戳 + 一次挥手，三连击 = 前两下先戳/挥手、第三下才抓狂 ——
+      // 注释说「彩蛋不受点击反应影响」，实现却在三下之前就把前两下发了出去。
+      // 这里统一延迟 300ms 再决定：期间再来一下就重新计时，三连击的第三下直接走
+      // 彩蛋分支并把前面的反应取消掉。
       const now = Date.now();
       pokeTimes = pokeTimes.filter((x) => now - x < 900);
       pokeTimes.push(now);
+      clearTimeout(pendingReaction);
       if (pokeTimes.length >= 3) {
-        // 三连击彩蛋不受「点击反应」影响：那是一个刻意的隐藏动作，不是一次点击。
         pokeTimes = [];
+        pendingReaction = null;
         window.dispatchEvent(new CustomEvent('bao:crazy'));
-      } else if (cfg.clickAction === 'greet') {
-        window.dispatchEvent(new CustomEvent('bao:greet'));
-      } else if (cfg.clickAction !== 'none') {
-        window.dispatchEvent(new CustomEvent('bao:poke'));
+      } else {
+        pendingReaction = setTimeout(() => {
+          pendingReaction = null;
+          if (pokeTimes.length >= 2) {
+            // 双击 = 挥手（若开启）。
+            if (cfg.doubleClick !== 'none') window.dispatchEvent(new CustomEvent('bao:greet'));
+          } else if (cfg.clickAction === 'greet') {
+            window.dispatchEvent(new CustomEvent('bao:greet'));
+          } else if (cfg.clickAction !== 'none') {
+            window.dispatchEvent(new CustomEvent('bao:poke'));
+          }
+        }, 300);
       }
     }
     pressAt = 0;
@@ -2874,16 +2890,6 @@ import {
   window.addEventListener('pointermove', (e) => {
     if (!pressAt || !e.buttons) return;
     if (Math.hypot(e.screenX - pressX, e.screenY - pressY) > 5) clearTimeout(comfortTimer);
-  });
-
-  // A double click is a greeting, not a command: both arms up for two seconds.
-  // It is the only interaction here that is purely for the human, which is the
-  // difference between a status light and a desk pet — and it is free, because
-  // the arms already exist.
-  robot.addEventListener('dblclick', (e) => {
-    if (e.target.closest('button, input, .pill')) return;
-    if (cfg.doubleClick === 'none') return;
-    window.dispatchEvent(new CustomEvent('bao:greet'));
   });
 
   // ---------------------------------------------------------------- controls

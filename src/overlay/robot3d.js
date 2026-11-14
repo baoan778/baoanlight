@@ -254,6 +254,7 @@ const SCENES = {
   '极光': { texture: '极光', props: '松树', particle: 'star', fog: 0x0a1418 },
 };
 let sceneType = '无';
+let particleOpacity = 0;   // 当前场景粒子「不降动效时」的目标透明度（applyScene 记录）
 
 // ---- 头形状：双筒（默认）/ 单眼（中央大眼）/ 三眼（双目 + 额前传感器）------
 // 每只眼：side 镜像方向（转动/眉形）、x/y 位置、scale 大小。
@@ -738,6 +739,11 @@ if (host && renderer) {
     else if (s.particle === 'firefly') { particleMat.color.set(0xd9ff6a); particleMat.opacity = 0.85 * motionScale; particleMat.size = 0.045; }
     else if (s.particle === 'rain') { particleMat.color.set(0xa8c4e0); particleMat.opacity = 0.7 * motionScale; particleMat.size = 0.03; }
     else particleMat.opacity = 0;
+    // 记下「不降动效时」的目标透明度，供 updateSceneParticles 每帧阻尼使用；
+    // reduceMotion 时这里就置 0 —— 冻结在半空的雪花/星/火星是「画面卡住了一层
+    // 悬浮点阵」，不是「少动」。
+    particleOpacity = particleMat.opacity;
+    if (reduceMotion) particleMat.opacity = 0;
     // 场景氛围不再改全局天光——那会让机器人本体的皮肤色跟着偏色（雪地发冷、沙漠发暖），
     // 破坏「皮肤颜色一致性」。氛围完全由地面纹理、点缀、粒子承载，机器人永远保持本色。
     // 海面自发光：海洋场景的地面像水面一样微微泛光，强度随波浪波动（见 update）。
@@ -2671,6 +2677,10 @@ if (host && renderer) {
   let idlePlaying = 0;        // 上一帧正在演的自主动作（给降帧用：演的时候要流畅）
   let idleActionsOn = true;   // 待机小动作开关
   let idleFreq = 1.0;         // 待机动作频率倍率（慢 0.5 / 标准 1 / 快 2）
+  // 转身巡视/抖擞的「当前平滑叠加值」：这两个动作直接加到车身上，被打断时不能
+  // 一帧归零（否则机器人从转身 ~31° 的状态突然弹回原位）。这里每帧向目标 lerp。
+  let smoothPatrol = 0;
+  let smoothShake = 0;
   // 人格：活泼 / 沉稳 / 话痨 / 害羞。首次随机固定，影响动作频率与情绪阈值。
   let personality = '活泼';
   const FREQ_BOOST = { 活泼: 1.4, 沉稳: 0.65, 话痨: 1.0, 害羞: 0.9 };
@@ -2953,8 +2963,13 @@ if (host && renderer) {
       ? Math.sin(iv * 7) * 0.10 * Math.sin(Math.min(1, iv / IDLE_DURATION[7]) * Math.PI) : 0;
 
     // 转身/抖擞要叠到车身上，而这两个值在上面赋值之后才算出来 —— 在这里补叠加。
-    robot.rotation.y += idlePatrol * motionScale;
-    bodyGroup.rotation.z += idleShake * motionScale;
+    // 用指数平滑向目标靠近：动作被打断（idleAction 归 0）时不是一帧弹回原位，
+    // 而是 ~60ms 内慢慢转回来 —— 帧率无关（exp），低帧率下也不至于跳变。
+    const idleK = 1 - Math.exp(-dt * 18);
+    smoothPatrol += (idlePatrol - smoothPatrol) * idleK;
+    smoothShake += (idleShake - smoothShake) * idleK;
+    robot.rotation.y += smoothPatrol * motionScale;
+    bodyGroup.rotation.z += smoothShake * motionScale;
 
     // 当前正在演哪个自主动作（空 = 没在演）。和 dataset.fps 一样，是给外部
     // 观测用的：没有它，这类「几秒一次、随机」的行为在测试里根本没法断言。
@@ -3377,7 +3392,14 @@ if (host && renderer) {
         const ms = MOTION_LEVELS[motionLevel] || 1.0;
         particleMat.opacity = (0.35 + 0.45 * (0.5 + 0.5 * Math.sin(t * 2.0))) * ms * brightness;
       }
+      // 非 star 粒子：把透明度阻尼回「不降动效」的目标值（被 reduceMotion 淡出后
+      // 恢复）。star 的透明度在上面那段按闪烁逐帧算，这里不碰。
+      if (partKind !== 'star') particleMat.opacity = damp(particleMat.opacity, particleOpacity, 8, dt);
       particleGeo.attributes.position.needsUpdate = true;
+    } else {
+      // reduce-motion 或没有粒子：把粒子淡出到 0。原来这里什么都不做，雪花/星/
+      // 火星就冻结在半空且完全可见 —— 「少动」不是「把运动定格成悬浮残影」。
+      particleMat.opacity = damp(particleMat.opacity, 0, 8, dt);
     }
 
     // 点缀随风摆动：树/草/珊瑚等轻微摇曳，场景有「风」而不只是静物。

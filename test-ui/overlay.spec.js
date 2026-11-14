@@ -1188,8 +1188,13 @@ test('the click reaction can be changed', async ({ page }) => {
 
   await pick('none');
   await page.locator('#robot').click({ position: { x: 30, y: 30 } });
-  await page.waitForTimeout(120);
+  // 单击反应现在延迟 300ms 派发（为了和双击/三连击区分）——等过这个窗口再断言，
+  // 才真正证明「不反应」是被设置关掉的，而不是「还没到点」。
+  await page.waitForTimeout(500);
   expect(await page.evaluate(() => window.__react)).toEqual([]);
+
+  // 等过 900ms 连击窗口，别让下面这一下和上一击连成双击。
+  await page.waitForTimeout(950);
 
   await pick('greet');
   await page.locator('#robot').click({ position: { x: 30, y: 30 } });
@@ -1211,12 +1216,37 @@ test('the double-click reaction can be turned off', async ({ page }) => {
 
   await pick('none');
   await page.locator('#robot').dblclick({ position: { x: 30, y: 30 } });
-  await page.waitForTimeout(150);
+  // 双击反应同样延迟 300ms：等过窗口再断言，证明「不反应」是被设置关掉的。
+  await page.waitForTimeout(500);
   expect(await page.evaluate(() => window.__greets)).toBe(0);
+
+  // 等过 900ms 连击窗口，别让下面这一下和上一击连成三连击。
+  await page.waitForTimeout(950);
 
   await pick('greet');
   await page.locator('#robot').dblclick({ position: { x: 30, y: 30 } });
   await expect.poll(() => page.evaluate(() => window.__greets)).toBe(1);
+});
+
+// 三连击彩蛋：原地抓狂。关键是不能在第三下之前就把前两下的单击/双击反应发出去
+// —— 否则机器人会一边转圈抓狂一边挥手/弹跳。
+test('a triple click fires the crazy easter egg without the single/double reactions', async ({ page }) => {
+  await page.evaluate(() => {
+    window.__acts = [];
+    for (const e of ['bao:poke', 'bao:greet', 'bao:crazy']) window.addEventListener(e, () => window.__acts.push(e));
+  });
+
+  // 三次快速点击（间隔 < 300ms 的反应窗口，且在 900ms 连击窗口内）。
+  const robot = page.locator('#robot');
+  await robot.click({ position: { x: 30, y: 30 } });
+  await page.waitForTimeout(180);
+  await robot.click({ position: { x: 30, y: 30 } });
+  await page.waitForTimeout(180);
+  await robot.click({ position: { x: 30, y: 30 } });
+
+  await expect.poll(() => page.evaluate(() => window.__acts)).toContain('bao:crazy');
+  // 前两下不得补发 poke/greet —— 彩蛋就该只有彩蛋。
+  expect(await page.evaluate(() => window.__acts.filter((x) => x !== 'bao:crazy'))).toEqual([]);
 });
 
 // 开机自启只属于桌面版：浏览器页里没有 bridge，勾选框必须禁用并说明原因，
