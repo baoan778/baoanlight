@@ -641,9 +641,13 @@ function cmdWatch(positional, flags) {
   // WorkBuddy rewrites its task files in place, so it needs snapshot reads
   // rather than the append-only tailer every other agent gets.
   const useTasks = target === 'workbuddy' && !flags.jsonl;
+  // CodeBuddy / WorkBuddy 的一轮轮对话写在 projects/<项目>/<session>.jsonl 里，
+  // 记录是带类型的（reasoning / function_call / message），通用 JSONL reader 认不出。
+  const useTranscripts = target === 'codebuddy' && !flags.jsonl;
   const watcher = useDsh ? require('./adapters/dsh-watch')
-    : useTasks ? require('./adapters/task-watch')
-      : require('./adapters/log-watch');
+    : useTranscripts ? require('./adapters/wbt-watch')
+      : useTasks ? require('./adapters/task-watch')
+        : require('./adapters/log-watch');
 
   watcher.run({
     agent: target,
@@ -693,7 +697,9 @@ function releaseWatchAllLock() {
 
 function cmdWatchAll(flags = {}) {
   if (!acquireWatchAllLock()) return undefined;
-  const targets = ['codex', 'deepseek', 'workbuddy'];
+  // codebuddy 放在最后：它的 transcript 最可能和别的来源同时活跃，排在后面不会
+  // 抢主灯（同优先级按固定槽位顺序取第一个）。
+  const targets = ['codex', 'deepseek', 'workbuddy', 'codebuddy'];
   const children = [];
 
   const prefix = (stream, tag) => {

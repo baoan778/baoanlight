@@ -57,7 +57,7 @@ export const ARM_TONES = [
 // 胸口仪表板的固定槽位。位置是契约的一部分：一个会移动的灯，就是每次开新会话
 // 都要重新学一遍的灯。服务端（store.js 的 AGENT_ORDER）与界面共用同一份顺序，
 // test/palette.test.mjs 会盯住两者不许分叉。
-export const AGENT_SLOTS = ['deepseek', 'claude', 'codex', 'workbuddy'];
+export const AGENT_SLOTS = ['deepseek', 'claude', 'codex', 'workbuddy', 'codebuddy'];
 
 // 状态优先级。与 src/store.js 的 PRIORITY 必须逐项相同（同样由测试盯住）：
 // 服务端用它决定主灯归属，界面用它决定「机器人待机时该瞄哪个槽位」。两份表

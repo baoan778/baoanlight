@@ -76,6 +76,7 @@ import {
     codex: 'Codex',
     workbuddy: 'WorkBuddy',
     deepseek: 'DeepSeek Harness',
+    codebuddy: 'CodeBuddy',
   };
   // 显示名：用户改过名就用改过的，否则用内置名。这是唯一的取名入口 —— 列表、
   // 铭牌、通知、语音、广告牌都从这里拿名字，改名才不会漏掉某一块。
@@ -1156,7 +1157,7 @@ import {
         ? { agent, state: 'offline', detail: '', count: 0, quiet: false }
         : null))
       .filter(Boolean);
-    const maxRows = Math.max(2, Math.min(8, Number(cfg.maxRows) || 4));
+    const maxRows = Math.max(2, Math.min(8, Number(cfg.maxRows) || 5));
     const showPills = cfg.showLabels && !collapsed && list.length > 0;
     // 行数预算先给「真的在跑」的软件 —— 但只在真的溢出时重排：不溢出时顺序必须
     // 是固定的（离线也占位、位置不跳）。溢出时若不重排，maxRows=2 的前两行可能是
@@ -2492,7 +2493,7 @@ import {
     o.textContent = n + ' 行';
     maxrowsSel.appendChild(o);
   }
-  maxrowsSel.value = '4';
+  maxrowsSel.value = '5';
   maxrowsSel.addEventListener('change', (e) => {
     cfg.maxRows = Number(e.target.value);
     if (inElectron) saveConfig({ maxRows: cfg.maxRows });
@@ -2916,7 +2917,7 @@ import {
     // 行数是下拉里 2–8 那几档，超出范围会让列表被裁掉或多出空行。
     if (out.maxRows !== undefined) {
       const n = Math.round(out.maxRows);
-      out.maxRows = n >= 2 && n <= 8 ? n : 4;
+      out.maxRows = n >= 2 && n <= 8 ? n : 5;
     }
     // 勿扰时间必须是真时间：写不出 HH:MM 就整条丢掉（保留当前设置），
     // 而不是存一个让这段静音永远不触发的字符串。
@@ -3165,7 +3166,7 @@ import {
       document.getElementById('m-dnd-start').value = TIME_RE.test(cfg.dndStart) ? cfg.dndStart : '22:00';
       document.getElementById('m-dnd-end').value = TIME_RE.test(cfg.dndEnd) ? cfg.dndEnd : '08:00';
       applyDnd();
-      maxrowsSel.value = String(Math.max(2, Math.min(8, Number(cfg.maxRows) || 4)));
+      maxrowsSel.value = String(Math.max(2, Math.min(8, Number(cfg.maxRows) || 5)));
       renderPresetList();
       // 铭牌最长 16 个字（3D 那边画不下更多）。配置里更长时在这里就截断，
       // 界面和机器人身上才不会写着两句不一样的话。

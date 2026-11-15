@@ -133,6 +133,7 @@ Claude Code 的钩子不需要重启即可生效。钩子脚本 1.5 秒硬超时
 bao watch codex         # ~/.codex/sessions/YYYY/MM/DD/*.jsonl
 bao watch deepseek      # dsh 的会话投影（JSON），或别名 bao watch dsh
 bao watch workbuddy     # WorkBuddy 的任务板
+bao watch codebuddy     # CodeBuddy / WorkBuddy 的逐轮对话 transcript
 ```
 
 各自读的是：
@@ -146,6 +147,9 @@ bao watch workbuddy     # WorkBuddy 的任务板
   剩余量，不是猜测）。
 - **WorkBuddy**：读它的任务板（`~/.workbuddy/tasks`）——有任务 `in_progress` 即绿灯。
   **这是粗粒度信息**；要精确到「某一轮在等你」，用 `bao hook --agent workbuddy`。
+- **CodeBuddy / WorkBuddy CLI**：读 `~/.workbuddy/projects/<项目>/<会话>.jsonl` 的逐轮记录 ——
+  `reasoning` / `function_call` 是绿灯，助手回完这一轮是紫灯（随即回空闲）。只读记录的
+  类型与工具名，**正文一个字都不读**。任务板平时是空的，这个才是实时的那个来源。
 
 如果它装在别处，直接指过去（`--dir` 仍按同一格式解析）：
 

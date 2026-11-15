@@ -29,7 +29,9 @@ const DEFAULTS = {
   // row, whether the pill shows the real model/provider, and how many rows at most.
   showOffline: true,
   showModel: true,
-  maxRows: 4,
+  // 5 个内置软件是当前注册表的大小：默认就该一次显示完整，别让新加的那个
+  // 被折进「还有 N 个」。用户仍可调小。
+  maxRows: 5,
   // 机器人下方那块 CPU / 内存小面板：默认开着，它是「这台机器现在忙不忙」
   // 的旁证，和代理状态是两回事（所以用中性色，不占红黄绿）。
   showSys: true,

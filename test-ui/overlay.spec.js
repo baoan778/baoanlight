@@ -127,14 +127,16 @@ test('four software at once each keep their own segment', async ({ page }) => {
   await api('/state', { session: 'd1', agent: 'deepseek', state: 'error' });
   await settled(page, () => document.body.dataset.state).toBe('error');
 
-  const cells = await page.evaluate(() => [0, 1, 2, 3].map((i) => {
+  const cells = await page.evaluate(() => [0, 1, 2, 3, 4].map((i) => {
     const el = document.getElementById('slot' + i);
     return { agent: el.dataset.agent, state: el.dataset.state, fill: getComputedStyle(el).fill };
   }));
 
-  expect(cells.map((c) => c.agent)).toEqual(['deepseek', 'claude', 'codex', 'workbuddy']);
-  expect(cells.map((c) => c.state)).toEqual(['error', 'busy', 'waiting', 'idle']);
-  expect(new Set(cells.map((c) => c.fill)).size, 'four distinct lights on screen').toBe(4);
+  expect(cells.map((c) => c.agent))
+    .toEqual(['deepseek', 'claude', 'codex', 'workbuddy', 'codebuddy']);
+  // codebuddy 没有会话 → 暗格；前四格各是一种状态。
+  expect(cells.map((c) => c.state)).toEqual(['error', 'busy', 'waiting', 'idle', 'offline']);
+  expect(new Set(cells.slice(0, 4).map((c) => c.fill)).size, 'four distinct lights on screen').toBe(4);
 });
 
 // A failure outranks a question: if one agent is stuck on a red and another
@@ -176,10 +178,10 @@ test('the scene is told which software owns which light, in fixed order', async 
   await settled(page, () => {
     const last = window.__ring[window.__ring.length - 1];
     return last ? last.agents.length : 0;
-  }).toBe(4);
+  }).toBe(5);
 
-  // 4 个注册软件都在（deepseek 没会话 = 离线占位）：灯环段位置固定，和胸口槽位、
-  // pills 行一致。offline 段 hex 为空，由 3D 端画成暗色。
+  // 5 个注册软件都在（deepseek / codebuddy 没会话 = 离线占位）：灯环段位置固定，
+  // 和胸口槽位、pills 行一致。offline 段 hex 为空，由 3D 端画成暗色。
   const agents = await page.evaluate(() =>
     window.__ring[window.__ring.length - 1].agents.map((a) => `${a.agent}:${a.state}:${a.worst}`));
 
@@ -188,6 +190,7 @@ test('the scene is told which software owns which light, in fixed order', async 
     'claude:busy:false',
     'codex:error:true',
     'workbuddy:waiting:false',
+    'codebuddy:offline:false',
   ]);
 });
 
@@ -218,12 +221,13 @@ test('one software with several sessions still shows a single row', async ({ pag
 
   // Every registered software keeps exactly one row, in the fixed order; two
   // WorkBuddy sessions must collapse into its single row rather than add another.
-  await settled(page, () => document.querySelectorAll('.pill').length).toBe(4);
+  await settled(page, () => document.querySelectorAll('.pill').length).toBe(5);
   await settled(page, () => document.querySelectorAll('.pill[data-agent="workbuddy"]').length).toBe(1);
 
   const rows = await page.evaluate(() =>
     [...document.querySelectorAll('.pill')].map((el) => el.dataset.agent));
-  expect(rows, 'one row per software, fixed order').toEqual(['deepseek', 'claude', 'codex', 'workbuddy']);
+  expect(rows, 'one row per software, fixed order')
+    .toEqual(['deepseek', 'claude', 'codex', 'workbuddy', 'codebuddy']);
 
   // 两个会话合成一行时，行上要写 ×2：否则「Claude 出错了」看不出是三个里哪个，
   // 而 README 一直承诺标签会带 ×N。
@@ -239,8 +243,8 @@ test('the software list honours the offline and row-limit settings', async ({ pa
   await page.locator('#s-gear').click();
   await expect(page.locator('#menu')).toBeVisible();
 
-  // Default: all four software keep a row.
-  await settled(page, () => document.querySelectorAll('.pill').length).toBe(4);
+  // Default: every registered software keeps a row.
+  await settled(page, () => document.querySelectorAll('.pill').length).toBe(5);
 
   // Hide the ones that are not running (the control lives in a collapsed group,
   // so drive it directly rather than depending on scroll/visibility).
@@ -258,14 +262,14 @@ test('the software list honours the offline and row-limit settings', async ({ pa
     el.checked = true;
     el.dispatchEvent(new Event('change'));
   });
-  await settled(page, () => document.querySelectorAll('.pill').length).toBe(4);
+  await settled(page, () => document.querySelectorAll('.pill').length).toBe(5);
   await page.evaluate(() => {
     const sel = document.getElementById('m-maxrows');
     sel.value = '2';
     sel.dispatchEvent(new Event('change'));
   });
   await settled(page, () => document.querySelectorAll('.pill:not(.more)').length).toBe(2);
-  await settled(page, () => document.querySelector('.pill.more')?.textContent).toContain('还有 2 个');
+  await settled(page, () => document.querySelector('.pill.more')?.textContent).toContain('还有 3 个');
 });
 
 // 行数预算必须先给「真的在跑」的软件：否则 maxRows=2 时前两行是两个离线占位，
@@ -724,8 +728,8 @@ test('with nothing connected the robot never claims a state', async ({ page }) =
   await api('/state', { session: 'a', state: 'offline' });
   // Rows never disappear — every software keeps its dark row — but none may
   // claim a live state when nothing is reporting.
-  await settled(page, () => document.querySelectorAll('.pill').length).toBe(4);
-  await settled(page, () => document.querySelectorAll('.pill.offline').length).toBe(4);
+  await settled(page, () => document.querySelectorAll('.pill').length).toBe(5);
+  await settled(page, () => document.querySelectorAll('.pill.offline').length).toBe(5);
 
   if (running) {
     // It can prove Claude exists, so it says "not reporting" instead of "off".

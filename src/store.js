@@ -42,7 +42,7 @@ const PRIORITY = { error: 6, waiting: 5, busy: 4, done: 3, unknown: 2, idle: 1, 
 // order is also the tie-break for the main lamp: on equal severity, the first
 // name here wins, so DeepSeek Harness is the canonical "main" agent on a tie.
 // Anything not listed here is appended alphabetically.
-const AGENT_ORDER = ['deepseek', 'claude', 'codex', 'workbuddy'];
+const AGENT_ORDER = ['deepseek', 'claude', 'codex', 'workbuddy', 'codebuddy'];
 const MAX_SLOTS = 8;
 
 // Local calendar day, the key for "today's stats". Rollover resets the counters.

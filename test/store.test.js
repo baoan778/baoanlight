@@ -63,7 +63,8 @@ test('a failure outranks a question, a question outranks work', () => {
 test('every registered software keeps a fixed slot, running or not', () => {
   const s = new Store();
   const empty = s.snapshot();
-  assert.deepEqual(empty.slots.map((x) => x.agent), ['deepseek', 'claude', 'codex', 'workbuddy']);
+  assert.deepEqual(empty.slots.map((x) => x.agent),
+    ['deepseek', 'claude', 'codex', 'workbuddy', 'codebuddy']);
   assert.ok(empty.slots.every((x) => x.state === 'offline' && x.count === 0));
 
   s.set({ session: 'c1', agent: 'claude', state: 'busy' });
@@ -103,15 +104,17 @@ test('a tie on priority is broken by slot order, never by arrival time', async (
     'deepseek comes first in the fixed order, even though claude reported later');
 });
 
-// Anything outside the built-in four is appended alphabetically, so a new
+// Anything outside the built-in list is appended alphabetically, so a new
 // agent works without touching the robot.
 test('an unregistered software is still shown, after the known ones', () => {
   const s = new Store();
   s.set({ session: 'z1', agent: 'zed', state: 'busy' });
   s.set({ session: 'a1', agent: 'acme', state: 'idle' });
 
+  // 内置槽位在前（见 AGENT_ORDER），未登记的按字母序追加在后面。
+  const builtIn = s.snapshot().slots.length - 2;
   assert.deepEqual(
-    s.snapshot().slots.map((x) => x.agent).slice(4, 6),
+    s.snapshot().slots.map((x) => x.agent).slice(builtIn),
     ['acme', 'zed']
   );
 });

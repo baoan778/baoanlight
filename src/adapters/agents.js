@@ -72,6 +72,17 @@ const LOG_DIRS = {
       path.join(home(), '.config', 'claude', 'projects'),
     ];
   },
+  codebuddy: () => {
+    // CodeBuddy / WorkBuddy 的 CLI 与 IDE 都把每轮对话写成
+    //   ~/.workbuddy/projects/<项目>/<sessionId>.jsonl
+    // 这是它唯一实时更新的结构化来源（任务板只在你建任务时才有内容）。
+    const root = firstEnv('CODEBUDDY_HOME', 'WORKBUDDY_HOME') || path.join(home(), '.workbuddy');
+    return [
+      path.join(root, 'projects'),
+      path.join(appData(), 'WorkBuddy', 'projects'),
+      path.join(appData(), 'CodeBuddy', 'projects'),
+    ];
+  },
 };
 
 const AGENTS = {
@@ -108,6 +119,14 @@ const AGENTS = {
     how: 'its task board',
     detail: '`bao watch workbuddy` (coarse) — or exact via `bao hook --agent workbuddy`',
     logs: LOG_DIRS.workbuddy,
+  },
+  codebuddy: {
+    label: 'CodeBuddy',
+    tier: 'log',
+    accent: '#2f9cf4',
+    how: 'its session transcript',
+    detail: 'exact, per turn — `bao watch codebuddy`（CodeBuddy / WorkBuddy CLI 共用）',
+    logs: LOG_DIRS.codebuddy,
   },
   gemini: {
     label: 'Gemini CLI',
