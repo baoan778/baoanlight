@@ -610,3 +610,25 @@ test('the spoken text is never delayed behind the lamp', () => {
   const js = overlayFile('ui.js');
   assert.doesNotMatch(js, /spokenAt/, 'no throttle clock may gate the announcement');
 });
+
+// Windows 上，从一个没有控制台的父进程里 spawn node.exe 时，子进程默认会被分配
+// 一个新的控制台窗口 —— 用户看到的就是「动不动弹出一个黑框」。凡是从后台拉起的
+// 子进程都必须带 windowsHide，否则每重启一次 watcher 就是三个空窗口。
+test('children spawned in the background never pop a console window', () => {
+  const js = fs.readFileSync(path.join(__dirname, '..', 'src', 'cli.js'), 'utf8');
+  const sites = [
+    'const child = spawn(process.execPath, args,',
+    'const child = spawn(String(electron)',
+  ];
+  for (const anchor of sites) {
+    const at = js.indexOf(anchor);
+    assert.ok(at > 0, `spawn site missing: ${anchor}`);
+    assert.match(js.slice(at, at + 900), /windowsHide: true/,
+      `${anchor} must pass windowsHide: true`);
+  }
+  // watch all 的三个子进程是最常见的那种「黑框」：单独再钉一遍它的启动块。
+  const watcher = js.indexOf("stdio: ['ignore', 'pipe', 'pipe']");
+  assert.ok(watcher > 0, 'watch-all child spawn is still where the test expects it');
+  assert.match(js.slice(watcher, watcher + 200), /windowsHide: true/,
+    'each watcher child must hide its console window');
+});

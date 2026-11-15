@@ -176,6 +176,10 @@ function spawnOverlay(port) {
     env: { ...process.env, BAOANLIGHT_PORT: String(port), ELECTRON_NO_ATTACH_CONSOLE: '1' },
     stdio: 'ignore',
     detached: false,
+    // Windows：父进程（server）是带 CREATE_NO_WINDOW 起来的、没有控制台，子进程
+    // 若不带这个标志，系统会给它**新分配一个控制台窗口** —— 每 `bao start` 一次
+    // 就有一个黑框弹出来。ELECTRON_NO_ATTACH_CONSOLE 只阻止「附着」，不阻止「新建」。
+    windowsHide: true,
   });
   child.on('error', () => {});
   return child;
@@ -320,7 +324,11 @@ async function cmdStart(flags) {
   if (flags.browser) {
     const url = `http://127.0.0.1:${port}/`;
     const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-    spawn(opener, [url], { shell: process.platform === 'win32', stdio: 'ignore' }).on('error', () => {});
+    spawn(opener, [url], {
+      shell: process.platform === 'win32',
+      stdio: 'ignore',
+      windowsHide: true,
+    }).on('error', () => {});
     console.log(`robot in browser: ${url}`);
     return hold();
   }
@@ -705,7 +713,14 @@ function cmdWatchAll(flags = {}) {
   for (const t of targets) {
     const args = [path.join(ROOT, 'src', 'cli.js'), 'watch', t];
     if (flags.quiet) args.push('--quiet');
-    const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+    // windowsHide 必须显式给：`watch all` 常常是从一个没有控制台的父进程里起来的
+    // （`bao start` 的 detached 分支、开机自启的 VBS 都是隐藏启动），子进程默认会
+    // 被分配一个新的控制台窗口 —— 每重启一次 watcher 就弹出三个黑框。
+    const child = spawn(process.execPath, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: process.env,
+      windowsHide: true,
+    });
     prefix(child.stdout, t);
     prefix(child.stderr, t);
     child.on('error', () => {});
