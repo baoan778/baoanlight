@@ -2,6 +2,7 @@
 'use strict';
 
 const os = require('os');
+const fs = require('fs');
 const path = require('path');
 const { spawn, execFileSync } = require('child_process');
 const config = require('./config');
@@ -613,7 +614,40 @@ function cmdWatch(positional, flags) {
 // and they should all be watched at once. Each gets its own process on purpose:
 // if one agent's logs move or are missing, that watcher exits and says why, and
 // the other two keep reporting instead of dying with it.
+// 两个 `watch all` 会把同一份日志盯两遍：CPU 翻倍，两棵树各自上报同一批会话，
+// 界面上的「忙碌时长」也会被重复计。用一个 pid 锁挡住第二次启动。锁里的进程已经
+// 不在了（崩溃留下的陈锁）就当作没有锁。
+function watchAllLockFile() {
+  return path.join(config.DIR, 'watch-all.pid');
+}
+
+function acquireWatchAllLock() {
+  const file = watchAllLockFile();
+  try {
+    const pid = Number(String(fs.readFileSync(file, 'utf8')).trim());
+    if (pid && pid !== process.pid) {
+      let alive = false;
+      try { process.kill(pid, 0); alive = true; } catch { /* 已经不在了 */ }
+      if (alive) {
+        console.error(`${c.yel('!')} another \`bao watch all\` is already running (pid ${pid}) — nothing to do.`);
+        console.error(c.dim('  two of them would watch the same logs twice. Stop that one first if you want a fresh start.'));
+        return false;
+      }
+    }
+  } catch { /* 没有锁 = 直接拿 */ }
+  try { config.ensureDir(); fs.writeFileSync(file, String(process.pid)); } catch { /* 写不进也别挡住功能 */ }
+  return true;
+}
+
+function releaseWatchAllLock() {
+  const file = watchAllLockFile();
+  try {
+    if (Number(String(fs.readFileSync(file, 'utf8')).trim()) === process.pid) fs.unlinkSync(file);
+  } catch { /* 不是我们的，或已经被清掉 */ }
+}
+
 function cmdWatchAll(flags = {}) {
+  if (!acquireWatchAllLock()) return undefined;
   const targets = ['codex', 'deepseek', 'workbuddy'];
   const children = [];
 
@@ -646,7 +680,10 @@ function cmdWatchAll(flags = {}) {
 
   console.log(`${c.grn('●')} watching ${targets.join(' · ')} — Ctrl+C to stop`);
 
-  const stop = () => { for (const ch of children) { try { ch.kill(); } catch { /* already gone */ } } };
+  const stop = () => {
+    for (const ch of children) { try { ch.kill(); } catch { /* already gone */ } }
+    releaseWatchAllLock();
+  };
   process.on('exit', stop);
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { stop(); process.exit(0); });
 
