@@ -79,6 +79,8 @@ const LOG_DIRS = {
     const root = firstEnv('CODEBUDDY_HOME', 'WORKBUDDY_HOME') || path.join(home(), '.workbuddy');
     return [
       path.join(root, 'projects'),
+      // 新版可能把 transcript 挪到自己的目录下（这台机器上该目录已存在，暂时是空的）。
+      path.join(home(), '.codebuddy', 'projects'),
       path.join(appData(), 'WorkBuddy', 'projects'),
       path.join(appData(), 'CodeBuddy', 'projects'),
     ];
