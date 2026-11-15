@@ -48,7 +48,7 @@ const DOT = {
   error: () => c.red('●'),
   waiting: () => c.yel('●'),
   busy: () => c.grn('●'),
-  done: () => c.grn('○'),
+  done: () => c.dim('○'),
   idle: () => c.dim('●'),
   unknown: () => c.dim('◐'),
   offline: () => c.dim('○'),
@@ -509,7 +509,10 @@ async function cmdStatus(flags = {}) {
   if (!snap.sessions.length) return console.log(c.dim('  no active agents'));
   for (const s of snap.sessions) {
     const age = Math.round((Date.now() - s.since) / 1000);
-    const note = s.quiet
+    // 「silent」只对还在忙、却不再上报的会话才有意义（那才是卡住的信号）。一个
+    // 正常 idle/done 的会话本来就该安静，标成「失联 N 分钟」和界面里 idle=就绪 矛盾。
+    const quietStuck = s.quiet && (s.state === 'busy' || s.state === 'unknown');
+    const note = quietStuck
       ? `${s.detail || ''} (silent ${Math.round(s.quietFor / 60000)}m)`.trim()
       : s.detail || '';
     console.log(`  ${DOT[s.state]()} ${s.agent.padEnd(12)} ${String(s.state).padEnd(8)} ${c.dim(`${age}s  ${note}`)}`);

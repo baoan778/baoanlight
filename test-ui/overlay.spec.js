@@ -7,10 +7,18 @@
 // Every test here corresponds to something that was once visibly wrong.
 
 const { test, expect } = require('@playwright/test');
-const { start } = require('../src/server');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+
+// 隔离到临时目录：本套件在 port 0 上起 server，必须把 HOME 指走，否则临时端口
+// 会写进 ~/.baoanlight/port，覆盖用户真实机器人的端口 —— 正是「服务在跑、
+// status 却说 not running」的根因。必须在 require server 之前设好（config.DIR
+// 在模块加载时就定死了）。
+const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-ui-'));
+process.env.BAOANLIGHT_HOME = testHome;
+
+const { start } = require('../src/server');
 
 const GUTTER = 16;             // minimum clear space around the robot
 let server;
@@ -33,7 +41,9 @@ test.beforeAll(async () => {
 test.afterAll(() => {
   server && server.close();
   delete process.env.BAOANLIGHT_CCSWITCH_HOME;
+  delete process.env.BAOANLIGHT_HOME;
   if (ccSwitchHome) fs.rmSync(ccSwitchHome, { recursive: true, force: true });
+  if (testHome) fs.rmSync(testHome, { recursive: true, force: true });
 });
 
 const api = (path, body) =>

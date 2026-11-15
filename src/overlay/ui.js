@@ -741,9 +741,9 @@ import {
   const stuckEscalated = new Set();
   function checkStuck(sessions) {
     const stuckAgents = new Set();
-    // 「静音 1 小时」必须对所有出口生效。原来这里直接调 bridge.notify，是
-    // 唯一漏掉 isMuted() 的一条 —— 开会时最不该弹的恰好是它（卡住提醒）。
-    const canNotify = inElectron && bridge.notify && !isMuted();
+    // 「静音 1 小时」与「定时勿扰」必须对所有出口生效。这里原来直接调 bridge.notify，
+    // 是唯一漏掉 isMuted()/isDnd() 的一条 —— 深夜勿扰时段里最不该弹的恰好是它（卡住提醒）。
+    const canNotify = inElectron && bridge.notify && !isMuted() && !isDnd();
     for (const s of sessions) {
       // 关掉通知的软件，卡住提醒也不弹（否则「静音」只是少了一类噪音）。
       if (isAgentMuted(s.agent)) continue;

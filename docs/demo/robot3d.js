@@ -2873,7 +2873,9 @@ if (host && renderer) {
     // hold, fall — a wave that fades in and out reads as a machine restarting,
     // not as a machine waving.
     const greet = t - greetAt;
-    const greeting = greet >= 0 && greet < 2.0;
+    // 双击挥手也和别的动作一样尊重「减少动态效果」：戳一下已经判了 reduceMotion，
+    // 这里漏了 —— 关了动效双击还是在挥手，语义被部分破坏。
+    const greeting = !reduceMotion && greet >= 0 && greet < 2.0;
     const greetRise = greeting ? Math.min(1, greet / 0.3) * (1 - Math.max(0, greet - 1.45) / 0.55) : 0;
     const done = t - doneAt;
     const doneNod = !reduceMotion && done >= 0 && done < 1.6 ? Math.sin(done * 9) * 0.07 * (1 - done / 1.6) : 0;
@@ -3500,7 +3502,9 @@ if (host && renderer) {
   function updateMotionCues(dt, yawDelta, crazy, busy, waiting, error) {
     // ---- motion cues: treads and sprockets
     const crazyRun = crazy >= 0 && crazy < 2.2;
-    const speed = crazyRun ? 5 : busy ? 1.55 : waiting ? 0 : error ? 0 : 0.12;
+    // 「减少动态效果」下履带/轮子也停：busy 时 1.55 的滚速在降动效下还在转，
+    // 和静止的主体自相矛盾。
+    const speed = reduceMotion ? 0 : (crazyRun ? 5 : busy ? 1.55 : waiting ? 0 : error ? 0 : 0.12);
     // Forward drives every belt the same way; a turn drives the two belts
     // opposite ways (one runs forward, the other back), which is what a tracked
     // machine does when it steers. The steer term is folded in here so forward
@@ -3546,6 +3550,14 @@ if (host && renderer) {
   function updateAntenna(off, error, busy, waiting, idle, unknown, t) {
     // ---- 天线：忙碌抖得快、空闲慢摇、出错乱颤，顶端小球跟着状态灯变色
     antennaTipMat.emissive.copy(tint);
+    // 「减少动态效果」下天线也该静止：否则主体都停稳了，天线还在 1.2~16Hz 摇摆，
+    // 可达性/省电的语义被漏掉一处。
+    if (reduceMotion) {
+      antenna.rotation.z = 0;
+      antenna.rotation.x = -0.16;
+      antennaTipMat.emissiveIntensity = off ? 0.25 : 1.1;
+      return;
+    }
     const antennaFreq = off ? 1.2 : error ? 16 : busy ? 6.5 : waiting ? 4.5 : 2.6;
     const antennaAmp = off ? 0.008 : error ? 0.09 : busy ? 0.055 : idle || unknown ? 0.032 : 0.02;
     antenna.rotation.z = Math.sin(t * antennaFreq) * antennaAmp;

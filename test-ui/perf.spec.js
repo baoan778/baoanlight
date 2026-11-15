@@ -13,6 +13,15 @@
 // `#bot[data-fps]` 是渲染循环自己测出来的真实帧率（不是目标值），`data-quality`
 // 只在降级后出现 —— 两者都是给这里读的埋点。
 const { test, expect } = require('@playwright/test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+// 与 overlay.spec 同一件事：port 0 起 server 必须把 HOME 指走，否则临时端口会写进
+// 用户真实的 ~/.baoanlight/port，覆盖真实机器人的端口。require server 之前设好。
+const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-perf-'));
+process.env.BAOANLIGHT_HOME = testHome;
+
 const { start } = require('../src/server');
 
 let server;
@@ -26,7 +35,11 @@ test.beforeAll(async () => {
   base = `http://127.0.0.1:${server.address().port}`;
 });
 
-test.afterAll(() => server && server.close());
+test.afterAll(() => {
+  server && server.close();
+  delete process.env.BAOANLIGHT_HOME;
+  if (testHome) fs.rmSync(testHome, { recursive: true, force: true });
+});
 
 const api = (path, body) =>
   fetch(base + path, {
