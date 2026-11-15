@@ -259,7 +259,12 @@ class Store extends EventEmitter {
         // A session that has only ever announced itself is not the same as one
         // that has done work. Agents sometimes open a session and abandon it
         // without ever reporting an end, and those must not linger as if real.
-        everBusy: prev?.everBusy || next === 'busy' || next === 'waiting' || next === 'error',
+        // `done` 也算「干过活」：那是一条「这一轮结束了」的结论，只有真的跑过才会
+        // 出现。不算进去的话，一个只报「完成 / 空闲」的会话（例如读 transcript 的
+        // 适配器，它恢复出来的第一帧往往就是 done）会被当成「只报到、没干活」，
+        // 2 分钟后从灯上消失，用户看到的就是「明明在用，灯却不见了」。
+        everBusy: prev?.everBusy || next === 'busy' || next === 'waiting'
+          || next === 'error' || next === 'done',
         since: prev && prev.state === next ? prev.since : now,
         updatedAt: now,
       });

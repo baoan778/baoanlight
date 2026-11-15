@@ -265,6 +265,15 @@ test('a session counts as used once it goes busy or waiting', () => {
   assert.ok(s.snapshot().sessions[0].everBusy, 'and it stays used after finishing');
 });
 
+// 「完成」是一条结论，只有真跑过才会出现。读 transcript 的适配器恢复出来的第一帧
+// 往往就是 done；如果它不算「用过」，这个会话会在 2 分钟后被当成幻影清掉 ——
+// 用户看到的就是「明明在用，灯却没了」。
+test('a session that has only reported done still counts as used', () => {
+  const s = new Store();
+  s.set({ session: 'a', agent: 'codebuddy', state: 'done' });
+  assert.ok(s.snapshot().sessions[0].everBusy, 'done means a turn really finished');
+});
+
 test('sessions expire after the TTL', async () => {
   const s = new Store({ ttlMs: 80 });
   s.set({ session: 'a', state: 'idle' });
