@@ -156,9 +156,9 @@ function run({ dir, interval = POLL_MS, quiet = false, agent = 'codebuddy' } = {
   };
 
   tick();
-  const timer = setInterval(tick, interval);
-  if (timer.unref) timer.unref();
-  return timer;
+  // 不要 unref：这个定时器是进程活着的唯一理由。unref 之后事件循环没有任何
+  // 句柄，Node 会在第一次 tick 结束后直接 exit 0 —— 表现就是「灯闪一下就没」。
+  return setInterval(tick, interval);
 }
 
 module.exports = { run, stateOf, detailOf, listTranscripts };
