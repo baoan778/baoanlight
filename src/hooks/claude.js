@@ -12,6 +12,14 @@ const path = require('path');
 const { setState, noteUnknown } = require('../client');
 const { DIR, ensureDir } = require('../config');
 
+// 同一个脚本被多套 hook 协议复用：Claude Code 报 claude，CodeBuddy/WorkBuddy 也
+// 用这同一份（命令带 `--agent codebuddy`）。否则 CodeBuddy 的事件会被标成 claude，
+// 和真 Claude 撞在同一条会话上互相覆盖。
+const agent = (() => {
+  const i = process.argv.indexOf('--agent');
+  return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : 'claude';
+})();
+
 // Every event that arrives, appended to ~/.baoanlight/hook-events.log.
 // Cheap, and the only way to see what an agent actually sends versus what its
 // docs claim. Set BAOANLIGHT_LOG=0 to turn it off.
@@ -33,6 +41,10 @@ const EVENT_STATE = {
   PreCompact: 'busy',
   Notification: 'waiting',   // permission prompt / "Claude is waiting for your input"
   Stop: 'idle',              // turn finished, ready for a new task
+  // CodeBuddy / WorkBuddy 在会话彻底结束时补发 FinalStop（带 final_stop_reason）。
+  // 不映射的话它会落到「无法识别的事件」，在面板上挂一条提示 —— 而这其实是个
+  // 再正常不过的收尾。映射成 done，紫灯闪一下再回空闲。
+  FinalStop: 'done',
   SessionEnd: 'offline',
 };
 
@@ -115,8 +127,8 @@ async function main() {
   log(`${name} -> ${state}${evt.tool_name ? ' (' + evt.tool_name + ')' : ''} [${sid}]`);
 
   await setState({
-    session: evt.session_id ? `claude:${evt.session_id}` : 'claude:default',
-    agent: 'claude',
+    session: evt.session_id ? `${agent}:${evt.session_id}` : `${agent}:default`,
+    agent,
     state,
     detail: state === 'error' ? `${evt.tool_name || 'tool'} failed` : detailFor(evt),
     cwd: cwd || '',

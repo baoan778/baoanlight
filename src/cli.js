@@ -697,49 +697,39 @@ function releaseWatchAllLock() {
 
 function cmdWatchAll(flags = {}) {
   if (!acquireWatchAllLock()) return undefined;
-  // codebuddy 放在最后：它的 transcript 最可能和别的来源同时活跃，排在后面不会
-  // 抢主灯（同优先级按固定槽位顺序取第一个）。
-  const targets = ['codex', 'deepseek', 'workbuddy', 'codebuddy'];
-  const children = [];
-
-  const prefix = (stream, tag) => {
-    let buf = '';
-    stream.setEncoding('utf8');
-    stream.on('data', (chunk) => {
-      buf += chunk;
-      let i;
-      while ((i = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, i);
-        buf = buf.slice(i + 1);
-        if (line.trim()) process.stdout.write(`${c.dim(`[${tag}]`)} ${line}\n`);
-      }
-    });
-  };
-
-  for (const t of targets) {
-    const args = [path.join(ROOT, 'src', 'cli.js'), 'watch', t];
-    if (flags.quiet) args.push('--quiet');
-    // windowsHide 必须显式给：`watch all` 常常是从一个没有控制台的父进程里起来的
-    // （`bao start` 的 detached 分支、开机自启的 VBS 都是隐藏启动），子进程默认会
-    // 被分配一个新的控制台窗口 —— 每重启一次 watcher 就弹出三个黑框。
-    const child = spawn(process.execPath, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: process.env,
-      windowsHide: true,
-    });
-    prefix(child.stdout, t);
-    prefix(child.stderr, t);
-    child.on('error', () => {});
-    child.on('exit', (code) => {
-      if (code) console.error(`${c.yel('!')} ${t} watcher exited (${code}) — run \`bao watch ${t}\` to see why`);
-    });
-    children.push(child);
+  // 以前每个软件一个 node 子进程：四个子进程 = 四份常驻内存、四条 SSE 长连接、
+  // 四次目录扫描。对一个一整天坐在桌面上的程序，这笔开销是持续的。各 watcher 的
+  // run() 本来就是非阻塞的（内部靠定时器活着），所以直接在同一进程里跑，各自
+  // 独立开关；其中一个的来源坏掉，只停它自己，不会拖垮别的。
+  const SOURCES = [
+    ['codex', 'log-watch'],
+    ['deepseek', 'dsh-watch'],
+    ['workbuddy', 'task-watch'],
+    ['codebuddy', 'wbt-watch'],
+  ];
+  const handles = [];
+  const started = [];
+  for (const [name, mod] of SOURCES) {
+    try {
+      const w = require(`./adapters/${mod}`);
+      const h = w.run({ agent: name, quiet: flags.quiet, interval: flags.interval });
+      handles.push(h);
+      started.push(name);
+    } catch (err) {
+      console.error(`${c.yel('!')} ${name} watcher could not start: ${err.message}`);
+    }
   }
 
-  console.log(`${c.grn('●')} watching ${targets.join(' · ')} — Ctrl+C to stop`);
+  console.log(`${c.grn('●')} watching ${started.join(' · ')} — Ctrl+C to stop`);
 
   const stop = () => {
-    for (const ch of children) { try { ch.kill(); } catch { /* already gone */ } }
+    for (const h of handles) {
+      try {
+        // 各 run() 返回形状不同：log/dsh/task 返回 { stop }，wbt 返回一个定时器。
+        if (h && typeof h.stop === 'function') h.stop();
+        else if (h && typeof h === 'object') clearInterval(h);
+      } catch { /* 已经在停 */ }
+    }
     releaseWatchAllLock();
   };
   process.on('exit', stop);
@@ -781,6 +771,27 @@ function cmdInstall(positional, flags) {
       console.log(c.dim('  For everyday use, install once and wire up from there:'));
       console.log(c.dim('    npm install -g baoanlight && bao connect claude'));
     }
+    return;
+  }
+  if (target === 'codebuddy' || target === 'workbuddy') {
+    // CodeBuddy 的 hook 表只在它启动时读一次，所以要重启 IDE 才生效；
+    // transcript 观察器（bao watch codebuddy）不需要重启，两套可以同时用。
+    let r;
+    try {
+      r = install.installCodebuddy();
+    } catch (err) {
+      console.error(`${c.red('✗')} ${err.message}`);
+      console.error(c.dim('  Nothing was written. Fix or move that file, then run it again.'));
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`${c.grn('●')} CodeBuddy hooks installed (${r.events} events)`);
+    console.log(c.dim(`  ${r.file}`));
+    if (r.backup) console.log(c.dim(`  backup: ${r.backup}`));
+    console.log(c.yel('  Restart CodeBuddy once — it reads the hook table at startup.'));
+    console.log('');
+    console.log(`${c.grn('✓')} Then every prompt and tool call updates the robot in real time.`);
+    console.log(c.dim('  Without the restart, `bao watch codebuddy` still works from the transcript.'));
     return;
   }
   if (target === 'codex') {
@@ -858,7 +869,21 @@ function cmdUninstall(positional, flags) {
     console.log(r.removed ? `removed baoanlight notify from ${r.file}` : `no baoanlight notify in ${r.file} — nothing to do`);
     return;
   }
-  console.error('usage: bao disconnect <claude|codex>');
+  if (target === 'codebuddy' || target === 'workbuddy') {
+    let r;
+    try {
+      r = install.uninstallCodebuddy();
+    } catch (err) {
+      console.error(`${c.red('✗')} ${err.message}`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(r.removed
+      ? `removed baoanlight hooks from ${r.file} (restart CodeBuddy to apply)`
+      : `no baoanlight hooks in ${r.file} — nothing to do`);
+    return;
+  }
+  console.error('usage: bao disconnect <claude|codex|codebuddy>');
   process.exit(1);
 }
 

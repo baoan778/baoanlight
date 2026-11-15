@@ -12,11 +12,13 @@ const HOME = os.homedir();
 // still works if the checkout gets renamed or moved. `signalhead` stays in the
 // pattern on purpose: someone upgrading from the old name must be able to
 // disconnect the hooks it left behind.
-const isOurs = (cmd) => /baoanlight|signalhead|src[\\/]+hooks[\\/]+(?:claude|codex|event)\.js/.test(String(cmd || ''));
+const isOurs = (cmd) => /baoanlight|signalhead|src[\\/]+hooks[\\/]+(?:claude|codex|event|codebuddy)\.js/.test(String(cmd || ''));
 
 const hookScript = (name) => path.join(ROOT, 'src', 'hooks', `${name}.js`).replace(/\\/g, '/');
 const nodeBin = process.execPath.replace(/\\/g, '/');
 const cmdFor = (name) => `"${nodeBin}" "${hookScript(name)}"`;
+// 复用 claude.js 那份脚本（同一套 hook 协议），只是把 agent 标成 codebuddy。
+const cmdForAgent = (agent) => `"${nodeBin}" "${hookScript('claude')}" --agent ${agent}`;
 
 // Hook commands carry an absolute path to a script in this install. If that
 // install is a working checkout, every hook invocation — and they fire on every
@@ -291,11 +293,98 @@ function claudeHookCount(scope = 'user') {
   }
 }
 
+// ------------------------------------------------------------- CodeBuddy
+//
+// CodeBuddy（与 WorkBuddy 同源）跑的是 Claude Code 那套 hook 协议：settings.json
+// 里一个 `hooks` 对象，每个事件下是 `[{ matcher, hooks: [{ type, command }] }]`。
+// 为什么需要它：CodeBuddy 的 transcript 只在**一轮结束**时才落盘，中途看不到绿灯；
+// hook 是实时的（它自己那份 .wb-switch 就是靠 hook 收事件的）。
+//
+// 事件名用 Claude 那套；CodeBuddy 不认识的会被忽略（不会被调用，也不会报错），
+// 所以多注册几个是安全的 —— 少注册一个，那一类变化就永远看不见。
+const CODEBUDDY_EVENTS = [
+  'SessionStart',
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PostToolUse',
+  'Stop',
+  'FinalStop',
+  'SessionEnd',
+];
+
+function codebuddySettingsPath() {
+  return path.join(HOME, '.codebuddy', 'settings.json');
+}
+
+function installCodebuddy() {
+  const file = codebuddySettingsPath();
+  const bak = backup(file);
+  const settings = readJson(file);
+  settings.hooks = settings.hooks || {};
+
+  for (const event of CODEBUDDY_EVENTS) {
+    // 保留别人的 hook（这台机器上 .wb-switch 就在用同一份文件），只替换我们自己的。
+    const existing = stripOurs(settings.hooks[event] || []);
+    settings.hooks[event] = [
+      ...existing,
+      { matcher: '', hooks: [{ type: 'command', command: cmdForAgent('codebuddy') }] },
+    ];
+  }
+
+  writeJson(file, settings);
+  return {
+    file,
+    backup: bak,
+    events: CODEBUDDY_EVENTS.length,
+    fromCheckout: isCheckout(),
+    root: ROOT,
+    // hook 表是 CodeBuddy 启动时读的：已经开着的窗口要重启一次才会生效。
+    needsRestart: true,
+  };
+}
+
+function uninstallCodebuddy() {
+  const file = codebuddySettingsPath();
+  if (!fs.existsSync(file)) return { file, removed: 0, backup: null };
+  const settings = readJson(file);
+  let removed = 0;
+
+  for (const event of Object.keys(settings.hooks || {})) {
+    const before = JSON.stringify(settings.hooks[event]);
+    const after = stripOurs(settings.hooks[event]);
+    if (JSON.stringify(after) !== before) removed++;
+    if (after.length) settings.hooks[event] = after;
+    else delete settings.hooks[event];
+  }
+  if (settings.hooks && Object.keys(settings.hooks).length === 0) delete settings.hooks;
+  if (!removed) return { file, removed: 0, backup: null };
+
+  const bak = backup(file);
+  writeJson(file, settings);
+  return { file, removed, backup: bak, needsRestart: true };
+}
+
+function codebuddyHookCount() {
+  try {
+    const settings = readJson(codebuddySettingsPath());
+    return Object.values(settings.hooks || {})
+      .flat()
+      .flatMap((g) => g.hooks || [])
+      .filter((h) => isOurs(h.command) && hookScriptExists(h.command)).length;
+  } catch {
+    return 0;
+  }
+}
+
 module.exports = {
   isCheckout,
   claudeHookCount,
   installClaude,
   uninstallClaude,
+  installCodebuddy,
+  uninstallCodebuddy,
+  codebuddySettingsPath,
+  codebuddyHookCount,
   installCodex,
   uninstallCodex,
   genericSnippet,

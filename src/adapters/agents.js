@@ -127,7 +127,7 @@ const AGENTS = {
     tier: 'log',
     accent: '#2f9cf4',
     how: 'its session transcript',
-    detail: 'exact, per turn — `bao watch codebuddy`（CodeBuddy / WorkBuddy CLI 共用）',
+    detail: '实时用 `bao connect codebuddy`（需重启 IDE）；不改配置就用 `bao watch codebuddy`（每轮结束才更新）',
     logs: LOG_DIRS.codebuddy,
   },
   gemini: {
