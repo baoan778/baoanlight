@@ -93,6 +93,13 @@ const DEFAULTS = {
   armtype: '双板',
   headtype: '双筒',
   scene: '无',
+  // 场景按时间自动切换：白天一个场景、夜晚一个场景（支持跨午夜 20:00 → 07:00）。
+  // 关闭时 scene 是唯一来源；打开后 sceneSel 的值不再生效，由时间决定。
+  autoScene: false,
+  dayScene: '无',
+  nightScene: '星空',
+  nightStart: '20:00',
+  nightEnd: '07:00',
   motion: '标准',
   halo: '环形',
   baseEffect: '状态色',

@@ -728,6 +728,24 @@
         <select id="m-scene"></select>
         <i class="swatch" id="scene-swatch"></i>
       </div>
+      <label class="row"><input id="m-autoscene" type="checkbox" /> 按时间自动切换</label>
+      <div id="autoscene-opts" hidden>
+        <div class="row">
+          <label for="m-dayscene">白天场景</label>
+          <select id="m-dayscene"></select>
+        </div>
+        <div class="row">
+          <label for="m-nightscene">夜晚场景</label>
+          <select id="m-nightscene"></select>
+        </div>
+        <div class="row" id="night-times">
+          <label for="m-night-start">夜晚时段</label>
+          <input id="m-night-start" type="time" value="20:00" />
+          <span class="dash">–</span>
+          <input id="m-night-end" type="time" value="07:00" aria-label="夜晚结束时间" />
+        </div>
+        <div class="hint">跨午夜可以让结束时间早于开始时间（20:00 → 07:00）；打开后上面的「场景」不再生效，由时间决定。</div>
+      </div>
     </details>
     <details class="group">
       <summary>系统</summary>

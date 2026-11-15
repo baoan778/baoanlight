@@ -1004,6 +1004,48 @@ test('the sign colour accepts a custom hex', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => window.__signs.at(-1)?.color)).toBe('#4ad5ff');
 });
 
+// 场景按时间自动切换：打开后由时间决定白天/夜晚场景，手动那个下拉置灰但仍然
+// 显示「此刻生效的是哪一档」。关掉后回到手动。
+test('scenes can switch automatically between day and night', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '场景') s.parentElement.open = true;
+    }
+  });
+
+  // 默认：自动切换关，白天/夜晚选项隐藏，手动场景下拉可用。
+  await expect(page.locator('#autoscene-opts')).toBeHidden();
+  await expect(page.locator('#m-scene')).toBeEnabled();
+
+  // 打开自动切换：选项出现，手动下拉置灰。
+  await page.evaluate(() => {
+    const el = document.getElementById('m-autoscene');
+    el.checked = true;
+    el.dispatchEvent(new Event('change'));
+  });
+  await expect(page.locator('#autoscene-opts')).toBeVisible();
+  await expect(page.locator('#m-scene')).toBeDisabled();
+
+  // 把「夜晚时段」设成覆盖此刻（00:00 → 23:59），夜晚场景设为「星空」→ 应立刻切到星空。
+  await page.evaluate(() => {
+    const set = (id, v) => { const el = document.getElementById(id); el.value = v; el.dispatchEvent(new Event('change')); };
+    set('m-nightscene', '星空');
+    set('m-night-start', '00:00');
+    set('m-night-end', '23:59');
+  });
+  await expect(page.locator('#m-scene')).toHaveValue('星空');
+
+  // 关掉自动切换：选项收起、手动下拉恢复可用。
+  await page.evaluate(() => {
+    const el = document.getElementById('m-autoscene');
+    el.checked = false;
+    el.dispatchEvent(new Event('change'));
+  });
+  await expect(page.locator('#autoscene-opts')).toBeHidden();
+  await expect(page.locator('#m-scene')).toBeEnabled();
+});
+
 // 提示音音量过去只有配置项、没有入口。滑块要即时反映在百分比上（松手才落盘）。
 test('the cue volume slider reports its own value', async ({ page }) => {
   await page.evaluate(() => document.getElementById('btn-menu').click());

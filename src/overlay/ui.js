@@ -1920,6 +1920,79 @@ import {
     updateSwatch('scene-swatch', SCENE_COLORS[e.target.value]);
   });
 
+  // 场景按时间自动切换：白天一个、夜晚一个，夜晚时段可跨午夜。打开后上面的「场景」
+  // 下拉不再生效（由时间决定），所以把它置灰。
+  const daySceneSel = document.getElementById('m-dayscene');
+  const nightSceneSel = document.getElementById('m-nightscene');
+  for (const n of SCENE_NAMES) {
+    for (const sel of [daySceneSel, nightSceneSel]) {
+      const o = document.createElement('option');
+      o.value = n; o.textContent = n; sel.appendChild(o);
+    }
+  }
+  const autoSceneInput = document.getElementById('m-autoscene');
+  const autoSceneOpts = document.getElementById('autoscene-opts');
+  const nightStartInput = document.getElementById('m-night-start');
+  const nightEndInput = document.getElementById('m-night-end');
+
+  // 当前是否处在「夜晚时段」。跨午夜（20:00 → 07:00）时 s > e，否则 s < e。
+  const inNightWindow = () => {
+    const s = toMin(cfg.nightStart);
+    const e = toMin(cfg.nightEnd);
+    if (s == null || e == null || s === e) return false;
+    const d = new Date();
+    const hm = d.getHours() * 60 + d.getMinutes();
+    return s < e ? (hm >= s && hm < e) : (hm >= s || hm < e);
+  };
+  // 应用当前应显示的场景（仅 autoScene 打开时生效）。被打断时（手动关掉自动）由
+  // 关掉的那一处负责把场景还原。
+  let lastAutoScene = '';
+  const applyAutoScene = () => {
+    if (!cfg.autoScene) return;
+    const pick = inNightWindow() ? cfg.nightScene : cfg.dayScene;
+    const name = SCENE_NAMES.includes(pick) ? pick : '无';
+    if (name === lastAutoScene) return;
+    lastAutoScene = name;
+    // 下拉虽被置灰，也要显示「此刻生效的是哪个场景」，否则用户不知道自动切到了哪一档。
+    sceneSel.value = name;
+    window.dispatchEvent(new CustomEvent('bao:scene', { detail: { scene: name } }));
+    updateSwatch('scene-swatch', SCENE_COLORS[name]);
+  };
+  const autoSceneTime = (v, fallback) => (/^\d{1,2}:\d{2}$/.test(String(v || '')) ? v : fallback);
+  const refreshAutoSceneUI = () => {
+    autoSceneOpts.hidden = !cfg.autoScene;
+    sceneSel.disabled = !!cfg.autoScene;
+    daySceneSel.value = SCENE_NAMES.includes(cfg.dayScene) ? cfg.dayScene : '无';
+    nightSceneSel.value = SCENE_NAMES.includes(cfg.nightScene) ? cfg.nightScene : '星空';
+    nightStartInput.value = autoSceneTime(cfg.nightStart, '20:00');
+    nightEndInput.value = autoSceneTime(cfg.nightEnd, '07:00');
+  };
+  const saveAutoScene = () => {
+    if (inElectron) saveConfig({
+      autoScene: cfg.autoScene, dayScene: cfg.dayScene, nightScene: cfg.nightScene,
+      nightStart: cfg.nightStart, nightEnd: cfg.nightEnd,
+    });
+    refreshAutoSceneUI();
+    lastAutoScene = '';
+    applyAutoScene();
+  };
+  autoSceneInput.addEventListener('change', (e) => {
+    cfg.autoScene = e.target.checked;
+    saveAutoScene();
+    if (!cfg.autoScene) {
+      // 退回手动模式：把场景还原成用户之前选的，别停在自动切到的那一档。
+      window.dispatchEvent(new CustomEvent('bao:scene', { detail: { scene: sceneSel.value } }));
+      updateSwatch('scene-swatch', SCENE_COLORS[sceneSel.value]);
+    }
+  });
+  daySceneSel.addEventListener('change', (e) => { cfg.dayScene = e.target.value; saveAutoScene(); });
+  nightSceneSel.addEventListener('change', (e) => { cfg.nightScene = e.target.value; saveAutoScene(); });
+  nightStartInput.addEventListener('change', (e) => { cfg.nightStart = e.target.value; saveAutoScene(); });
+  nightEndInput.addEventListener('change', (e) => { cfg.nightEnd = e.target.value; saveAutoScene(); });
+  refreshAutoSceneUI();
+  // 每分钟看一次：跨过夜晚时段边界时自动切场景。
+  setInterval(() => { applyAutoScene(); }, 60_000);
+
   // 动效强度（省电/标准/华丽）。
   const MOTION_NAMES = ['省电', '标准', '华丽'];
   const motionSel = document.getElementById('m-motion');
@@ -2677,7 +2750,8 @@ import {
   // 导出要覆盖「设置」里的每一类自定义，否则导入回来会静默丢项：
   // 之前就漏了列表显示（是否显示未运行/模型/行数）、外观方案和语音播报。
   const EXPORT_KEYS = ['scale', 'brightness', 'baseEffect', 'body', 'theme', 'skin', 'eyestyle', 'trackstyle',
-    'tracktype', 'armskin', 'claw', 'armtype', 'headtype', 'eyeshape', 'scene', 'motion',
+    'tracktype', 'armskin', 'claw', 'armtype', 'headtype', 'eyeshape', 'scene',
+    'autoScene', 'dayScene', 'nightScene', 'nightStart', 'nightEnd', 'motion',
     'idleActions', 'idleFreq', 'halo', 'agentOrder', 'poses', 'phrases', 'nameplate', 'sound', 'soundStyle',
     'soundVolume', 'soundDone', 'notifyDone', 'dailyGoalHours', 'clickAction', 'doubleClick', 'muteMinutes', 'wear', 'finish',
     'voice', 'clickThrough', 'showLabels', 'showOffline', 'showModel', 'maxRows', 'showSys',
@@ -2763,6 +2837,16 @@ import {
       if (out[k] === undefined) continue;
       if (!TIME_RE.test(out[k])) delete out[k];
     }
+    // 自动切换：白天/夜晚只能是已知场景，时段必须是真时间（否则这段永不触发）。
+    for (const k of ['dayScene', 'nightScene']) {
+      if (out[k] === undefined) continue;
+      if (!SCENE_NAMES.includes(out[k])) delete out[k];
+    }
+    for (const k of ['nightStart', 'nightEnd']) {
+      if (out[k] === undefined) continue;
+      if (!TIME_RE.test(out[k])) delete out[k];
+    }
+    if (out.autoScene !== undefined) out.autoScene = !!out.autoScene;
     // 铭牌在机器人身上只画得下 16 个字（robot3d 会硬截断）。这里就截到同一个
     // 长度，否则设置里看到的和机器人身上写的永远不是同一句话。
     if (out.nameplate !== undefined) out.nameplate = out.nameplate.slice(0, 16);
@@ -3079,6 +3163,10 @@ import {
       const sc = SCENE_NAMES.includes(cfg.scene) ? cfg.scene : '无';
       sceneSel.value = sc;
       window.dispatchEvent(new CustomEvent('bao:scene', { detail: { scene: sc } }));
+      // 自动切换打开时，上面按 cfg.scene 设的那一下要被时间决定的结果覆盖掉。
+      refreshAutoSceneUI();
+      lastAutoScene = '';
+      applyAutoScene();
       const mo = MOTION_NAMES.includes(cfg.motion) ? cfg.motion : '标准';
       motionSel.value = mo;
       window.dispatchEvent(new CustomEvent('bao:motion', { detail: { motion: mo } }));
