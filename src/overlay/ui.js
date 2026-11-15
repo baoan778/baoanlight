@@ -355,6 +355,12 @@ import {
     flashTimer = setTimeout(() => {
       flashText = '';
       flashUntil = 0;
+      // 断开时不要把旧快照再渲染一遍：那会把过期文案（「Claude Code 正在运行」）
+      // 又写回屏幕上，和下面那行「状态未知」自相矛盾。
+      if (document.body.classList.contains('disconnected')) {
+        note.textContent = ''; note.hidden = true; note.classList.remove('on');
+        return;
+      }
       if (lastSnap) render(lastSnap);
       else { note.textContent = ''; note.hidden = true; note.classList.remove('on'); }
     }, 1600);
@@ -1320,6 +1326,8 @@ import {
     es.onopen = () => {
       retry = 0;
       disconnectedEl.hidden = true;
+      // 复位文案：下次断开时不该还挂着上一次的「N 秒后重连」。
+      disconnectedEl.textContent = '连接已断开 — 状态未知';
       document.body.classList.remove('disconnected');
     };
     es.onmessage = (e) => {
@@ -1349,12 +1357,25 @@ import {
     es.onerror = () => {
       document.body.classList.add('disconnected');
       disconnectedEl.hidden = false;
+      // 断开之后那行常驻文案就不成立了（「检测到 Claude Code 正在运行，但未上报
+      // 状态」之类）：它会在「状态未知」正上方继续断言一件此刻无法知道的事。
+      // 连正在闪的临时提示一起收掉 —— 它同样属于「刚听到的消息」。
+      clearTimeout(flashTimer);
+      flashText = '';
+      flashUntil = 0;
+      note.textContent = '';
+      note.hidden = true;
+      note.classList.remove('on');
       try { es.close(); } catch { /* 已经关了 */ }
       // 指数退避，上限 15 秒。原来固定 1.5 秒且没有上限：服务没起或端口被
       // 别的程序占着时，就是在后台永远每 1.5 秒失败一次的循环。
       retry = Math.min(retry + 1, 6);
       clearTimeout(retryTimer);
-      retryTimer = setTimeout(connect, Math.min(15_000, 500 * 2 ** retry));
+      const delayMs = Math.min(15_000, 500 * 2 ** retry);
+      // 顺带说清楚「正在自愈、还有几秒」：一句静态的「已断开」让人分不清它是
+      // 死了还是马上回来，于是要么白等、要么白重启。
+      disconnectedEl.textContent = `连接已断开 — 状态未知 · ${Math.max(1, Math.round(delayMs / 1000))} 秒后重连`;
+      retryTimer = setTimeout(connect, delayMs);
     };
   }
   connect();

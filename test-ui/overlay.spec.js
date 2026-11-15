@@ -630,6 +630,33 @@ test('a lost connection darkens the robot instead of freezing it', async ({ page
   await expect(page.locator('#disconnected')).toBeVisible();
 });
 
+// 断开时那行提示必须一起消失：它会在「状态未知」正上方继续断言一件此刻无法
+// 知道的事（「Claude Code 正在运行」「自检发现 2 个问题」）。而且 flashNote 的
+// 1.6 秒定时器不能把旧快照重新渲染回来，把过期文案又写上去。
+test('losing the connection clears the note line and keeps it clear', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '系统') s.parentElement.open = true;
+    }
+  });
+  // 打开提示音 → flashNote 显示「提示音已开启」，并起一个 1.6 秒的定时器。
+  await page.evaluate(() => {
+    const el = document.getElementById('m-sound');
+    el.checked = true;
+    el.dispatchEvent(new Event('change'));
+  });
+  await expect(page.locator('#note')).toBeVisible();
+
+  await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+  await page.evaluate(() => document.body.classList.add('disconnected'));
+  await expect(page.locator('#note')).toBeHidden();
+
+  // 等过 flashNote 的 1.6 秒定时器：它不许把过期文案写回来。
+  await page.waitForTimeout(1900);
+  await expect(page.locator('#note')).toBeHidden();
+});
+
 // ------------------------------------------------------------------ offline
 
 // "Nothing is running" and "Claude is running but its hooks are not wired up"
@@ -1334,15 +1361,22 @@ test('a triple click fires the crazy easter egg without the single/double reacti
     for (const e of ['bao:poke', 'bao:greet', 'bao:crazy']) window.addEventListener(e, () => window.__acts.push(e));
   });
 
-  // 三次快速点击（间隔 < 300ms 的反应窗口，且在 900ms 连击窗口内）。间隔取 120ms
-  // 留足余量：全套件串跑时单次 click 的派发时间会抖，间隔太大就可能把第三下挤出
-  // 900ms 窗口，让这条用例在重负载下偶发失败。
-  const robot = page.locator('#robot');
-  await robot.click({ position: { x: 30, y: 30 } });
-  await page.waitForTimeout(120);
-  await robot.click({ position: { x: 30, y: 30 } });
-  await page.waitForTimeout(120);
-  await robot.click({ position: { x: 30, y: 30 } });
+  // 三次点击必须在 900ms 连击窗口内，且彼此间隔小于 300ms 的反应窗口。用
+  // Playwright 的 click() 各自要等可见/稳定，全套件串跑时会被拉长到几百毫秒，
+  // 第三下因此偶发落到窗口之外 —— 改为在页面里一次性派发三组指针事件，时间
+  // 间隔由代码决定，不受负载影响。
+  const box = await page.locator('#robot').boundingBox();
+  await page.evaluate(([x, y]) => {
+    const el = document.elementFromPoint(x, y) || document.getElementById('robot');
+    const opts = {
+      bubbles: true, cancelable: true, composed: true,
+      clientX: x, clientY: y, screenX: x, screenY: y, pointerId: 1, button: 0, buttons: 1,
+    };
+    for (let i = 0; i < 3; i++) {
+      el.dispatchEvent(new PointerEvent('pointerdown', opts));
+      el.dispatchEvent(new PointerEvent('pointerup', { ...opts, buttons: 0 }));
+    }
+  }, [box.x + 30, box.y + 30]);
 
   await expect.poll(() => page.evaluate(() => window.__acts)).toContain('bao:crazy');
   // 前两下不得补发 poke/greet —— 彩蛋就该只有彩蛋。

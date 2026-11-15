@@ -53,6 +53,15 @@ function dayKey(now = Date.now()) {
   return `${d.getFullYear()}-${m}-${day}`;
 }
 
+// 今天 0 点的本地时间戳。「今日时长」只能算今天这一段：一个 23:50 进入 busy、
+// 跨过午夜的会话，`since` 还是昨天的时刻，直接拿 `now - since` 会把昨夜整段记到
+// 今天头上（午夜一过今日时长直接跳到几小时，还可能误触日目标庆祝）。
+function startOfDay(now = Date.now()) {
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
 function normaliseState(state) {
   const name = ALIASES[state] || state;
   if (!STATES.includes(name)) {
@@ -203,8 +212,12 @@ class Store extends EventEmitter {
         fuel: null,
         everBusy: false,
         since: Date.now(),
+        updatedAt: Date.now(),
       };
-      this.sessions.set(session, { ...base, fuel: normaliseFuel(fuel), updatedAt: Date.now() });
+      // 额度上报不是「活动」：不能刷新 updatedAt。它被三处超时判定依赖
+      // （unused 回收 / busy 静默丢弃 / quiet 变暗），刷新它会让一个只报额度的
+      // 幻影「就绪」槽位永不回收，也会让一个真在跑的 busy 会话永不判静默。
+      this.sessions.set(session, { ...base, fuel: normaliseFuel(fuel) });
       this.emit('change', this.snapshot());
       return this.snapshot();
     }
@@ -215,7 +228,9 @@ class Store extends EventEmitter {
     // A run leaving busy closes out its busy time. `since` is when it entered
     // busy, so the elapsed is the honest duration of that stretch of work.
     if (prev && prev.state === 'busy' && next !== 'busy') {
-      this.accumulateBusy(prev.agent, now - prev.since);
+      // 只结算「今天」那一段：跨午夜的忙碌在昨天已经过不去了（昨天的账早已归档），
+      // 全算给今天会让今日时长凭空多出几小时。
+      this.accumulateBusy(prev.agent, now - Math.max(prev.since, startOfDay(now)));
     }
     // 今日战绩：进入完成/出错各记一次（同一状态连续上报不重复计）。
     if (prev && prev.state !== next) {
@@ -387,8 +402,12 @@ class Store extends EventEmitter {
       events: { ...this.stats.events },
       history: { ...this.stats.history },
     };
+    const dayStart = startOfDay(now);
     for (const s of sessions) {
-      if (s.state === 'busy') stats.byAgent[s.agent] = (stats.byAgent[s.agent] || 0) + (now - s.since);
+      if (s.state !== 'busy') continue;
+      // 同上：只把今天这一段算进今日时长，跨午夜的 `since` 不能整段计入。
+      const from = Math.max(s.since, dayStart);
+      if (now > from) stats.byAgent[s.agent] = (stats.byAgent[s.agent] || 0) + (now - from);
     }
 
     return {

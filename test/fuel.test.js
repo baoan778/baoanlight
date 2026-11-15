@@ -91,6 +91,40 @@ test('an explicit create from `bao fuel` makes a complete idle session', () => {
   assert.equal(only.fuel.remaining, 63);
 });
 
+// 额度上报不是「活动」：它不能刷新 updatedAt。三处超时判定（未干活回收 / busy
+// 静默丢弃 / quiet 变暗）都依赖这个时间，一刷新就全都失效。
+test('a fuel-only update does not refresh the activity timestamp', () => {
+  const s = new Store();
+  s.set({ session: 'a', agent: 'claude', state: 'busy' });
+  const before = s.sessions.get('a').updatedAt;
+
+  const wait = Date.now() + 12;
+  while (Date.now() < wait) { /* 让时间真的往前挪一点 */ }
+  s.set({ session: 'a', fuel: 42 });
+  const after = s.sessions.get('a').updatedAt;
+
+  assert.equal(after, before, 'the fuel report must not count as activity');
+  assert.equal(s.sessions.get('a').fuel.remaining, 42, 'but the reading is stored');
+});
+
+// 跨午夜：一个 23:50 进入 busy 的会话，今日时长只能算今天那一段。否则午夜一过
+// 今日时长直接跳到几小时，还可能误触「今日目标达成」的庆祝与通知。
+test('busy time that started yesterday is only counted from midnight', () => {
+  const s = new Store();
+  s.set({ session: 'a', agent: 'claude', state: 'busy' });
+  const now = Date.now();
+  const midnight = new Date(now); midnight.setHours(0, 0, 0, 0);
+  // 把「进入 busy」的时刻挪到昨天 23:50（比今天 0 点早 10 分钟）。
+  s.sessions.get('a').since = midnight.getTime() - 10 * 60000;
+
+  const counted = s.snapshot().stats.byAgent.claude || 0;
+  // 只该算「今天 0 点到现在」这一段，不该把昨天那 10 分钟也算进来。
+  const elapsedToday = now - midnight.getTime();
+  assert.ok(Math.abs(counted - elapsedToday) < 5000,
+    `counted ${counted}ms should equal today's ${elapsedToday}ms, not include yesterday's stretch`);
+  assert.ok(counted < elapsedToday + 10 * 60000, 'yesterday\'s 10 minutes must not be added to today');
+});
+
 // ------------------------------------------------------------------- codex
 
 // Shape taken from a real ~/.codex/sessions rollout file.

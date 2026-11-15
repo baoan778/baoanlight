@@ -1340,10 +1340,16 @@ if (host && renderer) {
 
   // engraved name, drawn into a texture so it tracks the model instead of
   // floating in the window like a tooltip
+  // 逻辑尺寸 512×96，画布按 SS 倍超采样：渲染器把像素比开到 2，1× 的贴图在
+  // HiDPI 屏上会明显发虚，而旁边的招牌早就是 2× 了 —— 同一屏上不该一半锐一半糊。
+  const NAME_W = 512;
+  const NAME_H = 96;
+  const NAME_SS = 2;
   const nameCanvas = document.createElement('canvas');
-  nameCanvas.width = 512;
-  nameCanvas.height = 96;
+  nameCanvas.width = NAME_W * NAME_SS;
+  nameCanvas.height = NAME_H * NAME_SS;
   const nameCtx = nameCanvas.getContext('2d');
+  nameCtx.setTransform(NAME_SS, 0, 0, NAME_SS, 0, 0);
   const nameTex = new THREE.CanvasTexture(nameCanvas);
   nameTex.colorSpace = THREE.SRGBColorSpace;
   nameTex.anisotropy = 4;
@@ -1359,10 +1365,10 @@ if (host && renderer) {
   // 直接被画布裁掉，而且裁得毫无提示。这里按实际宽度缩字号，缩到底才省略。
   function drawName(name) {
     const full = [...String(name || '')].join('');
-    nameCtx.clearRect(0, 0, nameCanvas.width, nameCanvas.height);
+    nameCtx.clearRect(0, 0, NAME_W, NAME_H);
     nameCtx.fillStyle = '#3a3016';
     nameCtx.textBaseline = 'middle';
-    const maxW = nameCanvas.width - 16;
+    const maxW = NAME_W - 16;
     const fontOf = (px) => `600 ${px}px ui-monospace, SFMono-Regular, Menlo, monospace`;
     let size = 50;
     let shown = full;
@@ -2004,10 +2010,15 @@ if (host && renderer) {
 
   // ---- the speech bubble -------------------------------------------------
   // 静态的 "!" 升级成可重绘的文字气泡：谁需要你、出了什么错，一眼读到。
+  // 同铭牌：逻辑 256×128，画布 2× 超采样，HiDPI 下气泡里的字才不发虚。
+  const BUBBLE_W = 256;
+  const BUBBLE_H = 128;
+  const BUBBLE_SS = 2;
   const bubbleCanvas = document.createElement('canvas');
-  bubbleCanvas.width = 256;
-  bubbleCanvas.height = 128;
+  bubbleCanvas.width = BUBBLE_W * BUBBLE_SS;
+  bubbleCanvas.height = BUBBLE_H * BUBBLE_SS;
   const bubbleCtx = bubbleCanvas.getContext('2d');
+  bubbleCtx.setTransform(BUBBLE_SS, 0, 0, BUBBLE_SS, 0, 0);
   const bubbleTex = new THREE.CanvasTexture(bubbleCanvas);
   bubbleTex.colorSpace = THREE.SRGBColorSpace;
   bubbleTex.anisotropy = 4;
@@ -2049,8 +2060,8 @@ if (host && renderer) {
   function drawBubble(text) {
     bubbleText = text;
     const g = bubbleCtx;
-    const w = bubbleCanvas.width;
-    const h = bubbleCanvas.height;
+    const w = BUBBLE_W;
+    const h = BUBBLE_H;
     g.clearRect(0, 0, w, h);
     if (text) {
       const r = 24;
@@ -3136,7 +3147,10 @@ if (host && renderer) {
     // No cycling — attribution must be readable without waiting for the next
     // name to come round. Each software's own name still lives in its pill.
     // If the user typed their own text, that wins over the software name.
-    const plateText = (nameplateText || String(theme.agent || '')).slice(0, 16);
+    // 不在这里按字符数硬截断：drawName 会按实际宽度缩字号、实在放不下才加省略号。
+    // 用 slice(0,16) 会先砍掉长名字的右半边（而且没有省略号），中文一个字占两个
+    // 码元时更短，emoji 还会被从代理对中间切断。上限交给绘制端按宽度决定。
+    const plateText = nameplateText || String(theme.agent || '');
     if (plateText !== nameShown) {
       nameShown = plateText;
       drawName(plateText);
