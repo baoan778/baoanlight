@@ -381,7 +381,10 @@ import {
     // Narrow warning bands: colour means "act soon", not "you are at 60%".
     fuel.dataset.level = pct <= 10 ? 'low' : pct <= 25 ? 'mid' : 'ok';
     fuelFill.style.height = pct + '%';
-    fuel.title = `${f.label || '剩余'}: ${Math.round(pct)}%` + (f.agent ? ` (${f.agent})` : '');
+    // label 的默认值是英文 'remaining'（store 里兜底的），agent 也是内部 id：
+    // 中文界面里悬停看到一条英文标签 + claude，和列表里那行「Claude Code」对不上。
+    const fuelLabel = !f.label || f.label === 'remaining' ? '剩余' : f.label;
+    fuel.title = `${fuelLabel}: ${Math.round(pct)}%` + (f.agent ? ` (${displayName(f.agent)})` : '');
   }
 
   // ---------------------------------------------------------------- slots
@@ -925,18 +928,24 @@ import {
   // 初值是 null 而不是 false：`false` 表示「上次看到的时候还够用」，而启动时
   // 我们其实什么都没看到。已经只剩 3% 的用户一开机就被通知「快用完了」，
   // 那不是「刚刚用完」，而是「我们刚知道」—— 两种意思不能共用一次弹窗。
-  let lastFuelLow = null;
+  // 按软件各记一份：两个订阅先后见底时，第二次也必须响 —— 以前是一个全局布尔，
+  // 换了软件就把第二次吞掉了。
+  const lastFuelLow = new Map();   // agent -> boolean
   function notifyFuel(f) {
     if (!inElectron || !bridge.notify) return;
     if (isMuted()) return;
     if (isDnd()) return;
+    // 没有读数（还没上报 / 已清空）时**保持原状态**：启动后先来的几帧 fuel 是 null，
+    // 以前把它写成 false，紧接着报上来 4% 就会在开机时误弹一次「快用完了」。
+    if (!f || typeof f.remaining !== 'number') return;
     // 额度提醒也归属某个软件：关掉它的通知就别弹。
-    if (f && f.agent && isAgentMuted(f.agent)) return;
-    const low = !!(f && typeof f.remaining === 'number' && f.remaining <= 5);
-    if (low && lastFuelLow === false) {
+    if (f.agent && isAgentMuted(f.agent)) return;
+    const key = f.agent || '?';
+    const low = f.remaining <= 5;
+    if (low && lastFuelLow.get(key) === false) {
       bridge.notify('额度快用完了', `${f.agent ? displayName(f.agent) + ' ' : ''}只剩 ${Math.round(f.remaining)}%`);
     }
-    lastFuelLow = low;
+    lastFuelLow.set(key, low);
   }
 
   // 把状态说成一句人话，交给 aria-live 念。这个工具靠颜色工作，而颜色对看不见
@@ -989,7 +998,7 @@ import {
     return entry;
   }
 
-  function paintPill(entry, s, snap, worstKey) {
+  function paintPill(entry, s, snap, worstKey, count = 1) {
     const { el, refs } = entry;
     const offline = s.state === 'offline';
     const agent = s.agent;
@@ -1010,12 +1019,16 @@ import {
       el.tabIndex = 0;
       el.setAttribute('role', 'button');
       el.setAttribute('aria-pressed', String(agent === focusedAgent));
-      el.setAttribute('aria-label', `${displayName(agent)} — ${VERB[s.state] || s.state}`
+      el.setAttribute('aria-label', `${displayName(agent)}${count > 1 ? ` ×${count}` : ''}`
+        + ` — ${VERB[s.state] || s.state}`
         + (isAgentMuted(agent) ? '，系统通知已关闭' : ''));
       el.removeAttribute('aria-disabled');
     }
     refs.dot.dataset.color = COLOR[s.state] || 'grey';
-    refs.name.textContent = displayName(agent);
+    // `×N`：一个软件开了多个会话时，这一行代表的是它们里最坏的那个。文档一直这么
+    // 承诺，但列表里从来没写出来 —— 用户看到「Claude 出错了」却不知道是三个里哪个。
+    const times = count > 1 ? ` ×${count}` : '';
+    refs.name.textContent = displayName(agent) + times;
     const cc = offline || cfg.showModel === false ? null : ccSwitchLabel(snap.ccSwitch && snap.ccSwitch[agent]);
     // busy 的时长/预估：有历史节奏就估「预计还需」，超了就说「比平时慢」。
     const elapsed = s.state === 'busy' && s.since ? Date.now() - s.since : 0;
@@ -1114,12 +1127,59 @@ import {
       }
     }
 
-    // 点击聚焦：聚焦某软件时主灯临时显示它的状态（否则显示聚合最坏者）；
-    // 聚焦的软件下线则自动回到聚合。
+    // 按软件聚合：同一软件多个会话只占一行（取最坏状态），否则一个多会话的软件
+    // 会把别的软件挤出前几行 —— workbuddy 同时有 idle 和 error 两个会话时，会显示
+    // 两行 workbuddy，而 claude 被挤掉。
+    //
+    // 这段必须放在「聚焦」之前：主灯要不要继续认那个软件，取决于它的行这一帧还在
+    // 不在列表里。放到 publish 之后再判，就已经往 3D 场景发出了一帧过期的状态。
+    const counts = new Map();   // agent -> 会话数（用于行上的 ×N）
+    const seen = new Map();
+    for (const s of sessions) {
+      if (s.state === 'offline') continue;
+      counts.set(s.agent, (counts.get(s.agent) || 0) + 1);
+      const cur = seen.get(s.agent);
+      if (!cur || PRIO[s.state] > PRIO[cur.state]) seen.set(s.agent, s);
+    }
+    // 每个注册软件始终各占一行：offline 也是暗行，位置固定 —— 和胸口槽位、灯环一致。
+    // 顺序直接取服务端的固定槽位表（它已经把离线软件排在固定位置），再按用户在
+    // 「软件顺序」里的排列调整：slots 说明「有哪些软件」，agentOrder 说明「排第几」。
+    const slotAgents = slots.map((x) => x.agent);
+    const rowOrder = slotAgents.length
+      ? [...agentOrder.filter((a) => slotAgents.includes(a)),
+        ...slotAgents.filter((a) => !agentOrder.includes(a))]
+      : agentOrder;
+    // showOffline=false 时退回旧行为：只显示真正有会话的软件。
+    const offlineRows = cfg.showOffline !== false;
+    const list = rowOrder
+      .map((agent) => seen.get(agent) || (offlineRows
+        ? { agent, state: 'offline', detail: '', count: 0, quiet: false }
+        : null))
+      .filter(Boolean);
+    const maxRows = Math.max(2, Math.min(8, Number(cfg.maxRows) || 4));
+    const showPills = cfg.showLabels && !collapsed && list.length > 0;
+    // 行数预算先给「真的在跑」的软件 —— 但只在真的溢出时重排：不溢出时顺序必须
+    // 是固定的（离线也占位、位置不跳）。溢出时若不重排，maxRows=2 的前两行可能是
+    // 两个离线占位，唯一在跑、正被主灯代表的那一行被折进「还有 N 个」—— 灯亮着，
+    // 列表里却查不出是谁。两组内部都保持原相对顺序。
+    const overflow = showPills && list.length > maxRows;
+    const ranked = overflow
+      ? list
+        .map((s, i) => ({ s, i, live: s.state !== 'offline' }))
+        .sort((a, b) => (Number(b.live) - Number(a.live)) || (a.i - b.i))
+        .map((x) => x.s)
+      : list;
+    const shown = showPills ? ranked.slice(0, maxRows) : [];
+    const hiddenCount = showPills ? Math.max(0, ranked.length - shown.length) : 0;
+    const keep = new Set(shown.map((x) => x.agent));
+
+    // 点击聚焦：聚焦某软件时主灯临时显示它的状态（否则显示聚合最坏者）。
+    // 它下线、或者它的那一行被行数/折叠挤掉，都自动回到聚合 —— 后者尤其重要：
+    // 列表里已经没有可点的行，用户没有任何办法取消聚焦，灯会和列表各说各的。
     let displayState = overall;
     if (focusedAgent) {
       const f = slots.find((s) => s.agent === focusedAgent && s.count > 0);
-      if (f) displayState = f.state;
+      if (f && keep.has(focusedAgent)) displayState = f.state;
       else focusedAgent = null;
     }
 
@@ -1241,37 +1301,6 @@ import {
         activeAgents(snap, slots, worstKey));
     }
 
-    // 按软件聚合：同一软件多个会话只占一行（取最坏状态），否则一个多会话的软件
-    // 会把别的软件挤出前几行——workbuddy 同时有「idle」和「error」两个会话时，
-    // 会显示两行 workbuddy，而 claude 被挤掉。
-    const seen = new Map();
-    for (const s of sessions) {
-      if (s.state === 'offline') continue;
-      const cur = seen.get(s.agent);
-      if (!cur || PRIO[s.state] > PRIO[cur.state]) seen.set(s.agent, s);
-    }
-    // 每个注册软件始终各占一行：offline 也是暗行，位置固定——和胸口槽位、灯环一致。
-    // 软件不会因为没在跑就凭空消失，眼睛也不用重新学「第几行是谁」。顺序直接取
-    // 服务端的固定槽位表（它已经把离线软件排在固定位置）。
-    // 顺序由「软件顺序」决定：slots 说明「有哪些软件」，agentOrder 说明「排第几」。
-    // 只按 server 的固定槽位排，会让设置里的 ↑/↓ 只影响主灯、不影响这份列表。
-    const slotAgents = slots.map((x) => x.agent);
-    const rowOrder = slotAgents.length
-      ? [...agentOrder.filter((a) => slotAgents.includes(a)),
-        ...slotAgents.filter((a) => !agentOrder.includes(a))]
-      : agentOrder;
-    // showOffline=false 时退回旧行为：只显示真正有会话的软件。默认每个注册软件
-    // 都占一行（离线是暗行），位置固定。
-    const offlineRows = cfg.showOffline !== false;
-    const list = rowOrder
-      .map((agent) => seen.get(agent) || (offlineRows
-        ? { agent, state: 'offline', detail: '', count: 0, quiet: false }
-        : null))
-      .filter(Boolean);
-    const maxRows = Math.max(2, Math.min(8, Number(cfg.maxRows) || 4));
-    const showPills = cfg.showLabels && !collapsed && list.length > 0;
-    const shown = showPills ? list.slice(0, maxRows) : [];
-    const keep = new Set(shown.map((x) => x.agent));
     // 退役不再显示的行：软件被关掉、行数被调小、或者列表被折叠了。
     for (const [agent, entry] of pillPool) {
       if (!keep.has(agent)) { entry.el.remove(); pillPool.delete(agent); }
@@ -1281,16 +1310,16 @@ import {
       // pushing the robot off the bottom of the desk.
       for (const s of shown) {
         const { el } = pillRow(s.agent);
-        paintPill({ el, refs: pillPool.get(s.agent).refs }, s, snap, worstKey);
+        paintPill({ el, refs: pillPool.get(s.agent).refs }, s, snap, worstKey, counts.get(s.agent) || 1);
         // appendChild 对已在文档里的节点是「移动」，所以这一行同时保证顺序。
         labels.appendChild(el);
       }
-      if (list.length > maxRows) {
+      if (hiddenCount > 0) {
         if (!moreRow) {
           moreRow = document.createElement('div');
           moreRow.className = 'pill more';
         }
-        moreRow.textContent = `还有 ${list.length - maxRows} 个`;
+        moreRow.textContent = `还有 ${hiddenCount} 个`;
         labels.appendChild(moreRow);
       } else if (moreRow && moreRow.parentNode) {
         moreRow.remove();

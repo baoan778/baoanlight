@@ -224,6 +224,11 @@ test('one software with several sessions still shows a single row', async ({ pag
   const rows = await page.evaluate(() =>
     [...document.querySelectorAll('.pill')].map((el) => el.dataset.agent));
   expect(rows, 'one row per software, fixed order').toEqual(['deepseek', 'claude', 'codex', 'workbuddy']);
+
+  // 两个会话合成一行时，行上要写 ×2：否则「Claude 出错了」看不出是三个里哪个，
+  // 而 README 一直承诺标签会带 ×N。
+  await expect(page.locator('.pill[data-agent="workbuddy"] b')).toHaveText('WorkBuddy ×2');
+  await expect(page.locator('.pill[data-agent="claude"] b')).toHaveText('Claude Code');
 });
 
 // The list can be reined in: hide the software that is not running, and cap how
@@ -261,6 +266,51 @@ test('the software list honours the offline and row-limit settings', async ({ pa
   });
   await settled(page, () => document.querySelectorAll('.pill:not(.more)').length).toBe(2);
   await settled(page, () => document.querySelector('.pill.more')?.textContent).toContain('还有 2 个');
+});
+
+// 行数预算必须先给「真的在跑」的软件：否则 maxRows=2 时前两行是两个离线占位，
+// 唯一在跑的那一行被折进「还有 N 个」—— 灯亮着，列表里却查不出是谁。
+test('a running software is never hidden behind offline placeholder rows', async ({ page }) => {
+  await api('/state', { session: 'a', agent: 'workbuddy', state: 'busy' });
+  await page.locator('#robot').click({ button: 'right', position: { x: 30, y: 30 } });
+  await page.locator('#s-gear').click();
+  await expect(page.locator('#menu')).toBeVisible();
+  await page.evaluate(() => {
+    const sel = document.getElementById('m-maxrows');
+    sel.value = '2';
+    sel.dispatchEvent(new Event('change'));
+  });
+
+  await settled(page, () => document.querySelectorAll('.pill:not(.more)').length).toBe(2);
+  // workbuddy 排在固定顺序的最后，但它是在跑的那一个 —— 必须出现在可见的两行里。
+  await settled(page, () => [...document.querySelectorAll('.pill:not(.more)')]
+    .map((el) => el.dataset.agent).includes('workbuddy')).toBe(true);
+});
+
+// 聚焦的行被行数预算裁掉之后，主灯不能继续锁在它上面：列表里没有可点的行，
+// 用户没有任何办法取消聚焦，灯和列表从此各说各的。
+test('focus is dropped when the focused row is hidden by the row limit', async ({ page }) => {
+  await api('/state', { session: 'a', agent: 'claude', state: 'waiting' });
+  await api('/state', { session: 'b', agent: 'codex', state: 'waiting' });
+  await api('/state', { session: 'c', agent: 'workbuddy', state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('waiting');
+
+  // 聚焦 workbuddy → 主灯临时显示它的 busy
+  await page.locator('.pill[data-agent="workbuddy"]').click();
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+
+  // 行数压到 2：claude、codex 占掉名额，workbuddy 会被裁掉
+  await page.locator('#robot').click({ button: 'right', position: { x: 30, y: 30 } });
+  await page.locator('#s-gear').click();
+  await page.evaluate(() => {
+    const sel = document.getElementById('m-maxrows');
+    sel.value = '2';
+    sel.dispatchEvent(new Event('change'));
+  });
+
+  // 行没了，聚焦必须一起消失，主灯回到聚合最坏者（waiting）
+  await settled(page, () => document.querySelector('.pill[data-agent="workbuddy"]')).toBe(null);
+  await settled(page, () => document.body.dataset.state).toBe('waiting');
 });
 
 // Clicking a software's row focuses the lamp on that software (even if it is

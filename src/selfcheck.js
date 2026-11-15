@@ -48,38 +48,41 @@ function run() {
     electronPath || '未安装 — 桌面机器人不可用', 'npm run setup');
 
   // ---- Claude Code 钩子（跨机器最常见失败：钩子指向的脚本/node 不存在）
+  //
+  // 两个作用域都看：`bao connect claude --scope project` 装好的钩子照样工作，只认
+  // user 级会把一个正常接线报成「未安装」，而它给出的修法是再装一份 —— 双份触发。
   const cfg = config.load();
-  const claudeFile = install.claudeSettingsPath('user');
-  if (!exists(claudeFile)) {
-    check('Claude Code 钩子', 'warn', '未安装', 'bao connect claude');
-  } else {
+  const inspectHooks = (scope) => {
+    const file = install.claudeSettingsPath(scope);
+    if (!exists(file)) return null;                 // 这个作用域没装，不算失败
     let settings = null;
     try {
-      settings = JSON.parse(fs.readFileSync(claudeFile, 'utf8'));
+      settings = JSON.parse(fs.readFileSync(file, 'utf8'));
     } catch {
-      check('Claude Code 钩子', 'fail', `${claudeFile} 不是合法 JSON`, '修复或从 baoanlight-backup-* 恢复');
+      return { status: 'fail', detail: `${file} 不是合法 JSON`, fix: '修复或从 baoanlight-backup-* 恢复' };
     }
-    // 解析失败就到此为止：原来 `settings` 会停在初值 `{}` 上继续往下走，
-    // 于是同一个文件既报「不是合法 JSON」又报「未安装」—— 两条互相矛盾，
-    // 用户照着第一条去修，第二条却还在。
-    if (settings) {
-      const ours = Object.entries(settings.hooks || {})
-        .flatMap(([evt, groups]) => (groups || []).flatMap((g) => (g.hooks || []).map((h) => ({ evt, cmd: h.command || '' }))))
-        .filter((h) => /hooks[\\/]claude\.js/.test(h.cmd));
-      if (ours.length) {
-        const quoted = (ours[0].cmd.match(/"([^"]+)"/g) || []).map((q) => q.slice(1, -1));
-        const [bin, script] = quoted;
-        if (!exists(bin) || !exists(script)) {
-          check('Claude Code 钩子路径失效', 'fail',
-            `${script || '(未解析)'} 不存在`, 'bao connect claude（为本机重写路径）');
-        } else {
-          check('Claude Code 钩子', 'pass', `${ours.length} 个事件已接`);
-        }
-      } else {
-        check('Claude Code 钩子', 'warn', '未安装', 'bao connect claude');
-      }
+    const ours = Object.entries(settings.hooks || {})
+      .flatMap(([evt, groups]) => (groups || []).flatMap((g) => (g.hooks || []).map((h) => ({ evt, cmd: h.command || '' }))))
+      .filter((h) => /hooks[\\/]claude\.js/.test(h.cmd));
+    if (!ours.length) return { status: 'warn', detail: `未安装（${scope}）`, fix: 'bao connect claude' };
+    const quoted = (ours[0].cmd.match(/"([^"]+)"/g) || []).map((q) => q.slice(1, -1));
+    const [bin, script] = quoted;
+    if (!exists(bin) || !exists(script)) {
+      return {
+        status: 'fail',
+        detail: `${script || '(未解析)'} 不存在（${scope}）`,
+        fix: 'bao connect claude（为本机重写路径）',
+      };
     }
-  }
+    return { status: 'pass', detail: `${ours.length} 个事件已接（${scope === 'project' ? '项目' : '用户'}级）` };
+  };
+  // 任一作用域接通就算接通；都没有时才报「未安装」。
+  const verdicts = ['user', 'project'].map(inspectHooks).filter(Boolean);
+  const hook = verdicts.find((v) => v.status === 'pass')
+    || verdicts.find((v) => v.status === 'fail')
+    || verdicts[0]
+    || { status: 'warn', detail: '未安装', fix: 'bao connect claude' };
+  check('Claude Code 钩子', hook.status, hook.detail, hook.fix);
 
   // ---- 日志类代理的日志目录
   //

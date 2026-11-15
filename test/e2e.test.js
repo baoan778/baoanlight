@@ -579,12 +579,15 @@ test('a dragged window cannot get stuck on the cursor', () => {
   assert.match(js, /lostpointercapture/, 'so does a lost capture');
 });
 
-// 「已经只剩 3%」和「刚刚掉到 3%」不是一回事。初值写成 false 会让前者一开机
-// 就弹一次通知，而用户什么也没做。
+// 「已经只剩 3%」和「刚刚掉到 3%」不是一回事。启动后先到的几帧 fuel 是 null，
+// 把它当成「上次还够用」会让首批 4% 一开机就弹一次通知，而用户什么也没做。
+// 另外状态必须按软件分开记：两个订阅先后见底，第二次也得响。
 test('a gauge that is already low at startup does not fire a notification', () => {
   const js = overlayFile('ui.js');
-  assert.match(js, /let lastFuelLow = null/, 'unknown is not the same as "was fine"');
-  assert.match(js, /low && lastFuelLow === false/, 'only a real drop notifies');
+  assert.match(js, /const lastFuelLow = new Map\(\)/, 'one flag per software, not one global');
+  assert.match(js, /typeof f\.remaining !== 'number'\) return;/,
+    'a missing reading must not be recorded as "was fine"');
+  assert.match(js, /lastFuelLow\.get\(key\) === false/, 'only a real drop notifies');
 });
 
 // 成绩与最近动态只在设置菜单里可见，而 render() 每收到一条 SSE 帧都会调它们。

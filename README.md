@@ -96,6 +96,7 @@ bao connect claude     # 接入 Claude Code，立即生效，无需重启
 
 ```bash
 bao status             # 现在各个代理是什么状态
+bao status --watch     # 每秒重绘，像 top 一样盯着看（Ctrl+C 退出）
 bao status --json      # 同一份数据，给脚本/直播/第二屏用
 bao agents             # 支持哪些代理、各自怎么接
 bao clear              # 清掉崩溃代理留下的僵尸会话

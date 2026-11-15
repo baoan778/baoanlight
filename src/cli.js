@@ -115,6 +115,7 @@ ${c.b('USAGE')}
   bao fuel <percent> [--used] [--agent name] [--label text]
                                drive the fuel gauge from anything
   bao status                   print current states
+  bao status --watch           redraw every second (like top; Ctrl+C to stop)
   bao status --json            same, as JSON, for scripts and overlays
   bao token                    print the local write token (for curl / scripts)
   bao clear [--session id]     forget sessions left behind by a crashed agent
@@ -497,8 +498,7 @@ async function cmdLog() {
   }
 }
 
-async function cmdStatus(flags = {}) {
-  const snap = await client.snapshot();
+function printStatus(snap, flags = {}) {
   // Scripts (a stream deck, OBS, a shell prompt) want the numbers, not the
   // dots. Machine shape, no colours, one object.
   if (flags.json) {
@@ -507,7 +507,7 @@ async function cmdStatus(flags = {}) {
   }
   if (!snap) { console.log(`${c.dim('○')} server not running`); return; }
   console.log(`${DOT[snap.overall]()} ${c.b(snap.overall)}`);
-  if (!snap.sessions.length) return console.log(c.dim('  no active agents'));
+  if (!snap.sessions.length) { console.log(c.dim('  no active agents')); return; }
   for (const s of snap.sessions) {
     const age = Math.round((Date.now() - s.since) / 1000);
     // 「silent」只对还在忙、却不再上报的会话才有意义（那才是卡住的信号）。一个
@@ -518,6 +518,43 @@ async function cmdStatus(flags = {}) {
       : s.detail || '';
     console.log(`  ${DOT[s.state]()} ${s.agent.padEnd(12)} ${String(s.state).padEnd(8)} ${c.dim(`${age}s  ${note}`)}`);
   }
+}
+
+function fmtDur(ms) {
+  const m = Math.round((Number(ms) || 0) / 60000);
+  if (m < 1) return '不到 1 分钟';
+  return m < 60 ? `${m} 分钟` : `${Math.floor(m / 60)} 时 ${m % 60} 分`;
+}
+
+// `bao status --watch`：像 top 一样每秒重绘。不开窗口、不依赖 Electron 也能盯着，
+// 这是命令行里唯一能「看着它变」的入口。
+async function statusWatch() {
+  const out = process.stdout;
+  const stop = () => {
+    out.write('\x1b[?25h\n');   // 把光标还回去，别让用户刷完一条命令后找不到它
+    process.exit(0);
+  };
+  out.write('\x1b[?25l');       // 隐藏光标，免得它在原地闪
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+  for (;;) {
+    out.write('\x1b[2J\x1b[H');
+    const clock = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    out.write(`${c.dim(clock)}${c.dim('   bao status --watch · Ctrl+C 退出')}\n\n`);
+    const snap = await client.snapshot();
+    printStatus(snap);
+    if (snap) {
+      const todayMs = Object.values(snap.stats?.byAgent || {}).reduce((a, b) => a + (b || 0), 0);
+      if (todayMs > 0) out.write(`\n${c.dim(`今日累计 ${fmtDur(todayMs)}`)}\n`);
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
+async function cmdStatus(flags = {}) {
+  // `--json` 是一次性快照（脚本要的），不该被 --watch 变成刷屏。
+  if (flags.watch && !flags.json) return statusWatch();
+  printStatus(await client.snapshot(), flags);
 }
 
 async function cmdDemo() {
