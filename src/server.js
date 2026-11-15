@@ -9,6 +9,7 @@ const ccSwitch = require('./adapters/ccswitch');
 const selfcheck = require('./selfcheck');
 const sysinfo = require('./sysinfo');
 const auth = require('./auth');
+const updateCheck = require('./update-check');
 // 开机自启只能在 **node** 进程里装：autostart.js 用 process.execPath 写启动项，
 // 在 Electron 主进程里会写成 Electron 可执行文件，登录时根本起不来。
 const autostart = require('./autostart');
@@ -111,6 +112,9 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
     if (Date.now() - (selfcheckResult.at || 0) > 30_000) selfcheckResult = selfcheck.run();
     return selfcheckResult;
   };
+  // 后台查一次新版本（24h 内命中缓存、离线静默）。结果挂在 frame().update 上，
+  // 窗口和设置菜单据此显示「有新版本」。
+  updateCheck.check().catch(() => {});
 
   // `presence` is evidence, not state: true means "a Claude process exists",
   // false means "we could not prove one does" (see src/presence.js).
@@ -121,6 +125,7 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
     presence: presence.lastValue(),
     ccSwitch: ccSwitch.lastValue(),
     selfcheck: cheap ? selfcheckResult : currentSelfcheck(),
+    update: updateCheck.lastValue(),
     heartbeat: cheap,
   });
 

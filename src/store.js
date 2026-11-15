@@ -105,7 +105,7 @@ class Store extends EventEmitter {
     // and has no way to learn that it is being sent something it cannot read.
     this.lastUnknown = null;
     // 今日各 agent 忙碌时长（累计完成的部分，实时部分在 snapshot 里现算），
-    // 以及各 agent 完成/出错次数（今日战绩）。history 是最近 7 天的存档，供周报。
+    // 以及各 agent 完成/出错次数（今日战绩）。history 是最近 30 天的存档，供周报与月报。
     this.stats = { day: dayKey(), byAgent: {}, events: {}, history: {} };
     // 每个 agent 最近几次任务的耗时（内存学习，重启重学），用于完成预估。
     this.taskTimes = {};
@@ -126,7 +126,7 @@ class Store extends EventEmitter {
       if (stats.day && hasData) {
         history[stats.day] = { byAgent: stats.byAgent, events: stats.events || {} };
         const keys = Object.keys(history).sort();
-        while (keys.length > 7) delete history[keys.shift()];
+        while (keys.length > 30) delete history[keys.shift()];
       }
       this.stats = { day: today, byAgent: {}, events: {}, history };
       return;
@@ -139,14 +139,14 @@ class Store extends EventEmitter {
     };
   }
 
-  // 跨天归档：把昨天的战绩存进 history（保留最近 7 天），今日清零。
+  // 跨天归档：把昨天的战绩存进 history（保留最近 30 天），今日清零。
   // snapshot 每次都调用，所以跨天后的第一帧就会归档，不丢数据。
   checkDay() {
     const today = dayKey();
     if (this.stats.day === today) return;
     // 和 mergeStats 一样：只有真的干过活的那一天才进历史。否则一台整夜
-    // 开着、什么都没跑的机器，每天都会往 history 里塞一个空白天，7 天之后
-    // 真正的战绩就被这些空条目挤出去了 —— 周报不是少了一天，是少了一周。
+    // 开着、什么都没跑的机器，每天都会往 history 里塞一个空白天，30 天之后
+    // 真正的战绩就被这些空条目挤出去了 —— 月报不是少了一天，是少了一个月。
     const hasData = Object.keys(this.stats.byAgent).length > 0
       || Object.keys(this.stats.events).length > 0;
     if (this.stats.day && hasData) {
@@ -155,7 +155,7 @@ class Store extends EventEmitter {
         events: this.stats.events,
       };
       const keys = Object.keys(this.stats.history).sort();
-      while (keys.length > 7) delete this.stats.history[keys.shift()];
+      while (keys.length > 30) delete this.stats.history[keys.shift()];
     }
     this.stats.day = today;
     this.stats.byAgent = {};
@@ -400,7 +400,7 @@ class Store extends EventEmitter {
     }
 
     // 今日各 agent 忙碌时长：已累计 + 仍在忙的实时部分（不重复计）。
-    // history 是最近 7 天的存档，供周报汇总。
+    // history 是最近 30 天的存档，供周报/月报汇总。
     const stats = {
       day: this.stats.day,
       byAgent: { ...this.stats.byAgent },

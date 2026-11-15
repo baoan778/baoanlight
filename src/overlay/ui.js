@@ -674,9 +674,25 @@ import {
       row.style.setProperty('--pct', Math.max(2, Math.round(((byAgent[agent] || 0) / maxMs) * 100)) + '%');
       box.appendChild(row);
     }
-    // 本周合计：今天 + 最近 7 天存档（server 每天自动归档）。
+    // 最近 7 天的日期 key（今天在最右）：柱状图和「本周」共用。
+    const dayKeys = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      dayKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+    }
+    const dayMs = dayKeys.map((key) => {
+      const h = snap?.stats?.history?.[key];
+      let ms = h ? Object.values(h.byAgent || {}).reduce((a, b) => a + (b || 0), 0) : 0;
+      if (key === snap?.stats?.day) for (const v of Object.values(byAgent)) ms += v || 0;
+      return ms;
+    });
+
+    // 本周合计：只算最近 7 天。history 现在存 30 天，直接整个累加会多算三周。
     const week = { ms: 0, done: 0, error: 0 };
-    for (const h of Object.values(snap?.stats?.history || {})) {
+    for (const key of dayKeys) {
+      const h = snap?.stats?.history?.[key];
+      if (!h) continue;
       for (const ms of Object.values(h.byAgent || {})) week.ms += ms || 0;
       for (const ev of Object.values(h.events || {})) { week.done += ev.done || 0; week.error += ev.error || 0; }
     }
@@ -686,12 +702,11 @@ import {
       const bits = [];
       if (week.done) bits.push(`完成 ${week.done}`);
       if (week.error) bits.push(`出错 ${week.error}`);
-      // 本周有数据的天数（今天 + 有存档的历史天），用来算日均 —— 合计之外再看一眼
-      // 「平均每天干了多久」，比单看一个总数更能判断这周是忙是闲。
+      // 本周有数据的天数，用来算日均 —— 合计之外再看一眼「平均每天干了多久」。
       const activeDays = new Set();
-      if ((snap?.stats?.day || '') && Object.values(byAgent).some((v) => (v || 0) > 0)) activeDays.add(snap.stats.day);
-      for (const [k, h] of Object.entries(snap?.stats?.history || {})) {
-        if (Object.values(h.byAgent || {}).some((v) => (v || 0) > 0)) activeDays.add(k);
+      for (const key of dayKeys) {
+        if (key === snap?.stats?.day && Object.values(byAgent).some((v) => (v || 0) > 0)) activeDays.add(key);
+        else if ((snap?.stats?.history?.[key]?.byAgent || {}) && Object.values(snap.stats.history[key].byAgent).some((v) => (v || 0) > 0)) activeDays.add(key);
       }
       if (activeDays.size > 1) bits.unshift(`日均 ${fmtDur(Math.round(week.ms / activeDays.size))}`);
       const row = textRow({ label: '本周合计', value: fmtDur(week.ms), note: bits.join(' · ') });
@@ -699,20 +714,21 @@ import {
       row.style.paddingTop = '4px';
       box.appendChild(row);
     }
-    // 本周 7 天迷你柱状图：每天的总时长一根柱，今天在最右、高亮。
-    const dayKeys = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      dayKeys.push(k);
+
+    // 本月合计：今天 + 最近 30 天存档。只有比本周多时才单列一行，避免和本周重复。
+    const month = { ms: 0, done: 0, error: 0 };
+    for (const h of Object.values(snap?.stats?.history || {})) {
+      for (const ms of Object.values(h.byAgent || {})) month.ms += ms || 0;
+      for (const ev of Object.values(h.events || {})) { month.done += ev.done || 0; month.error += ev.error || 0; }
     }
-    const dayMs = dayKeys.map((key) => {
-      const h = snap?.stats?.history?.[key];
-      let ms = h ? Object.values(h.byAgent || {}).reduce((a, b) => a + (b || 0), 0) : 0;
-      if (key === snap?.stats?.day) for (const v of Object.values(byAgent)) ms += v || 0;
-      return ms;
-    });
+    for (const ms of Object.values(byAgent)) month.ms += ms || 0;
+    for (const ev of Object.values(events)) { month.done += ev.done || 0; month.error += ev.error || 0; }
+    if (month.ms > week.ms && (month.ms > 60000 || month.done || month.error)) {
+      const bits = [];
+      if (month.done) bits.push(`完成 ${month.done}`);
+      if (month.error) bits.push(`出错 ${month.error}`);
+      box.appendChild(textRow({ label: '本月合计', value: fmtDur(month.ms), note: bits.join(' · ') }));
+    }
     const maxDay = Math.max(1, ...dayMs);
     const chart = document.createElement('div');
     chart.className = 'week-chart';
@@ -1087,6 +1103,17 @@ import {
     lastSnap = snap;
     let overall = snap.overall || 'offline';
     if (!previewing) announce(overall);
+    // 有新版本时在「系统」里给一行提示。只在真的更新时显示，其余帧不碰 DOM。
+    const updEl = document.getElementById('m-update');
+    if (updEl) {
+      const u = snap.update;
+      const show = !!(u && u.newer);
+      const text = show ? `有新版本 ${u.latest}（当前 ${u.current}）— npm i -g baoanlight 更新` : '';
+      if (updEl.textContent !== text || updEl.hidden === show) {
+        updEl.textContent = text;
+        updEl.hidden = !show;
+      }
+    }
     const sessions = snap.sessions || [];
     // 托盘 tooltip 跟着整体状态走（hover 托盘图标能看到现在在干什么），并顺手带上
     // 今日累计 —— 不打开菜单也能看一眼今天干了多久，这是托盘唯一能常驻的一行字。

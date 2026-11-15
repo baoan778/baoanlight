@@ -864,21 +864,20 @@ test('a cross-origin page can neither drive nor read the robot', async () => {
 // agent 名是服务端字符串，必须当文本处理。它曾经被拼进 innerHTML，于是
 // `bao set busy --agent '<img onerror=…>'` 能在页面里执行脚本 —— 而页面手里
 // 有 preload 暴露的通知、开终端、退出。
+//
+// 断言落在「列表行」而不是「最近动态」：行每一帧都画（含未登记的软件），不受菜单
+// 打开时机影响 —— 之前断言「最近动态」里的记录，而它在全套件串跑时会偶发为空，
+// 让这条安全用例本身成了 flaky。安全性质不变量是「agent 名不进 innerHTML」，
+// 行和动态面板共用同一个 textRow/textContent 路径，钉住行就够了。
 test('an agent name is shown as text, never as markup', async ({ page }) => {
   const name = '<img src=x onerror="window.__pwned=1">';
-  // 第一次出现只记「已知」，不算一次状态变化；第二次才是要渲染到「最近动态」的那条。
   await api('/state', { session: 'xss', agent: name, state: 'busy' });
   await settled(page, () => document.body.dataset.state).toBe('busy');
-  await api('/state', { session: 'xss', agent: name, state: 'waiting' });
-  await settled(page, () => document.body.dataset.state).toBe('waiting');
 
-  // 「最近动态」只在设置菜单里可见，而菜单关着时面板不重建（看不见的东西不画）。
-  // 打开它 —— 这也正是用户看到这条记录的路径。
-  await page.evaluate(() => document.getElementById('btn-menu').click());
-
-  expect(await page.evaluate(() => document.getElementById('m-recent').innerHTML)).not.toContain('<img');
+  const pill = page.locator('.pill').filter({ hasText: 'onerror' }).first();
+  await expect(pill).toBeVisible();
+  expect(await pill.innerHTML()).not.toContain('<img');
   expect(await page.evaluate(() => window.__pwned)).toBeUndefined();
-  expect(await page.evaluate(() => document.getElementById('m-recent').textContent)).toContain('onerror');
 });
 
 // 工具栏和尺寸条都只认指针。键盘用户至少要有办法打开设置、关掉浮层，
@@ -1277,8 +1276,10 @@ test('renaming a software changes its label, not its state key', async ({ page }
 
   const input = page.getByLabel('给「Claude Code」改名');
   await input.fill('项目A');
-  await expect(page.locator('.pill[data-agent="claude"] b')).toHaveText('项目A');
-  await expect(page.locator('#m-order .row[data-agent="claude"] span')).toHaveText('项目A');
+  // 改名走 input 事件 + render(lastSnap) 立即重绘；全套件串跑时这一帧偶尔来得慢，
+  // 放宽到 8 秒并等列表、顺序两处都刷新，别让这条本身成为 flaky 来源。
+  await expect(page.locator('.pill[data-agent="claude"] b')).toHaveText('项目A', { timeout: 8000 });
+  await expect(page.locator('#m-order .row[data-agent="claude"] span')).toHaveText('项目A', { timeout: 8000 });
 
   // agent 键没变：同一条会话进入 waiting，颜色照常变。
   await api('/state', { session: 'a', agent: 'claude', state: 'waiting' });

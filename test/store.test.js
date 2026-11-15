@@ -316,6 +316,21 @@ test('a stale stats file keeps its history and archives the stale day', () => {
   assert.equal(st.history['2000-01-01'].events.claude.done, 5);
 });
 
+// 保留 30 天：足够做月报，又不会让 stats.json 无限膨胀。
+test('history keeps the last 30 days and drops the rest', () => {
+  const s = new Store();
+  const history = {};
+  for (let i = 40; i >= 1; i--) {
+    const d = new Date(2020, 0, i);   // 2020-01-01 .. 02-09
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    history[key] = { byAgent: { claude: 1 }, events: {} };
+  }
+  s.mergeStats({ day: '2020-02-10', byAgent: { claude: 1 }, events: {}, history });
+  const keys = Object.keys(s.snapshot().stats.history);
+  assert.equal(keys.length, 30, 'capped at 30 days');
+  assert.ok(keys.every((k) => k >= '2020-01-11'), 'only the newest 30 survive');
+});
+
 // 今日战绩：进入完成/出错各记一次，同一状态连续上报不重复。
 test('done and error transitions are counted per agent', () => {
   const s = new Store();
