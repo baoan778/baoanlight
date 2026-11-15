@@ -70,7 +70,9 @@ function extract(zip, dest) {
 
 function main() {
   if (!fs.existsSync(ELECTRON_DIR)) {
-    console.error('node_modules/electron is missing — run `npm install` first.');
+    // 全局安装时 cwd 是任意目录，`npm install` 只会装当前目录的包 —— 提示必须给
+    // 能真正修好它的命令（和 README 里的 `bao setup` 一致）。
+    console.error('Electron is not installed — run `bao setup` (in a checkout: `npm install && npm run setup`).');
     process.exit(1);
   }
 
@@ -106,7 +108,7 @@ function main() {
       '',
       'Could not install Electron.',
       '',
-      'Try clearing its download cache and running `npm run setup` again:',
+      'Try clearing its download cache and running `bao setup` again (in a checkout: `npm run setup`):',
       process.platform === 'win32'
         ? '  rmdir /s /q "%LOCALAPPDATA%\\electron\\Cache"'
         : process.platform === 'darwin'

@@ -672,6 +672,14 @@ import {
       const bits = [];
       if (week.done) bits.push(`完成 ${week.done}`);
       if (week.error) bits.push(`出错 ${week.error}`);
+      // 本周有数据的天数（今天 + 有存档的历史天），用来算日均 —— 合计之外再看一眼
+      // 「平均每天干了多久」，比单看一个总数更能判断这周是忙是闲。
+      const activeDays = new Set();
+      if ((snap?.stats?.day || '') && Object.values(byAgent).some((v) => (v || 0) > 0)) activeDays.add(snap.stats.day);
+      for (const [k, h] of Object.entries(snap?.stats?.history || {})) {
+        if (Object.values(h.byAgent || {}).some((v) => (v || 0) > 0)) activeDays.add(k);
+      }
+      if (activeDays.size > 1) bits.unshift(`日均 ${fmtDur(Math.round(week.ms / activeDays.size))}`);
       const row = textRow({ label: '本周合计', value: fmtDur(week.ms), note: bits.join(' · ') });
       row.style.borderTop = '1px solid rgba(255,255,255,.12)';
       row.style.paddingTop = '4px';

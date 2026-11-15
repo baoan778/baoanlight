@@ -302,7 +302,7 @@ bao fuel 12 --used --agent ci --label "build minutes"   # --used 表示「已用
 | Linux | 已验证 | 需要合成窗口管理器才能透明；否则用 `bao start --browser` |
 | macOS | CI 验证 | 未肉眼确认 |
 
-核心是纯 Node，无运行时依赖；窗口是 Electron（可选），透明/穿透/置顶在不同平台行为略有差异。
+核心是纯 Node，只有两个纯 JS 依赖（`zod`、`@modelcontextprotocol/sdk`，`npm install` / 全局安装即装好）；窗口是 Electron（可选），透明/穿透/置顶在不同平台行为略有差异。
 
 ---
 
