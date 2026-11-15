@@ -100,10 +100,25 @@ function run(argv, opts = {}) {
     const text = tail.slice(-window);
     return rules.some((re) => re.test(text));
   };
-  const isWaiting = () => matches(profile.waiting, WAITING_WINDOW);
+  // 提示永远在屏幕的最后一行。拿整段尾巴去匹配，会把 agent 打印的 diff、
+  // 文档正文里出现的一句 "[y/N]" 当成在等你；而 push 按「状态变化」去重，
+  // 一旦误点成黄灯，就会一直黄到那句被新输出挤出窗口为止。
+  const lastLine = () => {
+    const lines = tail.split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (line) return line;
+    }
+    return '';
+  };
+  const isWaiting = () => {
+    const line = lastLine().slice(-WAITING_WINDOW);
+    return !!line && profile.waiting.some((re) => re.test(line));
+  };
 
   const settle = () => {
-    // Output stopped. Decide what the silence means.
+    // Output stopped. Decide what the silence means. 只有静默之后才可能是「在等你」：
+    // 输出还在流的时候它一定在干活。
     if (isWaiting()) push('waiting', 'needs your confirmation');
     else if (matches(profile.busy, BUSY_WINDOW)) push('busy', 'thinking');
     else push('idle');
@@ -111,8 +126,10 @@ function run(argv, opts = {}) {
 
   const onOutput = (data) => {
     tail = (tail + stripAnsi(data)).slice(-TAIL_MAX);
-    if (isWaiting()) push('waiting', 'needs your confirmation');
-    else push('busy', 'working');
+    // 输出还在流 = 正在干活。waiting 的判定挪进 settle()，否则流式输出里任何
+    // 一句 "continue?" 都会把灯提前点黄 —— 对一次长工具调用来说，就是整段时间
+    // 都在说「需要你」，这个工具唯一的核心承诺因此被打破。
+    push('busy', 'working');
     clearTimeout(quietTimer);
     quietTimer = setTimeout(settle, profile.idleAfterMs);
   };

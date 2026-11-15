@@ -23,6 +23,18 @@ const COMMON_WAITING = [
   /(^|\n)\s*[❯>]\s*\d+\.\s/,          // numbered choice menu with a cursor
   /\b(confirm|confirmation) required\b/i,
   /continue\?\s*$/i,
+
+  // 中文提示。中文没有词边界，只能靠「行尾 + 问号 / 括号选择」收窄：agent 正文里
+  // 随便出现的一个「确认」不该被当成在等你，而 `是否继续？`、`[是/否]` 这类
+  // 真正的确认框必须能认出来 —— 否则用中文界面的 agent 被 wrap 时永远显示绿灯。
+  /是否(继续|允许|确认|执行|删除|覆盖|重试|保存)[^\n]{0,12}[?？]\s*$/,
+  /确认(继续|执行|删除|覆盖|重试|保存)?[^\n]{0,12}[?？]\s*$/,
+  /请(确认|选择|输入|稍候)[^\n]{0,12}[?？]\s*$/,
+  /[（(\[【]\s*是\s*[/／]\s*否\s*[)）\]】]/,
+  /[（(\[【]\s*[Yy]\s*[/／]\s*[Nn]\s*[)）\]】]/,
+  /按\s*(回车|Enter|任意键)\s*(继续|确认)/i,
+  /等待(你的)?(确认|输入|回复)/,
+  /(需要|请)你(确认|选择|输入)/,
 ];
 
 // Signals that the agent is still thinking even though nothing is printing.
@@ -31,6 +43,10 @@ const COMMON_BUSY = [
   /ctrl\+c\s+to\s+(interrupt|cancel|stop)/i,
   /\b(thinking|working|generating|running|executing|analyzing|searching)[.…]{1,3}/i,
   /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷]/,        // braille spinners
+  // 中文「进行中」的说法。同样收窄到固定动词 + 省略号，避免匹配到正文。
+  /正在(思考|生成|执行|分析|搜索|读取|写入|编辑|构建|运行|加载|处理|规划|浏览)/,
+  /(思考|生成|执行|分析|处理|规划|搜索)中[.…]{1,3}/,
+  /请稍候/,
 ];
 
 const PROFILES = {

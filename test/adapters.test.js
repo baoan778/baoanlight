@@ -34,6 +34,14 @@ test('real confirmation prompts are recognised as waiting', () => {
     '  1. Yes\n  2. No\n❯ 1. Yes',
     'Press Enter to continue',
     'Waiting for your confirmation',
+    // 中文确认框：中文界面的代理（WorkBuddy、自研 harness）不带英文 (y/n)，
+    // 认不出来就会把「在等你」显示成绿灯。
+    '是否继续？',
+    '是否允许执行此命令？',
+    '确认删除？',
+    '请确认 [是/否]',
+    '按回车继续',
+    '等待你的确认',
   ]) {
     assert.ok(hits(p.waiting, prompt), `should be waiting: ${JSON.stringify(prompt)}`);
   }
@@ -46,6 +54,10 @@ test('ordinary output is not mistaken for a prompt', () => {
     'Wrote 42 lines to disk.',
     'All tests passed.',
     'Committed as a1b2c3d',
+    // 中文正文里出现「确认」很常见：只有行尾问号/括号选择才算在等你。
+    '已确认配置文件路径，继续读取。',
+    '这里需要一个确认机制，我们稍后实现。',
+    '更新时间：2026-11-15',
   ]) {
     assert.ok(!hits(p.waiting, line), `should NOT be waiting: ${JSON.stringify(line)}`);
   }
@@ -55,6 +67,9 @@ test('silent thinking still reads as busy', () => {
   const p = profileFor('claude');
   assert.ok(hits(p.busy, '⠹ Thinking…'));
   assert.ok(hits(p.busy, '(esc to interrupt)'));
+  // 中文「进行中」的常见说法。
+  assert.ok(hits(p.busy, '正在思考…'));
+  assert.ok(hits(p.busy, '正在执行命令'));
 });
 
 // ------------------------------------------------------------------ codex

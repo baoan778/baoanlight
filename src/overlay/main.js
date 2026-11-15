@@ -91,6 +91,18 @@ function ensureVisible() {
   boundsAppliedAt = Date.now();
 }
 
+// 立即把当前位置落盘。拖拽用 400ms 防抖，但退出时不能再等：拖完立刻点「退出」，
+// 防抖定时器还没到就被进程终止，下次启动就回到旧位置。
+function savePositionNow() {
+  if (!win || win.isDestroyed()) return;
+  // 程序化改尺寸（菜单打开、机器人变大）同样会发出 moved。用户没碰窗口，只是点了
+  // 一下齿轮，不该把被屏幕边界 clamp 过的位置记成「他喜欢的位置」—— 否则在屏幕
+  // 边缘每开一次菜单，机器人就往里挪一点，关掉也不回来。
+  if (Date.now() - boundsAppliedAt < 500) return;
+  const [x, y] = win.getPosition();
+  config.save({ window: { x, y } });
+}
+
 function createWindow() {
   const cfg = config.load();
   const width = 340;
@@ -152,15 +164,7 @@ function createWindow() {
   // Keep the window where the user dragged it.
   const remember = () => {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      if (!win || win.isDestroyed()) return;
-      // 程序化改尺寸（菜单打开、机器人变大）同样会发出 moved。用户没碰窗口，
-      // 只是点了一下齿轮，不该把被屏幕边界 clamp 过的位置记成「他喜欢的位置」——
-      // 否则在屏幕边缘每开一次菜单，机器人就往里挪一点，关掉也不回来。
-      if (Date.now() - boundsAppliedAt < 500) return;
-      const [x, y] = win.getPosition();
-      config.save({ window: { x, y } });
-    }, 400);
+    saveTimer = setTimeout(savePositionNow, 400);
   };
   win.on('moved', remember);
   // Linux 上 `moved` 不会发（Electron 只在 macOS / Windows 发它），而 `move`
@@ -204,6 +208,29 @@ function toggleWin() {
   }
 }
 
+// Ctrl/⌘+Alt+B。刻意避开 Ctrl+Shift+B —— 后者是 VS Code / IDEA 的「运行构建任务」，
+// 全局热键会在系统层把它抢过来，用户在编辑器里按一下只会看到机器人动了一下。
+const HOTKEY = 'CommandOrControl+Alt+B';
+
+// register() 在组合被别的软件占用 / 系统拒绝时返回 false 而不抛异常；以前 catch
+// 住什么都不做，用户按文档里的键毫无反应，也不知道为什么。至少留一条日志，并让
+// 托盘菜单仍然可用（它不依赖热键）。
+function registerHotkey(enabled = config.load().hotkeyOn !== false) {
+  try {
+    globalShortcut.unregisterAll();
+    // 设置里可以关掉：全局热键是系统级的，有些人不希望任何程序常驻抢键。
+    if (!enabled) return false;
+    const ok = globalShortcut.register(HOTKEY, toggleWin);
+    if (!ok) {
+      console.warn(`baoanlight: global shortcut ${HOTKEY} is taken by another app — the tray menu still toggles the window.`);
+    }
+    return ok;
+  } catch (err) {
+    console.warn(`baoanlight: could not register ${HOTKEY}: ${err && err.message ? err.message : err}`);
+    return false;
+  }
+}
+
 function createTray() {
   try {
     const icon = nativeImage.createFromDataURL(TRAY_ICONS.offline);
@@ -240,6 +267,10 @@ ipcMain.handle('config:get', () => config.load());
 ipcMain.handle('config:save', (_e, patch) => {
   const next = config.save(patch || {});
   clickThroughEnabled = next.clickThrough !== false;
+  // 全局快捷键开关一改就立刻重新注册/注销，不用重启窗口。
+  if (patch && Object.prototype.hasOwnProperty.call(patch, 'hotkeyOn')) {
+    registerHotkey(next.hotkeyOn !== false);
+  }
   return next;
 });
 
@@ -462,8 +493,16 @@ if (!gotLock) {
     for (const ev of ['display-removed', 'display-added', 'display-metrics-changed']) {
       screen.on(ev, () => ensureVisible());
     }
-    // 全局快捷键：Ctrl/⌘+Shift+B 一键显示/隐藏机器人。
-    try { globalShortcut.register('CommandOrControl+Shift+B', toggleWin); } catch { /* 占用就放弃 */ }
+    // 全局快捷键：Ctrl/⌘+Alt+B 一键显示/隐藏机器人。
+    // 为什么不是 Ctrl+Shift+B：那是 VS Code / IDEA 的「运行构建任务」，机器人常驻时
+    // 会在系统层把它吞掉，用户在编辑器里按一下，构建没跑、桌面角落的机器人却动了一下。
+    registerHotkey();
     app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* 忽略 */ } });
+    // 退出前把位置防抖里还没落盘的那次写下去。
+    app.on('before-quit', () => {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      savePositionNow();
+    });
   });
 }

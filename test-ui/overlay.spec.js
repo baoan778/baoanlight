@@ -1046,6 +1046,45 @@ test('scenes can switch automatically between day and night', async ({ page }) =
   await expect(page.locator('#m-scene')).toBeEnabled();
 });
 
+// 焦点在输入框里时 Esc 只交出焦点，不能把整块设置连刚输入的文字一起关掉。
+test('Escape inside a text field does not close the whole settings panel', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await expect(page.locator('#menu')).toBeVisible();
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '广告牌') s.parentElement.open = true;
+    }
+  });
+
+  const input = page.locator('#m-nameplate');
+  await input.click();
+  await input.fill('小助手');
+  await page.keyboard.press('Escape');
+
+  // 菜单还在、输入还在，只是焦点被交了出去。
+  await expect(page.locator('#menu')).toBeVisible();
+  await expect(input).toHaveValue('小助手');
+  expect(await page.evaluate(() => document.activeElement && document.activeElement.id)).not.toBe('m-nameplate');
+
+  // 焦点不在输入框后，再按一次 Esc 才关菜单。
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#menu')).toBeHidden();
+});
+
+// 全局快捷键是系统级的，有些人不想被任何程序常驻抢键 —— 设置里可以关掉。
+test('the global hotkey can be switched off', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '系统') s.parentElement.open = true;
+    }
+  });
+  const box = page.locator('#m-hotkey');
+  await expect(box).toBeChecked();
+  await box.uncheck();
+  await expect(box).not.toBeChecked();
+});
+
 // 提示音音量过去只有配置项、没有入口。滑块要即时反映在百分比上（松手才落盘）。
 test('the cue volume slider reports its own value', async ({ page }) => {
   await page.evaluate(() => document.getElementById('btn-menu').click());

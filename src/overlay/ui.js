@@ -105,6 +105,10 @@ import {
   // 上。这一行把「实际在用什么模型/供应商」说清楚；没被接管时返回 null，不显示。
   const ccSwitchLabel = (cc) => {
     if (!cc) return null;
+    // attached:false = cc-switch 已经 detach，磁盘上残留的模型/供应商不代表
+    // Claude Code 此刻真在用它们。宁可不说，也不能说错 —— 服务端已经过滤过
+    // 一次，这里再挡一次，防止旧缓存帧/别的上报路径漏进来。
+    if (cc.attached === false) return null;
     const model = cc.model ? String(cc.model).trim() : '';
     const provider = cc.provider ? String(cc.provider).trim() : '';
     // cc-switch 用 "default" 表示「没切到第三方供应商」，不携带信息。
@@ -2365,6 +2369,13 @@ import {
     if (inElectron) saveConfig({ clickThrough: cfg.clickThrough });
   });
 
+  // 全局快捷键开关：主进程收到 hotkeyOn 会立刻重新注册/注销，无需重启窗口。
+  const hotkeyInput = document.getElementById('m-hotkey');
+  hotkeyInput.addEventListener('change', (e) => {
+    cfg.hotkeyOn = e.target.checked;
+    if (inElectron) saveConfig({ hotkeyOn: cfg.hotkeyOn });
+  });
+
   // 开机自启：真正的安装由 server（node 进程）完成，主进程只代发一条带 token
   // 的本地请求 —— 在 Electron 里装会把启动项写成 Electron 可执行文件。
   // 它是机器状态而不是配置，所以不进 config / 导出文件。
@@ -2613,6 +2624,7 @@ import {
       cfg.phrases[st] = String(v || '').replace(/\s+/g, ' ').trim().slice(0, PHRASE_MAX);
     }
     cfg.clickThrough = document.getElementById('m-click').checked;
+    cfg.hotkeyOn = document.getElementById('m-hotkey').checked;
     cfg.idleActions = idleSel.checked;
     cfg.idleFreq = idlefreqSel.value;
     cfg.signMode = SIGN_MODES[signSel.value] || cfg.signMode;
@@ -2686,11 +2698,17 @@ import {
   // 键盘出口：工具栏和尺寸条都依赖指针，键盘用户至少要有办法打开设置、
   // 关掉浮层。Esc 关菜单/尺寸条，Ctrl/⌘+, 开设置（和大多数应用的偏好设置一致）。
   window.addEventListener('keydown', (e) => {
+    // 焦点在文本框/下拉里时，这些是「打字」不是「快捷键」。以前没这层判断：
+    // 在铭牌或台词框里按 Esc，会把整块设置连同刚输入还没提交的文字一起关掉；
+    // 按其它组合键也会顺手把机器人放大缩小。
+    const inField = e.target instanceof Element && e.target.closest('input, textarea, select');
     if (e.key === 'Escape') {
+      if (inField) { e.preventDefault(); e.target.blur(); return; }
       if (menuOpen) { e.preventDefault(); setMenu(false); }
       else if (sizerOpen) { e.preventDefault(); setSizer(false); }
       return;
     }
+    if (inField) return;
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === ',' || e.key === '，')) {
       e.preventDefault();
       setSizer(false);
@@ -2762,7 +2780,7 @@ import {
     'autoScene', 'dayScene', 'nightScene', 'nightStart', 'nightEnd', 'motion',
     'idleActions', 'idleFreq', 'halo', 'agentOrder', 'poses', 'phrases', 'nameplate', 'sound', 'soundStyle',
     'soundVolume', 'soundDone', 'notifyDone', 'dailyGoalHours', 'clickAction', 'doubleClick', 'muteMinutes', 'wear', 'finish',
-    'voice', 'clickThrough', 'showLabels', 'showOffline', 'showModel', 'maxRows', 'showSys',
+    'voice', 'clickThrough', 'hotkeyOn', 'showLabels', 'showOffline', 'showModel', 'maxRows', 'showSys',
     'showScore', 'showRecent', 'doNotDisturb', 'dndStart', 'dndEnd', 'customSkin', 'customEye', 'customTrack', 'customArm',
     'customSign', 'presets', 'aliases', 'mutedAgents', 'signMode', 'signPos', 'signColor', 'signShape', 'decoration'];
   // "HH:MM"（24 小时制）。勿扰时间是要拿去和当前时间比较的，一个随手写的
@@ -3070,6 +3088,7 @@ import {
       soundDoneInput.checked = cfg.soundDone !== false;
       notifyDoneInput.checked = cfg.notifyDone !== false;
       document.getElementById('m-click').checked = cfg.clickThrough !== false;
+      document.getElementById('m-hotkey').checked = cfg.hotkeyOn !== false;
       document.getElementById('m-labels').checked = cfg.showLabels !== false;
       document.getElementById('m-offline').checked = cfg.showOffline !== false;
       document.getElementById('m-model').checked = cfg.showModel !== false;

@@ -49,7 +49,11 @@ function claudeModel(home = ccSwitchHome()) {
   const s = readJson(path.join(home, '.claude', 'settings.json'));
   const env = s && s.env;
   if (!env) return null;
-  return env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME
+  // `ANTHROPIC_MODEL` 是主模型的显式覆盖（cc-switch 常写它）。三个 *_DEFAULT_*
+  // 是档位别名：供应商把 opus/sonnet/haiku 全映射到同一个模型时取哪个都对，但
+  // 用户手动切到 sonnet 档时只有 ANTHROPIC_MODEL 说得准，所以先读它。
+  return env.ANTHROPIC_MODEL
+    || env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME
     || env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME
     || env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME
     || env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME
@@ -89,12 +93,19 @@ function readCcSwitch({ home } = {}) {
   };
 
   const out = {};
-  const claude = entry('claude', 'currentProviderClaude');
-  const cm = claudeModel(root);
-  if (Object.keys(claude).some((k) => claude[k])) out.claude = { ...claude, model: cm };
-  const codex = entry('codex', 'currentProviderCodex');
-  const xm = codexModel(home);
-  if (Object.keys(codex).some((k) => codex[k])) out.codex = { ...codex, model: xm };
+  // 明确写了 attached:false = cc-switch 已经 detach 这个 agent。此时 settings.json
+  // 里残留的 provider 如果还算数，我们就会把「其实走官方 API」的 Claude Code 说成
+  // 「用 DeepSeek」—— 这正是这个产品最不能撒的谎。老版 cc-switch 没有这个字段
+  // （undefined），不能当成「没接管」，否则升级前的用户会整行消失。
+  const managed = (agent) => !(apps[agent] && apps[agent].attached === false);
+  if (managed('claude')) {
+    const claude = entry('claude', 'currentProviderClaude');
+    if (Object.keys(claude).some((k) => claude[k])) out.claude = { ...claude, model: claudeModel(root) };
+  }
+  if (managed('codex')) {
+    const codex = entry('codex', 'currentProviderCodex');
+    if (Object.keys(codex).some((k) => codex[k])) out.codex = { ...codex, model: codexModel(home) };
+  }
   return out;
 }
 

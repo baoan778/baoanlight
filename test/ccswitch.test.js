@@ -81,6 +81,65 @@ test('an agent cc-switch does not manage is left out', () => {
   }
 });
 
+// detach 之后 settings.json 里残留的 provider 不能算数：用户明明已经把 Claude Code
+// 切回官方 API，机器人还写「用 deepseek-v4.1-flash」就是在撒谎。
+test('a detached agent is left out even if a provider name is still on disk', () => {
+  const dir = tmp();
+  try {
+    fs.mkdirSync(path.join(dir, '.cc-switch'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.cc-switch', 'live-state.json'), JSON.stringify({
+      apps: { claude: { attached: false, mode: 'proxy' } },
+    }));
+    fs.writeFileSync(path.join(dir, '.cc-switch', 'settings.json'), JSON.stringify({
+      currentProviderClaude: 'DeepSeek',
+    }));
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify({
+      env: { ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: 'deepseek-v4.1-flash' },
+    }));
+
+    assert.deepEqual(readCcSwitch({ home: dir }), {});
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// 老版本 cc-switch 没有 attached 字段：不能当成「没接管」，否则升级前的用户整行消失。
+test('an entry without an attached field still counts', () => {
+  const dir = tmp();
+  try {
+    fs.mkdirSync(path.join(dir, '.cc-switch'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.cc-switch', 'live-state.json'), JSON.stringify({
+      apps: { codex: { mode: 'proxy' } },
+    }));
+    fs.writeFileSync(path.join(dir, '.cc-switch', 'settings.json'), JSON.stringify({
+      currentProviderCodex: 'OpenAI',
+    }));
+    fs.writeFileSync(path.join(dir, '.codex', 'config.toml'), 'model = "gpt-5.1-codex"\n');
+
+    const out = readCcSwitch({ home: dir });
+    assert.equal(out.codex.provider, 'OpenAI');
+    assert.equal(out.codex.model, 'gpt-5.1-codex');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ANTHROPIC_MODEL 是主模型的显式覆盖，优先于三个档位别名。
+test('the explicit ANTHROPIC_MODEL wins over the tier aliases', () => {
+  const dir = tmp();
+  try {
+    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify({
+      env: { ANTHROPIC_MODEL: 'deepseek-v4.1-flash', ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: 'claude-opus-4' },
+    }));
+    assert.equal(claudeModel(dir), 'deepseek-v4.1-flash');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // A malformed JSON file is the same as no file: best-effort, never a throw.
 test('a malformed cc-switch file degrades to no answer', () => {
   const dir = tmp();

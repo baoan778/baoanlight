@@ -21,6 +21,9 @@ const DEFAULTS = {
   scale: 1,
   collapsed: false,        // shrink the robot to a small helper
   clickThrough: true,      // let clicks pass through everywhere except the robot itself
+  // 全局快捷键（Ctrl/⌘+Alt+B 显示/隐藏）。系统级注册，有人不希望任何程序常驻抢键，
+  // 所以给一个开关；关掉后托盘菜单照常可用。
+  hotkeyOn: true,
   showLabels: true,        // show per-agent pills when more than one agent is active
   // Software list controls: whether agents that are not running keep a dark
   // row, whether the pill shows the real model/provider, and how many rows at most.
