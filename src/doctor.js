@@ -78,11 +78,31 @@ async function run() {
   // 钩子和 CLI 都用它给写请求签名。文件读不出来时所有写入 401，而 client.js
   // 会把 401 静默吞掉 —— 表现就是「灯一动不动」，且没有任何报错。这是最难
   // 自查的一类故障，所以让 doctor 明确说一句。
-  let token = '';
-  try { token = require('./auth').token(); } catch { /* 生成失败 */ }
-  check('Write token', token.length >= 32 ? 'pass' : 'fail',
-    token ? `${token.length} chars in ~/.baoanlight/token` : 'missing and could not be created',
-    'bao token   (rebuilds it; then re-run bao connect claude)');
+  // 直接读磁盘上的文件，**不要**走 auth.token()：它在文件缺失时会自动生成、在
+  // 文件读不出来（EBUSY/EPERM，正是这里要抓的那种故障）时会返回一个临时 token，
+  // 于是这条检查恒为真 —— 用户看到 PASS 就排除了鉴权问题，而去怀疑钩子没发事件。
+  let tokenStatus = 'pass';
+  let tokenDetail = '';
+  try {
+    const raw = fs.readFileSync(require('./auth').TOKEN_FILE, 'utf8').trim();
+    if (raw.length >= 32) {
+      tokenDetail = `${raw.length} chars in ~/.baoanlight/token`;
+    } else {
+      tokenStatus = 'fail';
+      tokenDetail = `only ${raw.length} chars — too short to be the write token`;
+    }
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      // 还没起过服务：文件由 server 启动时创建。这不是故障，但写请求此刻确实不通。
+      tokenStatus = 'warn';
+      tokenDetail = 'no token file yet — it is created when the server starts';
+    } else {
+      tokenStatus = 'fail';
+      tokenDetail = `cannot read ~/.baoanlight/token (${err.code || err.message}) — every write will be refused`;
+    }
+  }
+  check('Write token', tokenStatus, tokenDetail,
+    'check permissions on ~/.baoanlight/token, then re-run bao connect claude');
 
   // ---- overlay runtime
   let electronPath = null;
@@ -143,11 +163,15 @@ async function run() {
     // 钩子指向「既不是这个 checkout、也不是任何 node_modules/baoanlight 安装」的
     // 地方，多半是移动过项目 / 从别的机器同步了配置 —— 旧路径已经失效。
     // 全局安装（npm i -g baoanlight）恰恰是推荐位置，不该被这条误报成异常。
-    const rooted = script.startsWith(ROOT.replace(/\\/g, '/'));
-    const inInstall = /[\\/]node_modules[\\/]baoanlight[\\/]/i.test(script.replace(/\\/g, '/'));
-    if (script && !rooted && !inInstall) {
-      check('  hook points outside this project', 'warn',
-        `points at ${script}`, 'bao connect claude   (rewrites the paths for this machine)');
+    // 没加引号的钩子命令（手写配置里很常见）会让 script 是 undefined：上面两条
+    // 已经用 `(unparsed)` 报了 fail，这里不能再 startsWith 一下把 doctor 本身崩掉。
+    if (script) {
+      const rooted = script.startsWith(ROOT.replace(/\\/g, '/'));
+      const inInstall = /[\\/]node_modules[\\/]baoanlight[\\/]/i.test(script.replace(/\\/g, '/'));
+      if (!rooted && !inInstall) {
+        check('  hook points outside this project', 'warn',
+          `points at ${script}`, 'bao connect claude   (rewrites the paths for this machine)');
+      }
     }
 
     // Hooks fire on every tool call. If they run a script from a git checkout,
@@ -170,8 +194,9 @@ async function run() {
     const dir = agents.logDir(name, { config: cfg });
     const candidates = agents.candidates(name);
     if (dir && exists(dir)) {
-      check(`${entry.label} logs`, 'pass', dir);
-      check(`  -> ${entry.label}`, 'pass', `run: bao watch ${name}`);
+      // 一条检查就够：原来紧跟的第二条状态硬编码 'pass'，既不复核任何东西，又让
+      // 末尾的「N checks — N pass」被虚增（日志类代理越多虚增越多）。
+      check(`${entry.label} logs`, 'pass', `${dir}   (run: bao watch ${name})`);
     } else if (candidates.some(exists)) {
       check(`${entry.label} logs`, 'pass', candidates.find(exists));
     } else if (name === 'codex' && exists(path.join(os.homedir(), '.codex'))) {

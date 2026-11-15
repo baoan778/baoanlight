@@ -1074,8 +1074,19 @@ import {
     let overall = snap.overall || 'offline';
     if (!previewing) announce(overall);
     const sessions = snap.sessions || [];
-    // 托盘 tooltip 跟着整体状态走（hover 托盘图标能看到现在在干什么）。
-    if (inElectron && bridge.trayStatus) bridge.trayStatus({ overall, count: sessions.length });
+    // 托盘 tooltip 跟着整体状态走（hover 托盘图标能看到现在在干什么），并顺手带上
+    // 今日累计 —— 不打开菜单也能看一眼今天干了多久，这是托盘唯一能常驻的一行字。
+    if (inElectron && bridge.trayStatus) {
+      const byAgent = snap.stats?.byAgent || {};
+      let todayMs = 0;
+      let topAgent = '';
+      let topMs = 0;
+      for (const [agent, ms] of Object.entries(byAgent)) {
+        todayMs += ms || 0;
+        if ((ms || 0) > topMs) { topMs = ms; topAgent = agent; }
+      }
+      bridge.trayStatus({ overall, count: sessions.length, todayMs, topAgent: displayName(topAgent) });
+    }
 
     // "Nothing is running" and "Claude is running but not reporting" look
     // identical from here, and only one of them is a bug the user can fix.

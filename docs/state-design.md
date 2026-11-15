@@ -78,7 +78,7 @@
   不用「最近上报」——否则两个同级软件会让主灯来回跳。最近 3 秒内变化的软件只临时
   增强其通道高亮（`fresh`），不改变主状态优先级。
 - 槽位上限 8（`store.js` 的 `MAX_SLOTS`）；超出时主界面提示
-  `N more software running than the panel has slots for`，不静默丢弃。
+  「还有 N 个软件在运行，超出面板槽位」，不静默丢弃。
 - `warning`/`blocked`/`failed` 等别名在服务端统一归一（`ALIASES`），overlay 不重复判断。
 
 ### 3.3 状态来源与刷新
@@ -92,7 +92,7 @@
 | 兜底 2 | 发现进程但没有上报：`unknown`（`presence`），并提示 `bao connect claude` |
 | 兜底 3 | SSE 断开：`body.disconnected`，灯光衰减到 16%，灯环熄灭——"不知道"比"猜一个状态"诚实 |
 | 兜底 4 | 静默 90s：pill 变暗（`quiet`），灯仍按最后状态显示 |
-| 老化 | busy 6h / idle 30m / 无活动 2m 清理；`error` 与 `waiting` **永不**自动消失 |
+| 老化 | `done` 30s 后回落成 `idle`；`busy`/`unknown`/`idle`/`done` 静默 30 分钟即丢弃（静默的 busy 仍是 busy，只是变暗）；没干过活的 `idle` 2 分钟回收；**任何**会话 6 小时没有新上报都清掉；`error` 与 `waiting` 只有 6 小时这一条出口 |
 
 ---
 
@@ -155,7 +155,7 @@
 
 ## 7. 验收清单
 
-### 7.1 自动化（`npx playwright test`，67 条全绿）
+### 7.1 自动化（`npx playwright test`，全绿）
 
 槽位由服务端下发（2026-11-12）：
 

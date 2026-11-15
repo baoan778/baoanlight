@@ -250,12 +250,23 @@ function createTray() {
 
 const TRAY_STATE_LABEL = { busy: '运行中', waiting: '需要你', error: '出错', done: '完成', idle: '空闲', unknown: '未知', offline: '未连接' };
 let trayState = 'offline';
+// 「今日 3 时 20 分」：托盘是唯一常驻的入口，一句话里塞得下多久。
+function fmtToday(ms) {
+  const m = Math.round((Number(ms) || 0) / 60000);
+  if (m < 1) return '';
+  return m < 60 ? `${m} 分钟` : `${Math.floor(m / 60)} 时 ${m % 60} 分`;
+}
+
 ipcMain.on('tray:status', (_e, s) => {
   const st = (s && s.overall) || 'offline';
   if (!tray) return;
   const label = TRAY_STATE_LABEL[st] || '未连接';
   const extra = s && s.count ? ` · ${s.count} 个会话` : '';
-  tray.setToolTip(`baoanlight — ${label}${extra}`);
+  // 今日累计 + 最久的那个软件：不点开菜单也能知道「今天干了多久、主要是谁在干」。
+  const today = s && fmtToday(s.todayMs);
+  const who = today && s && s.topAgent ? `（${s.topAgent}）` : '';
+  const todayBit = today ? ` · 今日 ${today}${who}` : '';
+  tray.setToolTip(`baoanlight — ${label}${extra}${todayBit}`);
   if (st !== trayState && TRAY_ICONS[st]) {
     trayState = st;
     try { tray.setImage(nativeImage.createFromDataURL(TRAY_ICONS[st])); } catch { /* 忽略 */ }

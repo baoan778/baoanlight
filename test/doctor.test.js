@@ -1,0 +1,66 @@
+'use strict';
+// `bao doctor` 是本机唯一能自查的工具 —— 它自己崩掉，用户就只剩猜。
+// 这里跑真实的子进程，隔离到临时 HOME，避免依赖开发机上的真实接线与 cc-switch。
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const ROOT = path.join(__dirname, '..');
+
+// 退出码 1 是 doctor 的正常输出（有 FAIL 时它就该是 1），所以用 spawnSync 收下
+// 输出而不是让 execFileSync 抛异常 —— 这条测试要断言的是「没有崩」，不是「全绿」。
+function runDoctor(home) {
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'src', 'cli.js'), 'doctor'], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      USERPROFILE: home,   // Windows: os.homedir()
+      HOME: home,          // POSIX
+      BAOANLIGHT_HOME: path.join(home, '.baoanlight'),
+    },
+  });
+  return { out: `${r.stdout || ''}${r.stderr || ''}`, code: r.status };
+}
+
+// 手写的钩子命令常常没有引号（`node /opt/bao/hooks/claude.js`）。解析不出 script
+// 时，doctor 以前会在 startsWith 上抛 TypeError —— 一个自带堆栈的诊断工具，比没有
+// 更让人怀疑是自己装坏了。
+test('doctor survives a hook command without quotes instead of crashing', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-doc-'));
+  try {
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({
+      hooks: {
+        PreToolUse: [{
+          matcher: '*',
+          hooks: [{ type: 'command', command: 'node /opt/bao/hooks/claude.js', timeout: 5 }],
+        }],
+      },
+    }));
+
+    const { out } = runDoctor(home);
+    assert.doesNotMatch(out, /TypeError|Cannot read properties|at Object\./,
+      'doctor must never die with a Node stack trace');
+    // 解析不出来时应该说「未解析」，而不是假装检查通过。
+    assert.match(out, /\(unparsed\)/, 'an unparsable hook command is reported as such');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// 写 token 以前走 auth.token()：文件缺失会自动生成、读不出来会返回临时值，于是
+// 这条检查恒为 PASS —— 恰好漏掉「所有写入 401、灯一动不动」这类故障。
+test('the write-token check looks at the file instead of inventing one', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-doc-'));
+  try {
+    const { out } = runDoctor(home);
+    assert.match(out, /no token file yet/i, 'a missing token file is reported honestly');
+    assert.equal(fs.existsSync(path.join(home, '.baoanlight', 'token')), false,
+      'doctor must not create a token as a side effect');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
