@@ -151,10 +151,29 @@ test('one event vocabulary covers the new harnesses', () => {
   for (const name of ['task_failed', 'run_failed', 'error', 'crashed']) {
     assert.equal(logWatch.classify(name), 'error', name);
   }
+  // Codex 的模型流中断：同时含 "stream"，不能被当成环境噪音静默吞掉。
+  for (const name of ['stream_error', 'stream_failed', 'upstream_error', 'connection_failed']) {
+    assert.equal(logWatch.classify(name), 'error', name);
+  }
   assert.equal(logWatch.classify('session_end'), 'offline');
   for (const name of ['token_count', 'agent_message', 'reasoning_delta', 'mcp_tool_call_end']) {
     assert.equal(logWatch.classify(name), null, `${name} must stay ambient`);
   }
+});
+
+// Codex 把真正的事件嵌在 payload 里。response_item 直接返回自身类型，会让一个
+// 工具调用变成字面量 "response_item"，没有任何状态表认识它 —— 整轮工作对灯是隐形的。
+test('codex response_item turns are recognised, not hidden behind the wrapper name', () => {
+  const at = (payload) => logWatch.typeOf({ type: 'response_item', payload });
+  assert.equal(at({ type: 'function_call' }), 'function_call');
+  assert.equal(logWatch.classify(at({ type: 'function_call' })), 'busy');
+  assert.equal(logWatch.classify(at({ type: 'function_call_output' })), 'busy');
+  assert.equal(logWatch.classify(at({ type: 'reasoning' })), 'busy');
+  assert.equal(logWatch.classify(at({ type: 'local_shell_call' })), 'busy');
+  // event_msg 一直是对的，别改坏。
+  assert.equal(logWatch.typeOf({ type: 'event_msg', payload: { type: 'task_complete' } }), 'task_complete');
+  // 元数据行保留自己的类型，由上层忽略。
+  assert.equal(logWatch.typeOf({ type: 'turn_context', payload: { cwd: '/x' } }), 'turn_context');
 });
 
 // Every advertised agent must resolve, or `bao agents` lies.
@@ -177,6 +196,26 @@ test('the generic hook maps literal states and common event names', () => {
   assert.equal(pickState({ state: 'done' }), 'done');
   assert.equal(pickState({ state: 'error' }), 'error');
   assert.equal(pickState({ hook_event_name: 'Notification' }), 'waiting');
+  // 空闲提醒不是「需要你处理」：waiting 不会自己衰减，认错了灯会黄很久。
+  assert.equal(pickState({ hook_event_name: 'Notification', message: 'Claude is waiting for your input' }), 'idle');
+  assert.equal(pickState({ hook_event_name: 'Notification', message: 'Claude needs your permission to use Bash' }), 'waiting');
+  // 一调用就停下来等人的工具：PreToolUse 应该是黄灯，而不是绿灯。
+  assert.equal(pickState({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion' }), 'waiting');
+  assert.equal(pickState({ hook_event_name: 'PreToolUse', tool_name: 'ExitPlanMode' }), 'waiting');
+  assert.equal(pickState({ hook_event_name: 'PreToolUse', tool_name: 'Bash' }), 'busy');
+  // 工具结果里的显式失败必须是红灯：通用钩子认的是 Claude 的形状，就必须和
+  // hooks/claude.js 给出同一个颜色。
+  assert.equal(pickState({
+    hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: { is_error: true },
+  }), 'error');
+  assert.equal(pickState({
+    hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: { success: false },
+  }), 'error');
+  assert.equal(pickState({
+    hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: { stdout: 'ok' },
+  }), 'busy', 'an ordinary result does not turn the lamp red');
+  // CodeBuddy 的收尾事件与 claude.js 保持一致。
+  assert.equal(pickState({ hook_event_name: 'FinalStop' }), 'done');
   assert.equal(pickState({ event: 'task_complete' }), 'done');
   assert.equal(pickState({ type: 'approval_request' }), 'waiting');
   assert.equal(pickState({ type: 'something_unknown' }), null, 'unknown leaves state alone');
@@ -214,15 +253,24 @@ test('dsh projection rows map onto the three robot states', () => {
 });
 
 // dsh is the only source that hands us a real "how much is left" number:
-// context pressure. It must be reported as remaining, never as used.
+// context pressure. It must be reported as remaining, never as used — and it
+// must come from the provider-anchored figure, not the heuristic breakdown.
 test('dsh context pressure becomes remaining context', () => {
-  const at = (surfaceTokens, contextWindow) =>
-    dsh.deriveDshFuel({ rows: { contextPressure: { val: { surfaceTokens, contextWindow } } } });
+  const at = (pressure) => dsh.deriveDshFuel({ rows: { contextPressure: { val: pressure } } });
 
-  assert.equal(Math.round(at(64000, 256000).remaining), 75);
-  assert.equal(at(64000, 256000).label, 'context');
-  assert.equal(Math.round(at(300000, 256000).remaining), 0, 'overfull clamps at empty, not negative');
-  assert.equal(at(1, 0), null, 'no window means no honest percentage');
+  assert.equal(Math.round(at({ pressureTokens: 64000, contextWindow: 256000 }).remaining), 75);
+  assert.equal(Math.round(at({ projectedTokens: 64000, contextWindow: 256000 }).remaining), 75);
+  assert.equal(Math.round(at({ projectedTokens: 70000, pressureTokens: 64000, contextWindow: 256000 }).remaining), 73,
+    'the projected size of the next request wins when both exist');
+  assert.equal(at({ pressureTokens: 300000, contextWindow: 256000 }).remaining, 0,
+    'overfull clamps at empty, not negative');
+  assert.equal(at({ surfaceTokens: 1979825, contextWindow: 1048576 }), null,
+    'heuristic surfaceTokens is composition, not occupancy — 0% would be a false alarm');
+  assert.equal(at({ surfaceTokens: 64000, contextWindow: 256000 }), null,
+    'no provider-anchored number means no honest percentage');
+  assert.equal(at({ projectedTokens: null, pressureTokens: 64000, contextWindow: 256000 }).remaining, 75,
+    'a null projection falls back to the reported pressure');
+  assert.equal(at({ pressureTokens: 64000, contextWindow: 0 }), null, 'no window means no honest percentage');
   assert.equal(dsh.deriveDshFuel({ rows: {} }), null);
 });
 

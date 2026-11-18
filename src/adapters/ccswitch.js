@@ -30,9 +30,7 @@ function ccSwitchHome() {
 }
 
 function appData() {
-  if (process.platform === 'win32') return process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming');
-  if (process.platform === 'darwin') return path.join(HOME, 'Library', 'Application Support');
-  return process.env.XDG_CONFIG_HOME || path.join(HOME, '.config');
+  return process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming');
 }
 
 function readJson(file) {

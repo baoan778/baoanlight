@@ -1,9 +1,9 @@
 'use strict';
-// 开机自启管理：把「机器人 + watch all」放进系统的登录启动项，或移除。
+// 开机自启管理（Windows）：把机器人放进当前用户的登录启动项，或移除。
 //
-// This only edits the per-user login-startup entry. It never touches system
-// services or registry-wide settings, so `off` is always a clean undo.
-
+// 只改当前用户的「启动」文件夹，不碰系统服务或注册表全局项，所以 `off` 永远
+// 是一次干净的撤销。启动项实际执行的是一条 `bao start`：server、窗口和日志
+// 观察器都由它带起来并守护。
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -14,18 +14,17 @@ const ROOT = path.resolve(__dirname, '..');
 const NAME = 'baoanlight';
 
 function startupDir() {
-  if (process.platform === 'win32') {
-    return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
-      'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
-  }
-  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'LaunchAgents');
-  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'autostart');
+  return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+    'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
 }
 
 function targetPath() {
-  if (process.platform === 'win32') return path.join(startupDir(), `${NAME}.lnk`);
-  if (process.platform === 'darwin') return path.join(startupDir(), `com.${NAME}.plist`);
-  return path.join(startupDir(), `${NAME}.desktop`);
+  return path.join(startupDir(), `${NAME}.lnk`);
+}
+
+// 启动项只是入口，真正执行的是这个 VBS（里面写死了 node 与 cli 的绝对路径）。
+function launcherPath() {
+  return path.join(config.DIR, 'autostart.vbs');
 }
 
 // Run a PowerShell script from a temp file: passing a multi-line script through
@@ -43,44 +42,20 @@ function psRun(script) {
 
 const q = (s) => String(s).replace(/'/g, "''");
 
-// 「开机自启」启动的不是一个进程，而是两个：机器人和日志观察器。
-// `start` 会自己脱离并立刻返回，随后 `watch all` 留在前台 —— 顺序不能反，
-// watcher 先于 server 启动时上报会失败，之后没有状态变化就不再上报。
-// Windows 用 VBS，macOS/Linux 用同一个 shell 启动器。
-function launcherPath() {
-  return path.join(config.DIR, 'autostart.sh');
-}
-
-function writeLauncher() {
-  const file = launcherPath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const node = process.execPath;
-  const cli = path.join(ROOT, 'src', 'cli.js');
-  fs.writeFileSync(file, [
-    '#!/bin/sh',
-    `"${node}" "${cli}" start`,
-    `exec "${node}" "${cli}" watch all`,
-  ].join('\n') + '\n', 'utf8');
-  try { fs.chmodSync(file, 0o700); } catch { /* 受限文件系统：交给 shell 自己读取 */ }
-  return file;
-}
-
-function installWindows() {
+function install() {
   const lnk = targetPath();
   // Write a VBS with the node binary's absolute path baked in. At login the
   // shell's PATH may not include node (nvm, a custom install, a stripped
   // environment), and a `node …` launch that cannot find node fails silently —
   // the robot just never appears. The absolute path cannot miss.
-  const vbs = path.join(config.DIR, 'autostart.vbs');
+  const vbs = launcherPath();
   fs.mkdirSync(path.dirname(vbs), { recursive: true });
   fs.writeFileSync(vbs, [
     'Set sh = CreateObject("WScript.Shell")',
     `nodeExe = "${process.execPath}"`,
     `cli = "${path.join(ROOT, 'src', 'cli.js')}"`,
-    // 等 start 把 server 拉起来再启动 watcher：watcher 先于 server 启动时上报会
-    // 静默失败，之后没有状态变化就不再上报，机器人会一直显示离线。
-    'sh.Run """" & nodeExe & """ """ & cli & """ start", 0, True',
-    'sh.Run """" & nodeExe & """ """ & cli & """ watch all", 0, False',
+    // 一条 start 就够了：它会把 server、窗口和日志观察器一起带起来。
+    'sh.Run """" & nodeExe & """ """ & cli & """ start", 0, False',
   ].join('\r\n') + '\r\n');
 
   fs.mkdirSync(startupDir(), { recursive: true });
@@ -92,68 +67,37 @@ function installWindows() {
     `$l.WorkingDirectory = '${q(ROOT)}'`,
     '$l.Save()',
   ].join('\n'));
+  // PowerShell 退出码是 0 不代表快捷方式真的落盘了（路径写错、启动文件夹被
+  // 安全软件挡住都可能静默失败）。不验证的话，命令会打印「已开启」，而登录时
+  // 什么都不会发生 —— 这正是这个项目最不能做的事。
+  if (!fs.existsSync(lnk)) throw new Error(`the startup shortcut was not created at ${lnk}`);
   return lnk;
-}
-
-function installLinux() {
-  const file = targetPath();
-  const launcher = writeLauncher();
-  fs.mkdirSync(startupDir(), { recursive: true });
-  // 桌面项只能写一条 Exec，所以把「start + watch all」交给启动器脚本。
-  // 原来这里只跑 start：Linux 用户开了自启，日志型代理（Codex/dsh/WorkBuddy）
-  // 永远不报状态，机器人一直显示离线，而 Windows 是好的 —— 平台差异不该
-  // 藏在启动项里。
-  fs.writeFileSync(file, [
-    '[Desktop Entry]',
-    'Type=Application',
-    'Name=baoanlight',
-    `Exec="/bin/sh" "${launcher}"`,
-    'X-GNOME-Autostart-enabled=true',
-  ].join('\n') + '\n');
-  return file;
-}
-
-function installDarwin() {
-  const file = targetPath();
-  const launcher = writeLauncher();
-  fs.mkdirSync(startupDir(), { recursive: true });
-  fs.writeFileSync(file, [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-    '<plist version="1.0"><dict>',
-    '  <key>Label</key><string>com.baoanlight</string>',
-    '  <key>ProgramArguments</key><array>',
-    '    <string>/bin/sh</string>',
-    `    <string>${launcher}</string>`,
-    '  </array>',
-    '  <key>RunAtLoad</key><true/>',
-    '</dict></plist>',
-    '',
-  ].join('\n'));
-  return file;
-}
-
-function install() {
-  if (process.platform === 'win32') return installWindows();
-  if (process.platform === 'darwin') return installDarwin();
-  return installLinux();
 }
 
 function uninstall() {
   const file = targetPath();
   let removed = false;
   try { fs.unlinkSync(file); removed = true; } catch { /* 本来就没开 */ }
-  // 启动项只是入口，真正干活的是这两个辅助文件。留着它们会让「已关闭」
-  // 变成一句只对注册表/启动目录成立的话。
-  for (const extra of [launcherPath(), path.join(config.DIR, 'autostart.vbs')]) {
-    try { fs.unlinkSync(extra); } catch { /* 不存在或正被占用 */ }
-  }
+  // 启动项只是入口，真正干活的是 VBS。留着它会让「已关闭」变成一句只对启动
+  // 文件夹成立的话。
+  try { fs.unlinkSync(launcherPath()); } catch { /* 不存在或正被占用 */ }
   return { removed, file };
 }
 
+// 只看 .lnk 会说谎：脚本被杀软隔离或手工清理后，登录时 wscript 什么也起不来，
+// 而界面仍然显示「已开启」。两个文件都在才算真的开了。
 function status() {
   const file = targetPath();
-  return { enabled: fs.existsSync(file), file, platform: process.platform };
+  const launcher = launcherPath();
+  const hasShortcut = fs.existsSync(file);
+  const hasLauncher = fs.existsSync(launcher);
+  return {
+    enabled: hasShortcut && hasLauncher,
+    broken: hasShortcut && !hasLauncher,
+    file,
+    launcher,
+    platform: 'win32',
+  };
 }
 
-module.exports = { install, uninstall, status, targetPath };
+module.exports = { install, uninstall, status, targetPath, launcherPath };

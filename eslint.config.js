@@ -18,6 +18,21 @@ const RULES = {
   'no-self-assign': 'error',
   'no-cond-assign': 'error',
   'no-empty': ['error', { allowEmptyCatch: true }],
+
+  // 其余「说得出后果」的推荐规则：不是风格，而是真的会变成运行期错误。
+  'no-async-promise-executor': 'error',
+  'no-compare-neg-zero': 'error',
+  'no-constant-binary-expression': 'error',
+  'no-fallthrough': 'error',
+  'no-loss-of-precision': 'error',
+  'no-misleading-character-class': 'error',
+  'no-prototype-builtins': 'error',
+  'no-self-compare': 'error',
+  'no-unsafe-optional-chaining': 'error',
+  'no-useless-catch': 'error',
+  'no-unmodified-loop-condition': 'error',
+  'use-isnan': 'error',
+  'valid-typeof': 'error',
 };
 
 module.exports = [
@@ -39,7 +54,7 @@ module.exports = [
   {
     // Playwright 用例本身跑在 Node 里，但 page.evaluate() 的回调会被序列化到
     // 浏览器里执行，所以这块同时需要两套全局变量。
-    files: ['test-ui/**/*.js'],
+    files: ['test-ui/**/*.js', 'test-electron/**/*.js'],
     languageOptions: { globals: { ...globals.node, ...globals.browser } },
     rules: RULES,
   },

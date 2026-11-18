@@ -2027,10 +2027,14 @@ if (host && renderer) {
   });
   const bubble = new THREE.Sprite(bubbleMat);
   bubble.scale.set(0.84, 0.42, 1);
-  bubble.position.set(0.94, 3.70, 0.55);
-  robot.add(bubble);          // rides with him, so a turn does not leave it behind
+  bubble.position.set(0.94, 3.56, 0.55);
+  // 和广告牌一样挂在场景里：体型缩放（修长 y=1.15）会把气泡顶出画面，
+  // 而「说出来的话」被裁掉比没有气泡更糟。位置由 update 按牌子的另一侧摆。
+  scene.add(bubble);
 
   let bubbleText = null;
+  // 气泡此刻在机器人哪一侧：决定了小尾巴朝哪边指（见 drawBubble）。
+  let bubbleSide = 'right';
   // 临时提示（cc-switch 切换等）：气泡短暂显示，优先级低于出错/需要你。
   let noticeText = '';
   let noticeAt = -99;
@@ -2078,11 +2082,17 @@ if (host && renderer) {
       g.lineWidth = 7;
       g.strokeStyle = '#ffffff';
       g.stroke();
-      // 小尾巴，指向机器人
+      // 小尾巴，指向机器人。气泡在左边时尾巴在右下，否则在左下。
       g.beginPath();
-      g.moveTo(56, y1 - 4);
-      g.lineTo(40, h - 2);
-      g.lineTo(88, y1 - 4);
+      if (bubbleSide === 'left') {
+        g.moveTo(w - 56, y1 - 4);
+        g.lineTo(w - 40, h - 2);
+        g.lineTo(w - 88, y1 - 4);
+      } else {
+        g.moveTo(56, y1 - 4);
+        g.lineTo(40, h - 2);
+        g.lineTo(88, y1 - 4);
+      }
       g.closePath();
       g.fillStyle = 'rgba(16,18,22,.94)';
       g.fill();
@@ -2174,7 +2184,9 @@ if (host && renderer) {
   const sign = new THREE.Sprite(signMat);
   sign.scale.set(SIGN_W, SIGN_H, 1);
   sign.position.set(SIGN_X, SIGN_Y, 0.42);
-  robot.add(sign);
+  // 挂在场景上，不挂机器人组：体型缩放（Q版 1.14 / 修长 0.9）会把牌子一起
+  // 推大推小、推出画面。牌子的位置本来就是按相机画面定的，和机器人体型无关。
+  scene.add(sign);
 
   // 招牌后面的光晕：additive 金色，随呼吸脉动，让招牌像「点着灯」。
   const signGlow = new THREE.Sprite(new THREE.SpriteMaterial({
@@ -2191,15 +2203,57 @@ if (host && renderer) {
   // 「它到底在哪儿」多一份需要维护的答案。
   let signText = '';
   let signShownAt = -99;
-  let signMode = 'top';    // top 最多 / total 合计 / cycle 轮播 / off 关闭
+  let signMode = 'top';    // top 最多 / total 合计 / cycle 轮播 / clock 时钟 / goal 目标 / days 陪伴 / off 关闭
   let signPos = 'right';   // right / left
   let signColor = '#ffd54a';   // 招牌描边 / 图标 / 辉光颜色
   let signShape = '圆角';       // 圆角 / 胶囊 / 方正
+  let signGoalHours = 0;   // 今日目标（0 = 没设）
+  let signDays = 0;        // 陪伴天数（0 = 不知道 firstRun）
+  // 用户拖出来的偏移（机器人组的局部坐标，0 = 牌子自带的肩侧位置）。
+  // 和 signPos 是两件事：signPos 选左/右锚点，偏移在锚点上做微调，
+  // 所以换边不会把用户摆好的位置丢掉。
+  let signOffsetX = 0;
+  let signOffsetY = 0;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   window.addEventListener('bao:sign', (e) => {
     signMode = (e.detail && e.detail.mode) || 'top';
     signPos = (e.detail && e.detail.pos) || 'right';
     if (e.detail && e.detail.color) signColor = e.detail.color;
     if (e.detail && e.detail.shape) signShape = e.detail.shape;
+    if (e.detail && e.detail.goalHours !== undefined) signGoalHours = Number(e.detail.goalHours) || 0;
+    if (e.detail && e.detail.days !== undefined) signDays = Number(e.detail.days) || 0;
+    const off = e.detail && e.detail.offset;
+    if (off && Number.isFinite(Number(off.x)) && Number.isFinite(Number(off.y))) {
+      signOffsetX = clamp(Number(off.x), -3, 3);
+      signOffsetY = clamp(Number(off.y), -2.6, 2.6);
+    }
+  });
+
+  // 拖动广告牌：设置面板只发屏幕像素增量，世界坐标的换算留在这里 ——
+  // SIGN_W / SIGN_H 和投影尺寸都在这一侧，分到两处只会得到两套会漂移的答案。
+  let signDragBase = null;
+  let signBoxW = 0;   // 牌子在 #bot 内部坐标系里的像素宽
+  let signBoxH = 0;
+  window.addEventListener('bao:sign-drag-start', () => {
+    signDragBase = { x: signOffsetX, y: signOffsetY };
+  });
+  window.addEventListener('bao:sign-drag', (e) => {
+    if (!signDragBase || !signBoxW || !signBoxH) return;
+    const dx = Number(e.detail && e.detail.dx) || 0;
+    const dy = Number(e.detail && e.detail.dy) || 0;
+    // 靠近默认锚点就吸附：手不可能刚好停在 0，差几个像素看起来像「没对齐」。
+    const snap = (v) => (Math.abs(v) < 0.14 ? 0 : v);
+    signOffsetX = clamp(snap(signDragBase.x + (dx / signBoxW) * SIGN_W), -3, 3);
+    // 屏幕向下 = 世界 y 变小。
+    signOffsetY = clamp(snap(signDragBase.y - (dy / signBoxH) * SIGN_H), -2.6, 2.6);
+  });
+  window.addEventListener('bao:sign-drag-end', () => {
+    if (!signDragBase) return;
+    signDragBase = null;
+    // 由设置面板负责把最终位置写进配置（写盘与 UI 状态在同一处）。
+    window.dispatchEvent(new CustomEvent('bao:sign-offset', {
+      detail: { x: Number(signOffsetX.toFixed(3)), y: Number(signOffsetY.toFixed(3)) },
+    }));
   });
   const hexA = (hex, a) => {
     const n = parseInt(hex.slice(1), 16);
@@ -3441,10 +3495,21 @@ if (host && renderer) {
     // 用户写了台词就用那句：气泡上和耳朵里听到的必须是同一句话。
     let bubbleWord = off ? '' : error ? (phrases.error || '出错啦') : waiting ? (phrases.waiting || '需要你') : '';
     if (!bubbleWord && !off && noticeText && (t - noticeAt) < 2.2) bubbleWord = noticeText;
+    // 收起模式是个安静的小助手：广告牌已经藏了，气泡也不该再冒出来。
+    if (document.body.classList.contains('collapsed')) bubbleWord = '';
+    // 气泡永远在广告牌的另一侧，且固定在画面内的上半区：同一侧会互相盖住，
+    // 跟着体型缩放又会被顶出画面（修长 y=1.15）。
+    const signRight = (signPos === 'left' ? -SIGN_X : SIGN_X) + signOffsetX >= 0;
+    const bubbleX = signMat.opacity > 0.05 && signRight ? -0.94 : 0.94;
+    const side = bubbleX < 0 ? 'left' : 'right';
+    if (side !== bubbleSide) {
+      bubbleSide = side;
+      if (bubbleText) drawBubble(bubbleText);
+    }
     if (bubbleWord !== bubbleText) drawBubble(bubbleWord);
     bubbleMat.color.copy(tint);
     bubbleMat.opacity = damp(bubbleMat.opacity, bubbleWord ? 1 : 0, 9, dt);
-    bubble.position.y = 3.70 + (reduceMotion ? 0 : Math.sin(t * 5.2) * 0.04);
+    bubble.position.set(bubbleX, 3.56 + (reduceMotion ? 0 : Math.sin(t * 5.2) * 0.04), 0.55);
     bubble.scale.set(
       damp(bubble.scale.x, bubbleWord ? 0.84 : 0.72, 10, dt),
       damp(bubble.scale.y, bubbleWord ? 0.42 : 0.36, 10, dt),
@@ -3454,15 +3519,37 @@ if (host && renderer) {
   }
 
   function updateSign(t, dt, off) {
-    // ---- 今日时长广告牌：按模式显示某个软件的时长，带辉光 + 弹出动画
+    // ---- 信息牌：按模式显示某一种「今天怎么样」
     const fmt = (m) => (m < 60 ? `${m} 分钟` : `${Math.floor(m / 60)} 时 ${m % 60} 分`);
     const statsByAgent = datasetJson('stats');
     let signLabel = '';
-    // total（合计今日）是「今天干了多少」，下班全部离线时恰恰最想看一眼 ——
-    // 不该跟着机器人一起熄灭。top/cycle 是「谁最久」，离线时没那么重要，仍随 off 隐藏。
-    if (signMode !== 'off' && (signMode === 'total' || !off)) {
+    // 时间、陪伴天数、合计时长说的是「此刻/今天」，不是「谁在跑」：机器人全部离线时
+    // 恰恰最想看一眼，不该跟着一起熄灭。top/cycle/目标仍随 off 隐藏。
+    const ambient = signMode === 'clock' || signMode === 'days' || signMode === 'total'
+      || signMode === 'needs' || signMode === 'done' || signMode === 'sessions';
+    if (signMode !== 'off' && (ambient || !off)) {
       const entries = Object.entries(statsByAgent);
-      if (entries.length) {
+      const total = entries.reduce((a, [, v]) => a + (v && v.m ? v.m : 0), 0);
+      if (signMode === 'needs' || signMode === 'done' || signMode === 'sessions') {
+        // 计数与时长无关：即使今天还没跑过任何东西，也应当回答「现在要不要管」。
+        const c = datasetJson('signcounts') || {};
+        if (signMode === 'needs') signLabel = `需要你 ${Math.max(0, Number(c.needs) || 0)}`;
+        else if (signMode === 'done') signLabel = `今天完成 ${Math.max(0, Number(c.done) || 0)}`;
+        else signLabel = `会话 ${Math.max(0, Number(c.sessions) || 0)}`;
+      } else if (signMode === 'clock') {
+        // 一周的中文写法 + 24 小时制。drawSign 会在第一个数字处断行：
+        // 小字「周三」、大字「09:41」。
+        const d = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        signLabel = `周${'日一二三四五六'[d.getDay()]} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      } else if (signMode === 'days') {
+        signLabel = signDays > 0 ? `陪伴 ${signDays} 天` : '';
+      } else if (signMode === 'goal') {
+        if (signGoalHours > 0) {
+          const pct = Math.min(999, Math.round((total / (signGoalHours * 60)) * 100));
+          signLabel = `目标 ${pct}%`;
+        }
+      } else if (entries.length) {
         // value 现在是 { n: 显示名, m: 分钟 }：key 是稳定 agent id，显示名放里面。
         const sorted = [...entries].sort((a, b) => b[1].m - a[1].m);
         if (signMode === 'total') {
@@ -3471,7 +3558,7 @@ if (host && renderer) {
           if (ev && ev.done) bits.push(`完成 ${ev.done}`);
           if (ev && ev.error) bits.push(`出错 ${ev.error}`);
           const suffix = bits.length ? ` · ${bits.join(' · ')}` : '';
-          signLabel = `合计 ${fmt(entries.reduce((a, [, v]) => a + v.m, 0))}${suffix}`;
+          signLabel = `合计 ${fmt(total)}${suffix}`;
         } else if (signMode === 'cycle') {
           const [, v] = sorted[Math.floor(t / 4) % sorted.length];
           signLabel = `${v.n} ${fmt(v.m)}`;
@@ -3481,6 +3568,9 @@ if (host && renderer) {
         }
       }
     }
+    // 收起模式（150px 的小助手）里牌面只有几十像素高，字根本读不出来。
+    // 那个模式本来就是「占最少的桌面」，不要留一块看不懂的黄条；展开即恢复。
+    if (document.body.classList.contains('collapsed')) signLabel = '';
     if (signLabel && !signText) signShownAt = t;   // 从无到有：弹一下
     drawSign(signLabel);   // 内部对比文字/颜色/形状，没变化就直接返回
     const pop = signLabel && signShownAt >= 0 ? Math.max(0, 1 - (t - signShownAt) / 0.30) : 0;
@@ -3489,8 +3579,8 @@ if (host && renderer) {
     const popScale = 1 + pop * 0.10;
     signMat.opacity = damp(signMat.opacity, signLabel ? 1 : 0, 8, dt);
     sign.scale.set(SIGN_W * popScale, SIGN_H * popScale, 1);
-    sign.position.x = signPos === 'left' ? -SIGN_X : SIGN_X;
-    sign.position.y = SIGN_Y + (reduceMotion ? 0 : Math.sin(t * 1.8) * 0.03);
+    sign.position.x = (signPos === 'left' ? -SIGN_X : SIGN_X) + signOffsetX;
+    sign.position.y = SIGN_Y + signOffsetY + (reduceMotion ? 0 : Math.sin(t * 1.8) * 0.03);
     // 辉光：像通电灯箱一样呼吸，颜色跟着自定义走
     signGlow.material.color.set(signColor);
     signGlow.opacity = damp(signGlow.opacity, signLabel ? 0.35 + Math.sin(t * 3.2) * 0.15 : 0, 8, dt);
@@ -3500,6 +3590,9 @@ if (host && renderer) {
     // > 1 就是出画；这条曾经在 Q 版体型下真实发生过（牌子挂在会被缩放的
     // 机器人组上），而现在牌子在场景里，位置不该再随体型变化。
     let edge = 0;
+    // 同时把四角收进一个屏幕矩形里：DOM 拿不到 3D 牌子的盒子，而「按住牌子
+    // 拖」需要一个可以命中测试的区域。矩形写在 #bot 上，单位是它内部的 CSS 像素。
+    let minX = 1, maxX = -1, minY = 1, maxY = -1;
     const hw = (SIGN_W * popScale) / 2;
     const hh = (SIGN_H * popScale) / 2;
     for (const sx of [-1, 1]) {
@@ -3508,9 +3601,27 @@ if (host && renderer) {
           sign.position.x + sx * hw, sign.position.y + sy * hh, sign.position.z
         ).project(camera);
         edge = Math.max(edge, Math.abs(p.x), Math.abs(p.y));
+        minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
       }
     }
     host.dataset.signEdge = edge.toFixed(3);
+    const cw = host.clientWidth;
+    const ch = host.clientHeight;
+    if (signLabel && cw > 0 && ch > 0) {
+      const x0 = Math.round((minX * 0.5 + 0.5) * cw);
+      const x1 = Math.round((maxX * 0.5 + 0.5) * cw);
+      // NDC 的 y 向上，DOM 的 y 向下。
+      const y0 = Math.round((-maxY * 0.5 + 0.5) * ch);
+      const y1 = Math.round((-minY * 0.5 + 0.5) * ch);
+      signBoxW = Math.max(1, x1 - x0);
+      signBoxH = Math.max(1, y1 - y0);
+      const rect = `${x0},${y0},${signBoxW},${signBoxH}`;
+      if (host.dataset.signRect !== rect) host.dataset.signRect = rect;
+    } else {
+      signBoxW = 0; signBoxH = 0;
+      if (host.dataset.signRect) host.dataset.signRect = '';
+    }
   }
 
   function updateMotionCues(dt, yawDelta, crazy, busy, waiting, error) {

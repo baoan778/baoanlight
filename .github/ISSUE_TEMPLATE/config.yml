@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全问题（私密报告）
+    url: https://github.com/baoan778/baoanlight/security/advisories/new
+    about: 请不要公开提 Issue。按 SECURITY.md 私下报告漏洞。
+  - name: 部署与排障
+    url: https://github.com/baoan778/baoanlight/blob/main/DEPLOY.md
+    about: 安装、验收、升级和常见失败处理。

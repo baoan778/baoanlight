@@ -14,10 +14,16 @@ name: release
 #
 # One-time setup on npmjs.com -> the baoanlight package -> Settings ->
 # Trusted Publisher:
-#   Organization or user : deepak-hp
+#   Organization or user : baoan778
 #   Repository           : baoanlight
 #   Workflow filename    : release.yml
 # Leave the environment blank unless you add a GitHub environment gate.
+#
+# Brand-new package bootstrap: if npm's Trusted Publisher settings are not
+# available before the package exists, publish 2.0.0 once by hand (npm login,
+# then `npm publish --access public`), configure the publisher above, and from
+# then on tag pushes are fully tokenless. This workflow is for every release
+# after that first one.
 
 on:
   push:
@@ -30,7 +36,10 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -68,7 +77,7 @@ jobs:
           "
 
       - name: Install
-        run: npm install --no-audit --no-fund
+        run: npm install --no-optional --no-audit --no-fund
 
       # A tag that disagrees with the manifest publishes a version nobody meant
       # to ship, under a name nobody can find. Cheap to check, ugly to undo:
@@ -90,14 +99,23 @@ jobs:
 
       # Never publish a build that has not passed. This is the last gate before
       # something irreversible.
+      - name: Lint
+        run: npm run lint
+
       - name: Logic tests
         run: npm test
 
       - name: Install browser for the UI tests
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
 
       - name: Rendered UI tests
         run: npx playwright test
+
+      # A package missing package.json's `files` entry for a runtime file would
+      # publish an install that starts and then crashes. This is the cheapest
+      # possible check for that class of mistake.
+      - name: Package contents
+        run: npm run check:pack
 
       # No NODE_AUTH_TOKEN: OIDC handles authentication. Provenance is attached
       # automatically when publishing a public package this way.

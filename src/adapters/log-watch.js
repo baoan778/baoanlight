@@ -32,6 +32,10 @@ const BUSY = new Set([
   'task_started', 'turn_started', 'run_started', 'agent_start', 'step_started',
   'tool_call_start', 'message_start', 'reasoning_started', 'generating',
   'thinking', 'working', 'in_progress', 'busy', 'started',
+  // Codex 的 response_item 就是这些回合：真实的模型思考与工具调用。词表里没有
+  // 它们，一条 function_call 就会落到「不认识」而只能靠后面的 turn 事件兜底。
+  'function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output',
+  'local_shell_call', 'local_shell_call_output', 'reasoning', 'tool_call',
 ]);
 
 // 成功收尾：一个 run/turn/task 正常结束，是「完成」（紫色）而不是「空闲」（白色）。
@@ -46,6 +50,9 @@ const DONE = new Set([
 const ERROR = new Set([
   'task_failed', 'turn_failed', 'run_failed', 'step_failed', 'agent_failed',
   'error', 'failed', 'failure', 'crashed', 'exception', 'fatal',
+  // Codex 在模型流中断时发 stream_error；它同时含有 "stream"，绝不能被
+  // AMBIENT 当成环境噪音吞掉。
+  'stream_error', 'stream_failed',
 ]);
 
 // 中性收尾 / 用户取消：既不是成功也不是失败，回到就绪。
@@ -69,6 +76,13 @@ function normaliseType(type) {
 function classify(payloadType) {
   const t = normaliseType(payloadType);
   if (!t) return null;
+
+  // 显式失败必须先于「环境噪音」判定：Codex 的 stream_error / upstream_error
+  // 既含 stream 又是错误，被 AMBIENT 吞掉的话，模型流断了灯却还是绿的。
+  // 除了已知的失败词表，任何以 _error / _failed / _crashed 结尾的类型都算失败。
+  if (ERROR.has(t) || /(?:^|_)(?:error|failed|failure|crashed|exception|fatal)$/.test(t)) {
+    return 'error';
+  }
   if (AMBIENT.test(t)) return null;
 
   // "approval_request", "exec_approval_request", "needs_input" all land here.
@@ -79,7 +93,6 @@ function classify(payloadType) {
   }
   if (t === 'waiting' || t === 'needs_you' || t === 'blocked') return 'waiting';
   if (OFFLINE.has(t)) return 'offline';
-  if (ERROR.has(t)) return 'error';
   if (BUSY.has(t)) return 'busy';
   if (DONE.has(t)) return 'done';
   if (IDLE.has(t)) return 'idle';
@@ -153,10 +166,14 @@ function metaOf(rec) {
 
 function typeOf(rec) {
   const p = rec.payload || rec.data || {};
-  // Codex nests every real event one level down as {type:'event_msg', payload:{type}}.
-  if (rec.type === 'event_msg') return p.type;
+  // Codex 把真正的事件都嵌在 payload 里：event_msg 装生命周期事件，
+  // response_item 装模型/工具的回合（message、function_call、reasoning…）。
+  // 对后者直接返回 rec.type 只会得到字面量 "response_item" —— 任何状态表都
+  // 不认识它，于是 Codex 期间的每次工具调用都是隐形的，灯只能等下一个生命周期
+  // 事件才动。
+  if (rec.type === 'event_msg' || rec.type === 'response_item') return p.type;
   return rec.event || rec.event_type || rec.eventType || rec.kind
-    || p.event || p.event_type || (rec.type === 'event_msg' ? p.type : rec.type)
+    || p.event || p.event_type || rec.type
     || p.type || rec.status;
 }
 
@@ -182,10 +199,18 @@ function run(opts = {}) {
   const pollMs = Number(opts.interval) || 1000;
   // Files older than this are history, not live sessions.
   const lookbackMs = Number(opts.lookback) || 10 * 60 * 1000;
+  // 状态没变时的重报节奏：连续的工具调用都是同一种生命周期事件，没有状态切换，
+  // 而日志里可能长时间没有 ambient 行来刷新服务端的静默计时 —— 一个真在干活
+  // 的会话会在 30 分钟后被当成失联丢掉。dsh / task / wbt 三个 watcher 都有这条
+  // 心跳，只有通用日志观察器漏了。
+  const heartbeatMs = Number(opts.heartbeat) > 0 ? Number(opts.heartbeat) : 20_000;
   const quiet = !!opts.quiet;
   const label = entry ? entry.label : name;
 
   if (!dir || !fs.existsSync(dir)) {
+    // `bao watch all` runs every watcher in one process: exiting here would
+    // take the watchers that *did* find their logs down with this one.
+    if (opts.throwOnMissing) throw new Error(`no ${label} session logs found${dir ? ` at ${dir}` : ''}`);
     console.error(`No ${label} session logs found${dir ? ` at ${dir}` : ''}.`);
     const candidates = agents.candidates(name);
     if (candidates.length) {
@@ -257,7 +282,20 @@ function run(opts = {}) {
       : (classify(declared) || classify(type));
 
     if (next) {
-      if (next === t.state) return;
+      if (next === t.state) {
+        // 同一个状态的生命周期事件（连续 function_call）也要定期重报，理由见
+        // heartbeatMs 的注释。只在 busy 上做：waiting 的定义就是「不再写日志」，
+        // 而 error/done/idle 没有衰减计时需要推新。
+        if (!t.recovering && next === 'busy'
+          && Date.now() - (t.reportedAt || 0) > heartbeatMs) {
+          t.reportedAt = Date.now();
+          setState({
+            session, agent: name, state: 'busy', detail: 'working', cwd: t.cwd || '',
+            source: 'log', event: type, pulse: true,
+          });
+        }
+        return;
+      }
       t.state = next;
       const payload = {
         session,
@@ -267,10 +305,13 @@ function run(opts = {}) {
           : next === 'busy' ? 'working'
             : '',
         cwd: t.cwd || '',
+        source: 'log',
+        event: type || next,
       };
       // 回读历史时只记「最后是什么状态」，不逐条上报：中间状态早已过期，
       // 而且会让今日统计/通知把几分钟前的事重放一遍。
       if (t.recovering) { t.pending = payload; return; }
+      t.reportedAt = Date.now();
       setState(payload);
       if (!quiet) console.log(`  ${new Date().toISOString().slice(11, 19)}  ${type || next} -> ${next}`);
       return;
@@ -278,6 +319,7 @@ function run(opts = {}) {
 
     // Ambient event: keep a busy session from being swept as stale, nothing more.
     if (!t.recovering && t.state === 'busy') {
+      t.reportedAt = Date.now();
       setState({
         session, agent: name, state: 'busy', detail: 'working',
         cwd: t.cwd || '',
@@ -317,7 +359,10 @@ function run(opts = {}) {
     }
     const p = t.pending;
     t.pending = null;
-    if (p && (p.state === 'waiting' || p.state === 'busy')) setState(p);
+    if (p && (p.state === 'waiting' || p.state === 'busy')) {
+      t.reportedAt = Date.now();
+      setState(p);
+    }
   };
 
   const tick = () => {
@@ -355,7 +400,7 @@ function run(opts = {}) {
         // Start from the end of a file that already existed, so old sessions do
         // not replay on startup — but read a brand-new file from the beginning.
         const fresh = Date.now() - f.mtimeMs < pollMs * 3;
-        t = { offset: fresh ? 0 : f.size, state: null, buffer: '' };
+        t = { offset: fresh ? 0 : f.size, state: null, buffer: '', reportedAt: 0 };
         tracked.set(f.path, t);
         if (!fresh) {
           recoverFromTail(f, t);

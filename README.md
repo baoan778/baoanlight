@@ -1,6 +1,13 @@
 # baoanlight
 
+[![test](https://github.com/baoan778/baoanlight/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/baoan778/baoanlight/actions/workflows/test.yml)
+[![release](https://github.com/baoan778/baoanlight/actions/workflows/release.yml/badge.svg)](https://github.com/baoan778/baoanlight/actions/workflows/release.yml)
+[![license](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](package.json)
+
 一个常驻桌面角落的小机器人，替你盯着所有正在跑的 AI 编码代理。
+
+作者 / 维护者：**[baoan778](https://github.com/baoan778)** · 项目地址：**[github.com/baoan778/baoanlight](https://github.com/baoan778/baoanlight)** · 落地页：**[baoan778.github.io/baoanlight](https://baoan778.github.io/baoanlight/)**
 
 ```
 ● 绿色   代理正在干活（亮 = 运行中）
@@ -25,11 +32,11 @@
 为了不给桌面常驻窗口添负担，动画帧率随状态降档（干活 60fps、待机 30fps、离线静止 15fps），
 窗口隐藏即停，掉帧会自动降画质。
 
-支持 **macOS / Windows / Linux**，支持 **Claude Code、Codex、DeepSeek Harness、WorkBuddy、
+支持 **Windows 10 / 11**，支持 **Claude Code、Codex、DeepSeek Harness、WorkBuddy、
 Gemini CLI、Aider、Cursor、opencode、Copilot、Cline、Windsurf、Qwen Code、Kimi**，
 以及任何能执行一条命令或发一个 HTTP 请求的工具。
 
-**能做什么**（全部本地，无遥测）：
+**能做什么**（全部本地，无遥测；仅启动时向 npm 查一次版本号）：
 
 - **状态灯**：绿=运行、黄=需要你、红=失败、紫=刚完成（瞬态）、白=空闲，语义严格、绝不撒谎（见 [docs/state-design.md](docs/state-design.md)）
 - **多代理同时盯**：胸口 8 段槽位灯 + 底座 16 段灯环，谁在跑、谁在拖后腿一眼可见
@@ -37,21 +44,28 @@ Gemini CLI、Aider、Cursor、opencode、Copilot、Cline、Windsurf、Qwen Code�
 - **情绪表情**：出错头顶冒火焰 + 虹膜发红，等待含泪跺脚，未知瞳孔放大，完成喷金色星星
 - **自主动作**：空闲时自己张望、伸懒腰、抛接、抖擞、看手爪、巡视、点头，不再呆坐
 - **互动**：拖拽会挣扎、连点三下悬空转圈、指针停手臂会张手爪，右键开设置、双击打招呼
-- **自定义外观**：11 皮肤 / 8 瞳色 / 7 履带 / 8 配件 / 5 手爪 / 3 头型 / 4 镜筒 / 14 场景 / 36 灯效，一键随机换装、命名方案、配色主题
-- **本机资源**：机器人下方一条 CPU / 内存占用（中性色，不借用状态色），设置里可以关掉
-- **今日时长广告牌**：机器人旁一块金边招牌显示今天谁忙了多久（最多/合计/轮播/关闭可选），另有「最近动态」时间线
+- **自定义外观**：13 皮肤 / 10 瞳色 / 9 履带 / 10 配件 / 5 手爪 / 3 头型 / 4 镜筒 / 14 场景 / 36 灯效，一键随机换装、命名方案、配色主题
+- **本机资源**：机器人下方一条 CPU / 内存占用（检测到 NVIDIA 显卡时多一行 GPU/显存；中性色跑马灯，可设为常驻 / 仅高负载 / 关闭，不借用状态色），设置里可以关掉
+- **今日信息牌**：机器人旁一块金边招牌按你的选择显示今日时长（最多/合计/轮播）、需要你几个、今日完成数、会话数、时钟、今日目标进度或陪伴天数，另有「最近动态」时间线；按住牌子可以直接拖到任意位置（靠近原位会吸附），双击或设置里一键恢复默认
+- **多会话展开**：一个软件开了多个窗口时，行尾的 ×N 可以点开，逐行显示每个会话的目录、状态、运行/静默时长和它正在做什么；点某条会话可聚焦该软件，行尾终端按钮或右键可在它自己的目录里开终端；超过 6 个会话自动折叠成「还有 N 个会话」，设置里也能改成默认展开
+- **为什么是这个颜色**：展开一个软件后，能看到驱动当前状态的最近事件（时间 · 来源 · 事件 → 状态）、已静默时长，以及保守的卡住提示；阈值可在设置里调整（默认忙碌 15 分钟 / 等待 10 分钟）
+- **桌面便签**：记下今天要做的事，勾掉它，双击就地改字；支持置顶、按「置顶 / 今天 / 更早 / 已完成」分组、删除后 6 秒内撤销、提醒稍后 10 分钟、导出 Markdown；Ctrl+Shift+M 打开整张便签，Ctrl+Shift+N 只快速记一条。面板关着时机器人脚边也有一张小纸片，和代理状态互不干扰
 - **托盘常驻**：图标颜色跟随整体状态，鼠标悬停显示状态、会话数与今日累计（含最久的那个软件）
 - **MCP**：`bao mcp` 让任何支持 MCP 的代理自己上报 `report_status`
-- **开机自启 + 一键盯全部**：`bao autostart on`、`bao watch all`
+- **开机自启 + 一条命令全起**：`bao autostart on` 只需启动 `bao start`；server、窗口和日志观察器会一起起来
+- **整机自愈**：`bao start` 的脱离进程是守护者 —— 机器人整体崩溃会按 5s → 10s → 30s → 60s 自动重开；你主动退出或 `bao stop` 则不会被“复活”
 - **可选语音/提示音**（默认关闭）
 
 本项目是 [signalhead](https://github.com/deepak-hp/signalhead)（MIT）的二次开发版本：
 核心状态机与「安静不等于完成」等设计沿用并继续演进，界面与代理接入层已重写。
-由 [baoan778](https://github.com/baoan778) 维护。
+由 [baoan778](https://github.com/baoan778) 维护并开源发布。
 
 ---
 
 ## 安装
+
+> 想把这台机器交给 AI 部署？把 [DEPLOY.md](DEPLOY.md) 发给它，里面是逐步执行、
+> 验收和失败处理清单。
 
 ```bash
 npm install -g baoanlight
@@ -62,7 +76,7 @@ bao start
 从源码跑：
 
 ```bash
-git clone https://github.com/<you>/baoanlight
+git clone https://github.com/baoan778/baoanlight
 cd baoanlight
 npm install
 npm run setup
@@ -89,7 +103,10 @@ bao connect claude     # 接入 Claude Code，立即生效，无需重启
 ```
 
 `bao start` 默认脱离终端；关掉终端不会带走机器人。用 `bao stop` 停止，或
-`bao start --foreground` 自己盯着它（Ctrl+C 干净退出）。
+`bao start --foreground` 自己盯着它（Ctrl+C 干净退出）。它也会把日志观察器一起
+拉起来并守护：观察器意外退出会按 5s → 10s → 30s → 60s 重启；启动时找不到日志
+来源不会退出，而是每 30 秒重试，软件后来装好会自动接上。`--no-watch` 可关闭。
+整机也一样：脱离出去的守护进程会发现 `start` 非零退出并把整套重新拉起来。
 
 拖动机器人到任何位置，它会记住。鼠标悬停出现小工具栏：切换大/小尺寸、缩成小机器人、退出。
 窗口默认点击穿透——除了机器人本身，鼠标点击都会落到下面的窗口上。
@@ -148,8 +165,13 @@ bao watch codebuddy     # CodeBuddy / WorkBuddy 的逐轮对话 transcript
 - **WorkBuddy**：读它的任务板（`~/.workbuddy/tasks`）——有任务 `in_progress` 即绿灯。
   **这是粗粒度信息**；要精确到「某一轮在等你」，用 `bao hook --agent workbuddy`。
 - **CodeBuddy / WorkBuddy CLI**：读 `~/.workbuddy/projects/<项目>/<会话>.jsonl` 的逐轮记录 ——
-  `reasoning` / `function_call` 是绿灯，助手回完这一轮是紫灯（随即回空闲）。只读记录的
-  类型与工具名，**正文一个字都不读**。任务板平时是空的，这个才是实时的那个来源。
+  `reasoning` / `function_call` 是绿灯，助手回完这一轮是紫灯（随即回空闲）。只提取记录的
+  类型与工具名，**正文不会进入状态、日志或任何输出**。任务板平时是空的，这个才是实时的那个来源。
+  同一个家目录里两个产品共用这种 transcript，按路径归属：`~/.codebuddy` 记为 CodeBuddy，
+  `~/.workbuddy` 或 cwd 里的 WorkBuddy 工作区记为 WorkBuddy —— 否则只开着 WorkBuddy 时，
+  亮起来的会是「CodeBuddy」那盏灯。
+  忙碌中的会话只要文件还在写就会定期重报（不是只在状态翻转时上报），否则长时间跑工具的
+  一轮会在 90 秒后变暗、30 分钟后被当成失联丢掉。
 
 如果它装在别处，直接指过去（`--dir` 仍按同一格式解析）：
 
@@ -188,7 +210,7 @@ bao wrap --agent my-bot -- ./my-agent.sh
 ```
 
 包装器用伪终端运行代理，字节原样透传，通过 `src/adapters/patterns.js` 里的正则读屏幕。
-输出在流动 = 黄；输出停在一个确认提示上 = 红；停下来但没有提示 = 绿。
+输出在流动 = 绿灯（正在干活）；停在确认提示上 = 黄灯（需要你回答）；停下来但没有提示 = 白灯（空闲）。
 **这是很好的猜测，不是事实**——有钩子就用钩子。
 
 如果以上都不行，还有一行 shell：
@@ -199,11 +221,18 @@ bao set waiting --agent deploy --detail "approve prod push?"
 bao set idle    --agent deploy
 ```
 
-或从任何语言发 HTTP（写入要带本机 token，读不用，见「本地安全」）：
+或从任何语言发 HTTP（写入要带本机 token，读不用，见「本地安全」）。Windows 上 PowerShell 就是现成的：
+
+```powershell
+$h = @{ 'x-bao-token' = (bao token) }
+Invoke-RestMethod -Headers $h "http://127.0.0.1:4747/set/busy?agent=my-bot&session=manual&detail=thinking"
+```
+
+在 Git Bash / cmd 里也可以直接用 curl：
 
 ```bash
 curl -s -H "x-bao-token: $(bao token)" \
-  "http://127.0.0.1:4747/set/busy?agent=my-bot&session=$$&detail=thinking"
+  "http://127.0.0.1:4747/set/busy?agent=my-bot&session=manual&detail=thinking"
 ```
 
 ---
@@ -238,9 +267,9 @@ bao fuel 12 --used --agent ci --label "build minutes"   # --used 表示「已用
 胸口的仪表板上有 **8 段固定槽位灯**，一个软件一段，左右顺序永远不变：
 
 ```
-槽位:   deepseek  claude   codex   workbuddy   [4 个空位，给以后新增的]
-          ●         ●        ●         ○
-         红        绿       黄        熄灭
+槽位:   deepseek  claude   codex   workbuddy   codebuddy   [3 个空位，给以后新增的]
+          ●         ●        ●         ○            ○
+         红        绿       黄        熄灭         熄灭
 ```
 
 顺序就是 `src/store.js` 的 `AGENT_ORDER`（也是 `shared/palette.mjs` 的 `AGENT_SLOTS`，
@@ -285,16 +314,20 @@ bao fuel 12 --used --agent ci --label "build minutes"   # --used 表示「已用
 | 类别 | 选项 |
 |---|---|
 | 体型 / 尺寸 | Q版·标准·修长；70%–170% 缩放 |
-| 皮肤 | 11 种（做旧黄 / 军绿 / 金属银 / 碳纤黑 / 樱花粉…） |
-| 瞳色 / 镜筒 | 8 种瞳色；圆·方·六边形·三角镜筒 |
-| 履带 / 配件 | 7 种履带配色 + 3 种履带形状；8 种配件配色 |
+| 皮肤 | 13 种（做旧黄 / 军绿 / 金属银 / 碳纤黑 / 樱花粉 / 钛金白 / 午夜紫…） |
+| 瞳色 / 镜筒 | 10 种瞳色（含白瞳 / 玫红瞳）；圆·方·六边形·三角镜筒 |
+| 履带 / 配件 | 9 种履带配色（含石墨 / 沙色）+ 3 种履带形状；10 种配件配色（含钛银 / 玫瑰金） |
 | 手爪 / 胳膊 / 头型 | 5 种手爪、3 种胳膊、双筒·单眼·三眼 |
 | 场景 | 14 种：无 / 雪地 / 草原 / 沙漠 / 星空 / 岩浆 / 樱花 / 海洋 / 森林 / 雨夜 / 工厂 / 雪夜 / 黄昏 / 极光；可按时间自动在白天/夜晚场景间切换（夜晚时段支持跨午夜） |
 | 灯光 | 36 种底座灯效、光环样式、灯光亮度 |
-| 动作 | 5 个状态各配一种手势、待机频率、动效强度（省电/标准/华丽） |
-| 配色主题 | 8 套一键套用；另有「随机换装」和命名「外观方案」 |
-| 今日招牌 | 最多 / 合计 / 轮播 / 关闭（机器人旁的时长广告牌） |
-| 系统 | 提示音（风格+音量+完成音）、完成通知、语音播报、静音 30 分钟/1/2 小时、定时勿扰、点击穿透、开机自启、全局快捷键开关、显示未运行软件、显示模型、CPU/内存面板、列表行数、战绩/动态面板 |
+| 动作 | 5 个状态各配一种手势、待机频率、动效强度（省电/标准/华丽）、人格（活泼/沉稳/话痨/害羞，决定待机节奏与语气） |
+| 配色主题 | 8 套一键套用；另有「随机换装」和命名「外观方案」（方案会一起保存/恢复场景自动切换与广告牌设置） |
+| 软件 | 顺序、改名、每个软件在今日战绩里的展示色（可恢复默认）、逐个软件通知与提示音开关、日志目录覆盖 |
+| 信息牌 | 最多 / 合计 / 轮播 / 需要你 / 今日完成 / 会话数 / 时钟 / 今日目标 / 陪伴天数 / 关闭；位置、颜色（含任意自定义色）、形状（圆角/胶囊/方正）；按住牌面可直接拖动（靠近原位会吸附），双击或「恢复默认位置」复位，拖过后标记「已自定义」；牌面副行自动显示完成/出错次数 |
+| 日记 | 待办提醒间隔（关闭 / 15 / 30 / 60 / 120 分钟）、是否同时弹系统通知、启动时是否展开便签；待办支持置顶、分组、撤销删除、稍后提醒、导出 Markdown；数据存在 `~/.baoanlight/notes.json`，未完成的项目不会过期，完成超过 30 天自动清理 |
+| 菜单摘要 | 设置面板顶部实时显示「配色 · 体型 · 场景 · 人格」，改任何一项即时更新 |
+| 系统 | 提示音（风格+音量+完成音）、完成通知、语音播报、静音 30 分钟/1/2 小时、定时勿扰、点击穿透、开机自启、全局快捷键（开关 + 组合键）、显示未运行软件、默认展开多会话、显示模型、CPU/内存面板、列表行数、战绩/动态面板 |
+| 工作记录 | 一键导出日报（Markdown，含今日/近 7 天/近 30 天）与逐行明细（CSV，按日期 + 软件） |
 
 导入/导出：设置里的「导出配置」把以上全部打包成 JSON，「导入配置」一键恢复（`bao onboard` 负责首次接入引导）。
 
@@ -304,19 +337,21 @@ bao fuel 12 --used --agent ci --label "build minutes"   # --used 表示「已用
 
 | | 逻辑 | 悬浮窗口 |
 |---|---|---|
-| Windows | 已验证 | 已验证 |
-| Linux | 已验证 | 需要合成窗口管理器才能透明；否则用 `bao start --browser` |
-| macOS | CI 验证 | 未肉眼确认 |
+| Windows 10 / 11 | 已验证 | 已验证 |
 
-核心是纯 Node，只有两个纯 JS 依赖（`zod`、`@modelcontextprotocol/sdk`，`npm install` / 全局安装即装好）；窗口是 Electron（可选），透明/穿透/置顶在不同平台行为略有差异。
+本项目只支持 Windows。核心是纯 Node，只有两个纯 JS 依赖（`zod`、
+`@modelcontextprotocol/sdk`，`npm install` / 全局安装即装好）；窗口是 Electron
+（可选），提供透明、点击穿透和置顶。
 
 ---
 
 ## 本机接线对不对
 
 ```bash
-npm test         # 153 个逻辑测试：状态机、适配器、钩子、安装器、电量、鉴权、资源采样、调色板、事件契约、HTTP 请求体与配置落盘、启动自检
-npm run test:ui  # 67 个渲染测试：机器人、系统面板、标签、电量条、CSP、XSS、朗读文本、键盘路径、帧率/降级预算，以及落地页对比度
+npm test         # 234 个逻辑测试：状态机、适配器、钩子、安装器、电量、鉴权、资源采样、证据链、调色板、事件契约、HTTP 请求体与配置落盘、启动自检、整机守护、桌面待办、退出时统计落盘、终端安全
+npm run test:ui  # 122 个渲染测试：机器人、系统面板、标签、多会话展开与折叠、证据链、桌面便签、电量条、CSP、XSS、朗读文本、键盘路径、帧率/降级预算、每一项自定义控件的接线与重启恢复，以及落地页对比度
+npm run test:electron  # Electron 主进程烟测：preload 桥、真实窗口、SSE 状态与置顶（需要 Electron）
+npm run check:pack     # 发布前检查 npm 包内容：运行文件齐全、测试/密钥不会被打包
 npm run lint     # 未定义的变量、声明了没用的变量、重复键、走不到的代码
 bao doctor       # 本机：二进制、配置路径、日志目录、服务器
 ```
@@ -331,11 +366,12 @@ bao doctor       # 本机：二进制、配置路径、日志目录、服务器
 
 - `config.json` —— 端口、窗口位置、尺寸（`full`/`mini`）、是否折叠、`clickThrough`、
   是否显示标签、四个超时（`sessionTtlMs` / `idleTtlMs` / `quietAfterMs` / `unusedTtlMs`）、
-  各代理日志目录 `agents`
+  各代理日志目录 `agents`、每个软件的展示色 `agentColors`、全局快捷键 `hotkey` / `hotkeyOn`
 - `hook-events.log` —— 每个钩子事件 → 状态映射的流水账（`BAOANLIGHT_LOG=0` 关闭）
-- `token` —— 本机写入令牌（POSIX 下 0600；Windows 继承用户目录 ACL，首次启动自动生成）。`bao token` 打印它；
+- `token` —— 本机写入令牌（Windows 下继承用户目录 ACL，首次启动自动生成）。`bao token` 打印它；
   钩子、CLI、MCP 自己读，不需要你抄到任何地方
 - `port`、`server.log`
+- `.update-check.json` —— 最近一次 npm 版本检查的结果（24 小时内不再联网）
 
 从旧版本升级时，第一次运行会把 `~/.signalhead/config.json` 复制过来，旧目录不删除。
 
@@ -358,6 +394,9 @@ bao doctor       # 本机：二进制、配置路径、日志目录、服务器
 - **渲染进程是沙箱。** 页面自带 CSP（`script-src 'self'`，没有内联脚本），Electron
   窗口 `sandbox: true` 且禁止跳转到别的地址；服务端来的字符串（软件名、detail、
   模型名）一律按文本渲染，不拼 HTML。
+- **版本检查只问一句。** 启动时最多每 24 小时向 npm registry 请求一次最新版本号，
+  结果缓存在 `~/.baoanlight/.update-check.json`；不发送会话、状态、路径或任何机器
+  信息，离线、超时或被墙都静默忽略。
 
 ---
 
@@ -424,9 +463,43 @@ src/doctor.js           本机诊断
 落地页（`docs/index.html`）里的机器人是**同一份 3D 代码**，不是另画的一张图：GitHub Pages
 只发布 `docs/`，所以 `npm run build:pages` 把渲染代码复制到 `docs/demo/`。改完
 `src/overlay/robot3d.js` 记得跑一次 —— `test/contracts.test.js` 会逐字节比对，忘了会红。
+仓库自带 `.github/workflows/pages.yml`：在 Settings → Pages 把 Source 选成
+「GitHub Actions」后，推送 `docs/` 会自动部署。
+
+---
+
+## 相关文档
+
+- [部署说明（可交给 AI 执行）](DEPLOY.md)：环境检查、安装、验收、升级与卸载
+- [状态与灯效设计](docs/state-design.md)：每种颜色、动作、聚合规则的验收清单
+- [接入新的 AI 代理](docs/adapters.md)：日志观察器 / 钩子 / 包装器的实现规范
+- [把任意工具接进来](docs/connecting.md)：钩子、HTTP、MCP、PTY 四种方式
+- [更新记录](CHANGELOG.md)：版本变化与升级注意
+
+## 参与贡献
+
+欢迎提 Issue 和 Pull Request。改动前请先跑一遍：
+
+```bash
+npm run lint
+npm test
+npm run test:electron   # 需要先 `npm run setup` 安装 Electron
+npx playwright install chromium   # 首次
+npx playwright test
+npm run check:pack      # 改了 package.json 的 files 后
+npm run build:pages   # 如果改了 src/overlay/ 下的渲染代码
+```
+
+- 提交规范与代码约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- 行为准则见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)。
+- 发现安全问题请不要公开提 Issue，按 [SECURITY.md](SECURITY.md) 私下报告。
+- 本项目遵循「颜色即事实」的原则：绿色只表示正在运行，任何改动都不能让灯说谎。
+
+项目作者与维护者：[baoan778](https://github.com/baoan778)。
 
 ---
 
 ## 授权
 
-MIT。原始项目 signalhead 亦为 MIT，版权归其贡献者。
+MIT。项目版权归 [baoan778](https://github.com/baoan778/baoanlight) 所有；衍生自 signalhead 的原始部分保留其 MIT 版权声明（见 [LICENSE](LICENSE)）。
+渲染器内置 three.js（MIT），许可证头保留在 `src/overlay/vendor/` 的构建文件中。

@@ -21,9 +21,11 @@ const DEFAULTS = {
   scale: 1,
   collapsed: false,        // shrink the robot to a small helper
   clickThrough: true,      // let clicks pass through everywhere except the robot itself
-  // 全局快捷键（Ctrl/⌘+Alt+B 显示/隐藏）。系统级注册，有人不希望任何程序常驻抢键，
-  // 所以给一个开关；关掉后托盘菜单照常可用。
+  // 全局快捷键（显示/隐藏机器人）。系统级注册，有人不希望任何程序常驻抢键，
+  // 所以给一个开关；关掉后托盘菜单照常可用。可选组合键见 overlay/main.js 的
+  // HOTKEYS 白名单（配置里写别的值会回落到默认）。
   hotkeyOn: true,
+  hotkey: 'CommandOrControl+Alt+B',
   showLabels: true,        // show per-agent pills when more than one agent is active
   // Software list controls: whether agents that are not running keep a dark
   // row, whether the pill shows the real model/provider, and how many rows at most.
@@ -35,6 +37,11 @@ const DEFAULTS = {
   // 机器人下方那块 CPU / 内存小面板：默认开着，它是「这台机器现在忙不忙」
   // 的旁证，和代理状态是两回事（所以用中性色，不占红黄绿）。
   showSys: true,
+  // 系统面板（CPU / 内存 / GPU）的跑马灯：always 常驻 / load 仅高负载 / off 关闭。
+  sysMotion: 'always',
+  // 证据链里的「卡住」阈值（分钟）。只在界面计算文案，不影响状态推导。
+  stuckBusyMin: 15,
+  stuckWaitMin: 10,
   // Named look presets: { "name": { skin, eyestyle, scene, ... } }.
   presets: {},
   // Audible cue for the two states that want a human. Off by default: a desktop
@@ -52,8 +59,10 @@ const DEFAULTS = {
   dndEnd: '08:00',
   // 今日时长广告牌显示谁：top 最多 / total 合计 / cycle 轮播 / off 关闭。
   signMode: 'top',
-  // 广告牌位置：right 右侧 / left 左侧。
+  // 广告牌位置：right 右侧 / left 左侧。offset 是用户按住牌子拖出来的微调
+  // （机器人局部坐标），换边不会丢掉它。
   signPos: 'right',
+  signOffset: { x: 0, y: 0 },
   // 广告牌颜色（描边/图标/辉光）与形状（圆角/胶囊/方正）。
   signColor: '#ffd54a',
   signShape: '圆角',
@@ -74,6 +83,14 @@ const DEFAULTS = {
   muteMinutes: 60,
   // 每日目标（小时，0 = 关闭）：只影响战绩面板进度与达成提醒，不参与状态判断。
   dailyGoalHours: 0,
+  // 桌面便签的提醒：有未完成事项时，每隔多少分钟提醒一次（0 = 关闭），
+  // 以及是否同时弹系统通知。灯与状态不受影响。
+  notesRemindMinutes: 30,
+  notesNotify: true,
+  // 便签面板是否留在桌面上（默认收在一张纸片的角标后面）。
+  memoOpen: false,
+  // 一个软件有多个会话时，默认把每个会话各自列一行（默认收起，只显示 ×N）。
+  expandSessions: false,
   // 菜单底部两块面板的可见性：纯显示开关，不影响任何状态。
   showScore: true,
   showRecent: true,
@@ -81,6 +98,11 @@ const DEFAULTS = {
   agentOrder: [],
   aliases: {},
   mutedAgents: [],
+  // 只关某个软件的提示音/语音，不影响系统通知（与 mutedAgents 是两条独立通道）。
+  mutedSoundAgents: [],
+  // 逐个软件的展示色（今日战绩的分布条/时长条）。空 = 用内置的低饱和调色板。
+  // 这里刻意不复用红黄绿：那三色在这台机器上只表示状态。
+  agentColors: {},
   // 铭牌文字（空 = 显示主灯代表的软件名）。
   nameplate: '',
   // 人格用语覆盖（phrases[state]）；首次运行日期（用于陪伴天数）。
@@ -220,22 +242,25 @@ function port() {
   return load().port;
 }
 
-// 运行中服务端的端口。server 启动时会把**真实**端口写进 PORT_FILE（`port: 0`
-// 时尤其重要，`--port 5000` 也只改启动进程的环境变量）—— 一个新终端里的
-// `bao stop / status / token` 读不到那份环境变量，只能靠这个文件。
-// 没有文件（还没跑过）时退回配置端口。0 对「连接」来说不合法，跳过。
+// 运行中服务端写在 port 文件里的端口（`port: 0` / `--port 5000` 时，真实端口
+// 只有这个文件知道；新终端里的 `bao stop / status` 读不到启动进程的环境变量）。
+// 没有文件（还没跑过）时返回 null。
+function portFromFile() {
+  try {
+    const n = asPort(fs.readFileSync(PORT_FILE, 'utf8').trim());
+    return n || null;
+  } catch { /* 还没启动过 */ }
+  return null;
+}
+
 function runningPort() {
   const env = process.env.BAOANLIGHT_PORT || process.env.SIGNALHEAD_PORT;
   const fromEnv = env ? asPort(env) : null;
   if (fromEnv) return fromEnv;
-  try {
-    const n = asPort(fs.readFileSync(PORT_FILE, 'utf8').trim());
-    if (n) return n;
-  } catch { /* 还没启动过 */ }
-  return port();
+  return portFromFile() || port();
 }
 
 module.exports = {
   DIR, CONFIG_FILE, PORT_FILE, LOG_FILE, DEFAULTS,
-  ensureDir, load, save, port, runningPort,
+  ensureDir, load, save, port, runningPort, portFromFile,
 };

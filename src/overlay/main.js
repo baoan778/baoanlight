@@ -1,14 +1,20 @@
 'use strict';
 const { app, BrowserWindow, ipcMain, screen, shell, Tray, Menu, nativeImage, globalShortcut, Notification } = require('electron');
-const { spawn } = require('child_process');
 const path = require('path');
-const fs = require('fs');
 const http = require('http');
 const config = require('../config');
 const auth = require('../auth');
+const { openTerminal } = require('./terminal');
 
 const PORT = Number(process.env.BAOANLIGHT_PORT || process.env.SIGNALHEAD_PORT) || config.port();
 const URL_BASE = `http://127.0.0.1:${PORT}`;
+
+// 测试可以指定一个独立的 userData 目录：Electron 的单实例锁按 userData 计算，
+// 不隔离的话，桌面上的真实机器人会让测试窗口立刻退出（而且它还会抢走全局热键）。
+// 必须在 requestSingleInstanceLock() 之前设置。
+if (process.env.BAOANLIGHT_USER_DATA) {
+  try { app.setPath('userData', process.env.BAOANLIGHT_USER_DATA); } catch { /* 用默认目录也能跑 */ }
+}
 
 // Windows 原生通知（toast）需要绑一个 AppUserModelId，否则会显示成「Electron」。
 app.setAppUserModelId('com.baoanlight.robot');
@@ -156,7 +162,11 @@ function createWindow() {
   // 渲染进程带走 —— 而 preload 暴露的那组能力（通知、开终端、退出）是跟着
   // 渲染进程走的，所以「它停在哪里」也是一条安全边界。
   win.webContents.on('will-navigate', (e, url) => {
-    if (!url.startsWith(URL_BASE)) e.preventDefault();
+    // Compare origins, not string prefixes: `http://127.0.0.1:4747@evil.test`
+    // starts with URL_BASE but navigates somewhere else entirely.
+    let sameOrigin = false;
+    try { sameOrigin = new URL(url).origin === URL_BASE; } catch { /* 非法 URL 一律拒绝 */ }
+    if (!sameOrigin) e.preventDefault();
   });
   // 机器人没有需要网页权限的功能（声音由 WebAudio 合成，通知走主进程）。
   win.webContents.session.setPermissionRequestHandler((_wc, _permission, cb) => cb(false));
@@ -167,20 +177,30 @@ function createWindow() {
     saveTimer = setTimeout(savePositionNow, 400);
   };
   win.on('moved', remember);
-  // Linux 上 `moved` 不会发（Electron 只在 macOS / Windows 发它），而 `move`
-  // 三平台都有。少了这条，Linux 用户的窗口位置永远记不住。
-  if (process.platform === 'linux') win.on('move', remember);
   win.on('blur', () => { clearInterval(dragTimer); dragTimer = null; dragOrigin = null; });
   win.on('closed', () => {
-    clearInterval(cursorTimer);
+    stopCursorPolling();
     clearInterval(dragTimer);
     dragTimer = null; dragOrigin = null; win = null;
   });
+  // 托盘把窗口藏起来之后没有眼睛需要跟随：停掉轮询，显示时再恢复。隐藏窗口
+  // 还继续每 80ms 调一次系统光标 API，是没有理由的常驻开销。
+  win.on('show', () => {
+    lastCursor = null;
+    lastBounds = null;
+    startCursorPolling();
+  });
+  win.on('hide', stopCursorPolling);
 
-  cursorTimer = setInterval(pollCursor, 80);
+  startCursorPolling();
 
   // Anything the page tries to open goes to the real browser, not this window.
-  win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    // Only hand real web links to the browser; file:// and custom protocols
+    // must never be launched from a page, even if one appears.
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
 }
 
 // ---------- system tray ----------
@@ -205,28 +225,42 @@ function toggleWin() {
     ensureVisible();
     win.show();
     win.setAlwaysOnTop(true, 'screen-saver');
+    // A hidden window gets no cursor updates; drop the cache so the first tick
+    // after showing sends the current position even if the mouse never moved.
+    lastCursor = null;
+    lastBounds = null;
   }
 }
 
-// Ctrl/⌘+Alt+B。刻意避开 Ctrl+Shift+B —— 后者是 VS Code / IDEA 的「运行构建任务」，
-// 全局热键会在系统层把它抢过来，用户在编辑器里按一下只会看到机器人动了一下。
-const HOTKEY = 'CommandOrControl+Alt+B';
+// 默认 Ctrl+Alt+B。刻意避开 Ctrl+Shift+B —— 后者是 VS Code / IDEA 的「运行
+// 构建任务」，全局热键会在系统层把它抢过来，用户在编辑器里按一下只会看到机器人
+// 动了一下。可选值由白名单收窄：配置是用户可以手改的文件，不能让一个乱写的
+// 字符串去 globalShortcut.register。
+const DEFAULT_HOTKEY = 'CommandOrControl+Alt+B';
+const HOTKEYS = [
+  DEFAULT_HOTKEY,
+  'CommandOrControl+Shift+B',
+  'Alt+Shift+B',
+  'CommandOrControl+Alt+Shift+B',
+  'CommandOrControl+Alt+R',
+];
 
 // register() 在组合被别的软件占用 / 系统拒绝时返回 false 而不抛异常；以前 catch
 // 住什么都不做，用户按文档里的键毫无反应，也不知道为什么。至少留一条日志，并让
 // 托盘菜单仍然可用（它不依赖热键）。
-function registerHotkey(enabled = config.load().hotkeyOn !== false) {
+function registerHotkey(enabled = config.load().hotkeyOn !== false, wanted = config.load().hotkey) {
+  const key = HOTKEYS.includes(wanted) ? wanted : DEFAULT_HOTKEY;
   try {
     globalShortcut.unregisterAll();
     // 设置里可以关掉：全局热键是系统级的，有些人不希望任何程序常驻抢键。
     if (!enabled) return false;
-    const ok = globalShortcut.register(HOTKEY, toggleWin);
+    const ok = globalShortcut.register(key, toggleWin);
     if (!ok) {
-      console.warn(`baoanlight: global shortcut ${HOTKEY} is taken by another app — the tray menu still toggles the window.`);
+      console.warn(`baoanlight: global shortcut ${key} is taken by another app — the tray menu still toggles the window.`);
     }
     return ok;
   } catch (err) {
-    console.warn(`baoanlight: could not register ${HOTKEY}: ${err && err.message ? err.message : err}`);
+    console.warn(`baoanlight: could not register ${key}: ${err && err.message ? err.message : err}`);
     return false;
   }
 }
@@ -278,9 +312,10 @@ ipcMain.handle('config:get', () => config.load());
 ipcMain.handle('config:save', (_e, patch) => {
   const next = config.save(patch || {});
   clickThroughEnabled = next.clickThrough !== false;
-  // 全局快捷键开关一改就立刻重新注册/注销，不用重启窗口。
-  if (patch && Object.prototype.hasOwnProperty.call(patch, 'hotkeyOn')) {
-    registerHotkey(next.hotkeyOn !== false);
+  // 全局快捷键的开关或组合一改就立刻重新注册，不用重启窗口。
+  if (patch && (Object.prototype.hasOwnProperty.call(patch, 'hotkeyOn')
+    || Object.prototype.hasOwnProperty.call(patch, 'hotkey'))) {
+    registerHotkey(next.hotkeyOn !== false, next.hotkey);
   }
   return next;
 });
@@ -315,6 +350,9 @@ function apiJson(method, pathname, payload) {
 }
 ipcMain.handle('autostart:get', () => apiJson('GET', '/autostart'));
 ipcMain.handle('autostart:set', (_e, on) => apiJson('POST', '/autostart', { on: !!on }));
+// 桌面便签的读写：和自启一样由主进程代发，token 不进入渲染进程。
+ipcMain.handle('notes:get', () => apiJson('GET', '/notes'));
+ipcMain.handle('notes:save', (_e, action) => apiJson('POST', '/notes', action || {}));
 
 // Clicks pass through the window except over the light itself.
 //
@@ -324,6 +362,19 @@ ipcMain.handle('autostart:set', (_e, on) => apiJson('POST', '/autostart', { on: 
 // rect has no such edge case.
 let hotRect = null;      // interactive region, CSS px relative to the page
 let cursorInside = null;
+let lastCursor = null;   // last point we actually pushed to the renderer
+let lastBounds = null;
+
+function startCursorPolling() {
+  if (cursorTimer) return;
+  cursorTimer = setInterval(pollCursor, 80);
+}
+
+function stopCursorPolling() {
+  if (!cursorTimer) return;
+  clearInterval(cursorTimer);
+  cursorTimer = null;
+}
 
 ipcMain.on('window:hotrect', (_e, rect) => {
   // 热区决定「哪些像素吃点击」，也是 setIgnoreMouseEvents 的唯一依据：脏值
@@ -336,7 +387,7 @@ ipcMain.on('window:hotrect', (_e, rect) => {
 function pollCursor() {
   if (!win || win.isDestroyed()) return;
   // 托盘把窗口藏起来之后，没人看得见那只眼睛 —— 就别再以每秒 12 次的频率往
-  // 一个不可见的渲染进程推坐标了。
+  // 一个不可见的渲染进程推坐标了。`hide` 事件会先停掉定时器，这一句只是兜底。
   if (!win.isVisible()) return;
 
   const pt = screen.getCursorScreenPoint();
@@ -345,9 +396,21 @@ function pollCursor() {
   // The robot watches the cursor wherever it is on the desktop, not just when
   // it is over the 340px window — so the position is pushed every tick, and
   // "look at me" works from anywhere on the screen.
-  try {
-    win.webContents.send('cursor', { x: pt.x - b.x, y: pt.y - b.y, w: b.width, h: b.height });
-  } catch { /* the page is still loading; the next tick will land */ }
+  //
+  // But a stationary cursor is not news: at 12.5 ticks/s that was ~1.1 million
+  // pointless IPC messages a day. Only send when the cursor or the window
+  // actually moved. The click-through check below still runs every tick.
+  const changed = !lastCursor || !lastBounds
+    || pt.x !== lastCursor.x || pt.y !== lastCursor.y
+    || b.x !== lastBounds.x || b.y !== lastBounds.y
+    || b.width !== lastBounds.width || b.height !== lastBounds.height;
+  if (changed) {
+    lastCursor = { x: pt.x, y: pt.y };
+    lastBounds = { x: b.x, y: b.y, width: b.width, height: b.height };
+    try {
+      win.webContents.send('cursor', { x: pt.x - b.x, y: pt.y - b.y, w: b.width, h: b.height });
+    } catch { /* the page is still loading; the next tick will land */ }
+  }
 
   // While the window is being dragged the cursor can briefly leave the hotspot;
   // toggling click-through mid-drag would drop the button-up.
@@ -450,30 +513,12 @@ ipcMain.on('notify:show', (_e, { title, body } = {}) => {
 });
 
 // 一键打开终端：在某个会话的工作目录里起一个终端，回到「事故现场」。
-//
-// cwd 来自服务端（hooks 上报）。「本机」不等于「一定是个安全路径」：
-// 原来只是把引号和反斜杠删掉就拼进 `cmd /k "cd /d ..."`，而 cmd.exe 在引号
-// 内部仍然会展开 %VAR%。现在只接受一个**真实存在的目录**，含展开字符的一律
-// 拒绝 —— 打不开终端是小事，执行到别处是大事。
+// 路径校验与各平台的启动方式在 terminal.js 里，是纯函数、有单测；这里只转发。
 ipcMain.on('shell:open', (_e, { cwd } = {}) => {
-  if (!cwd || typeof cwd !== 'string') return;
-  if (/[%$`"\r\n]/.test(cwd)) return;
-  let dir;
-  try { dir = path.resolve(cwd); } catch { return; }
-  try { if (!fs.statSync(dir).isDirectory()) return; } catch { return; }
-  try {
-    if (process.platform === 'win32') {
-      spawn('cmd', ['/c', 'start', 'cmd', '/k', `cd /d "${dir}"`], { detached: true, stdio: 'ignore' }).unref();
-    } else if (process.platform === 'darwin') {
-      spawn('open', ['-a', 'Terminal', dir], { detached: true, stdio: 'ignore' }).unref();
-    } else {
-      spawn('x-terminal-emulator', ['--working-directory', dir], { detached: true, stdio: 'ignore' }).unref();
-    }
-  } catch { /* 打不开终端就算了 */ }
+  openTerminal(cwd);
 });
 
 app.on('window-all-closed', () => app.quit());
-if (process.platform === 'darwin' && app.dock) app.dock.hide();
 
 // Two robots on one desktop is not a second opinion: they overlap, they fight
 // over the saved window position, and neither of them can be told apart from a
@@ -504,9 +549,8 @@ if (!gotLock) {
     for (const ev of ['display-removed', 'display-added', 'display-metrics-changed']) {
       screen.on(ev, () => ensureVisible());
     }
-    // 全局快捷键：Ctrl/⌘+Alt+B 一键显示/隐藏机器人。
-    // 为什么不是 Ctrl+Shift+B：那是 VS Code / IDEA 的「运行构建任务」，机器人常驻时
-    // 会在系统层把它吞掉，用户在编辑器里按一下，构建没跑、桌面角落的机器人却动了一下。
+    // 全局快捷键：默认 Ctrl+Alt+B 一键显示/隐藏机器人。用户可以在设置里换一组，
+    // 但只接受白名单里的组合，避免手改配置时注册一个系统无法解析的字符串。
     registerHotkey();
     app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* 忽略 */ } });
     // 退出前把位置防抖里还没落盘的那次写下去。

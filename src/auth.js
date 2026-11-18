@@ -7,8 +7,8 @@
 //      Origin —— 只查 Origin 挡不住它，所以写入必须带一个秘密。
 //   2. DNS rebinding：攻击者域名解析到 127.0.0.1 时，请求在网络上确实是本机发出
 //      的，只有 Host 头还留着攻击者的域名。所以 Host 也必须是回环名。
-//   3. token 泄露的后果要尽可能小：它只放在 ~/.baoanlight/token（POSIX 下 0600；
-//      Windows 没有 chmod，权限继承用户目录 ACL），只用来
+//   3. token 泄露的后果要尽可能小：它只放在 ~/.baoanlight/token（写入时带上
+//      0600 的 mode，Windows 上实际生效的是用户目录的 ACL），只用来
 //      授权写入，读接口（/state、/events、/health）仍然免 token —— 否则 `bao
 //      status` 和 overlay 页面都得先握手，而它们本来就在同一台机器上。
 //
@@ -82,7 +82,6 @@ function token({ refresh = false } = {}) {
   }
   try {
     fs.writeFileSync(TOKEN_FILE, cached + '\n', { mode: 0o600 });
-    if (process.platform !== 'win32') fs.chmodSync(TOKEN_FILE, 0o600);
   } catch { /* 见上 */ }
   return cached;
 }

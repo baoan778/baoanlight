@@ -27,14 +27,8 @@ function taskDirs() {
   const out = [];
   const root = process.env.WORKBUDDY_HOME || path.join(os.homedir(), '.workbuddy');
   out.push(path.join(root, 'tasks'));
-  if (process.platform === 'win32') {
-    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-    out.push(path.join(appData, 'WorkBuddy', 'tasks'));
-  } else if (process.platform === 'darwin') {
-    out.push(path.join(os.homedir(), 'Library', 'Application Support', 'WorkBuddy', 'tasks'));
-  } else {
-    out.push(path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'WorkBuddy', 'tasks'));
-  }
+  const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  out.push(path.join(appData, 'WorkBuddy', 'tasks'));
   return out;
 }
 
@@ -61,26 +55,50 @@ function deriveTaskState(items) {
   return null;   // pending only: planned, not started — claim nothing
 }
 
-function readItems(dir) {
+// 读一个任务文件夹里的所有条目。`cache` 以文件为键保存「上次读到的
+// mtime + 大小 + 解析结果」：任务文件是原地改写的，轮询每 1.5 秒跑一次，
+// 无条件 readFileSync + JSON.parse 会让一块几十条的任务板变成持续不断的磁盘
+// 读取和解析（文件没变时读到的还是同一个对象）。只有 mtime 或大小变了才重读；
+// 大小兜住「同一毫秒内改写」这种情况。
+function readItems(dir, cache = new Map()) {
   const items = [];
+  let newest = 0;
   let entries;
-  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return items; }
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return { items, newest }; }
+  const seen = new Set();
   for (const e of entries) {
     if (!e.isFile() || !/\.json$/i.test(e.name)) continue;
+    const file = path.join(dir, e.name);
+    seen.add(file);
     try {
-      const rec = JSON.parse(fs.readFileSync(path.join(dir, e.name), 'utf8'));
+      const st = fs.statSync(file);
+      if (st.mtimeMs > newest) newest = st.mtimeMs;
+      const hit = cache.get(file);
+      let rec;
+      if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
+        rec = hit.rec;
+      } else {
+        rec = JSON.parse(fs.readFileSync(file, 'utf8'));
+        cache.set(file, { mtimeMs: st.mtimeMs, size: st.size, rec });
+      }
       if (rec && typeof rec === 'object') items.push(rec);
     } catch { /* half-written file: try again next tick */ }
   }
-  return items;
+  // 已经不在目录里的条目要清掉：任务被删/被清空后，缓存不该只增不减。
+  for (const key of cache.keys()) if (!seen.has(key)) cache.delete(key);
+  return { items, newest };
 }
 
 function run(opts = {}) {
-  const dir = opts.dir || taskDirs().find((d) => {
+  // An explicit --dir wins, then the user's configured override, then the probe.
+  const configured = require('../config').load().agents?.workbuddy?.dir;
+  const dir = opts.dir || configured || taskDirs().find((d) => {
     try { return fs.existsSync(d); } catch { return false; }
   });
 
   if (!dir || !fs.existsSync(dir)) {
+    // In `bao watch all` this watcher must fail alone, not kill the process.
+    if (opts.throwOnMissing) throw new Error('no WorkBuddy task board found');
     console.error('No WorkBuddy task board found.');
     console.error('Looked in:');
     for (const d of taskDirs()) console.error(`  ${d}`);
@@ -95,6 +113,9 @@ function run(opts = {}) {
 
   const pollMs = Number(opts.interval) || 1500;
   const lookbackMs = Number(opts.lookback) || 12 * 60 * 60 * 1000;
+  // 板内文件还在写、状态没变 = 还在干活：定期重报一次，避免长时间同一个
+  // 「进行中」被服务端判成静默、最后当成失联丢掉。
+  const heartbeatMs = Number(opts.heartbeat) > 0 ? Number(opts.heartbeat) : 20_000;
   const quiet = !!opts.quiet;
   const tracked = new Map();   // task folder -> { state, mtimeMs }
 
@@ -104,6 +125,7 @@ function run(opts = {}) {
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     const seen = new Set();
+    const now = Date.now();
 
     for (const e of entries) {
       if (!e.isDirectory()) continue;
@@ -112,24 +134,47 @@ function run(opts = {}) {
       let st;
       try { st = fs.statSync(folder); } catch { continue; }
       seen.add(folder);
-      if (st.mtimeMs < Date.now() - lookbackMs) continue;
 
-      const t = tracked.get(folder) || { state: null, mtimeMs: 0 };
+      const t = tracked.get(folder) || {
+        state: null, mtimeMs: 0, seenAt: 0, reportedAt: 0, files: new Map(),
+      };
       tracked.set(folder, t);
-      t.mtimeMs = st.mtimeMs;
 
-      const items = readItems(folder);
-      if (!items.length) continue;
+      const { items, newest } = readItems(folder, t.files);
+      // 新鲜度看**板内文件**的 mtime，而不是目录的 mtime：任务文件是原地改写的，
+      // 目录时间停在你建任务那天。按目录时间算，一块用了半天的任务板会在 12 小时
+      // 后被当成过期，从此再也不上报 —— 灯一直灭着，而任务还在跑。
+      const freshAt = newest || st.mtimeMs;
+      const fresh = newest > (t.seenAt || 0);
+      t.seenAt = newest;
+      t.mtimeMs = freshAt;
+      if (freshAt < now - lookbackMs) continue;
+
+      if (!items.length) {
+        // 板子被清空：没有证据就熄灯，别把上一轮的状态留成残影。
+        if (t.state) {
+          t.state = null;
+          setState({ session: `workbuddy:${e.name}`, agent: 'workbuddy', state: 'offline' });
+        }
+        continue;
+      }
 
       const next = deriveTaskState(items);
-      if (!next || next === t.state) continue;
+      if (!next) continue;
+      const alive = next === t.state && next === 'busy' && fresh
+        && Date.now() - (t.reportedAt || 0) > heartbeatMs;
+      if (next === t.state && !alive) continue;
       t.state = next;
+      t.reportedAt = Date.now();
 
       setState({
         session: `workbuddy:${e.name}`,
         agent: 'workbuddy',
         state: next,
         detail: next === 'busy' ? 'working through tasks' : '',
+        source: 'file',
+        event: 'task_board',
+        pulse: alive,
       });
       if (!quiet) console.log(`  ${new Date().toISOString().slice(11, 19)}  ${e.name.slice(0, 8)} -> ${next}`);
     }
@@ -137,7 +182,7 @@ function run(opts = {}) {
     // 收摊：任务从板上消失、或已经老到 lookback 之外的，必须把之前点亮的那
     // 一行熄掉。原来只在进程退出时清 busy —— waiting/error 的残影会一直挂到
     // 服务端 TTL 才消失，而那时灯已经在说一件不存在的旧事。
-    const cutoff = Date.now() - lookbackMs;
+    const cutoff = now - lookbackMs;
     for (const [folder, t] of [...tracked]) {
       const stale = !seen.has(folder) || (t.mtimeMs && t.mtimeMs < cutoff);
       if (!stale) continue;

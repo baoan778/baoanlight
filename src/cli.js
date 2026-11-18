@@ -9,6 +9,7 @@ const config = require('./config');
 const client = require('./client');
 const install = require('./adapters/install');
 const agents = require('./adapters/agents');
+const { supervise } = require('./supervisor');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -40,16 +41,18 @@ function parse(argv) {
 
 const c = process.stdout.isTTY
   ? { dim: (s) => `\x1b[2m${s}\x1b[0m`, b: (s) => `\x1b[1m${s}\x1b[0m`,
-      red: (s) => `\x1b[31m${s}\x1b[0m`, yel: (s) => `\x1b[33m${s}\x1b[0m`, grn: (s) => `\x1b[32m${s}\x1b[0m` }
-  : { dim: (s) => s, b: (s) => s, red: (s) => s, yel: (s) => s, grn: (s) => s };
+      red: (s) => `\x1b[31m${s}\x1b[0m`, yel: (s) => `\x1b[33m${s}\x1b[0m`,
+      grn: (s) => `\x1b[32m${s}\x1b[0m`, mag: (s) => `\x1b[35m${s}\x1b[0m` }
+  : { dim: (s) => s, b: (s) => s, red: (s) => s, yel: (s) => s, grn: (s) => s, mag: (s) => s };
 
-// Same colours as the robot, in the same order of alarm. `idle` is green too,
-// dimmed — alive but not working, which is a different thing from running.
+// Same colours as the robot, in the same order of alarm. `idle` is white
+// (rendered dim in a terminal) — a different thing from running. `done` is the
+// transient purple the robot shows for a finished turn.
 const DOT = {
   error: () => c.red('●'),
   waiting: () => c.yel('●'),
   busy: () => c.grn('●'),
-  done: () => c.dim('○'),
+  done: () => c.mag('◉'),
   idle: () => c.dim('●'),
   unknown: () => c.dim('◐'),
   offline: () => c.dim('○'),
@@ -60,7 +63,7 @@ const DOT = {
 // Switching the console to 65001 fixes it for every run that follows. Only do
 // it for an interactive terminal: piped output must stay raw bytes.
 function enableUtf8Console() {
-  if (process.platform !== 'win32' || !process.stdout.isTTY) return;
+  if (!process.stdout.isTTY) return;
   try {
     const out = execFileSync('chcp.com', [], { encoding: 'utf8', timeout: 1500, windowsHide: true });
     const page = (out.match(/(\d{3,5})/) || [])[1];
@@ -78,12 +81,16 @@ function usage() {
 ${c.b('baoanlight')} — a small tracked robot that sits on your desktop and shows
 what every AI coding agent is doing.
 
-  ${c.grn('●')} green   an agent is working (bright) or finished (dim)
+  ${c.grn('●')} green   an agent is working
   ${c.yel('●')} yellow  an agent stopped and needs you (permission, question, choice)
   ${c.red('●')} red     a run failed or is blocked
+  ${c.mag('◉')} purple  a turn just finished (brief)
+  ${c.dim('●')} dim     an agent is open but not working
+  ${c.dim('○')} dark    nothing running / not installed
 
 ${c.b('USAGE')}
   bao start                    start it in the background and hand the prompt back
+                               ${c.dim('(also starts and supervises the log watchers)')}
   bao start --foreground       keep it attached to this terminal (Ctrl+C to stop)
   bao server                   state server only (no robot window)
   bao overlay                  robot window only (server must already run)
@@ -91,8 +98,9 @@ ${c.b('USAGE')}
 
   bao connect claude           wire into Claude Code hooks   ${c.dim('(exact)')}
   bao connect codex            wire into Codex notify        ${c.dim('(red + green)')}
+  bao connect codebuddy        wire into CodeBuddy hooks     ${c.dim('(restart the IDE once)')}
   bao connect generic          print snippets for any other tool
-  bao disconnect claude|codex  remove those again
+  bao disconnect claude|codex|codebuddy  remove those again
 
   bao wrap -- <command>        run any agent in a watched terminal
                                ${c.dim('e.g. bao wrap -- gemini')}
@@ -100,8 +108,9 @@ ${c.b('USAGE')}
   bao watch codex              read Codex's own session logs      ${c.dim('(all 3 states)')}
   bao watch deepseek           read DeepSeek Harness projections  ${c.dim('(all 3 states)')}
   bao watch workbuddy          read WorkBuddy's task board
+  bao watch codebuddy          read CodeBuddy's session transcripts
   bao watch all                run every log-based watcher at once
-                               ${c.dim('codex + deepseek + workbuddy')}
+                               ${c.dim('codex + deepseek + workbuddy + codebuddy')}
   bao watch <agent> --dir <p>  point the watcher at that agent's folder
                                ${c.dim('--jsonl forces the generic JSONL reader')}
 
@@ -120,7 +129,7 @@ ${c.b('USAGE')}
   bao token                    print the local write token (for curl / scripts)
   bao clear [--session id]     forget sessions left behind by a crashed agent
   bao setup                    download the Electron runtime for the window
-  bao autostart on|off|status  start the robot at login (all platforms)
+  bao autostart on|off|status  start the robot at Windows login
   bao onboard                  first-run guide: detect agents and connect one
   bao doctor                   check this machine is wired up correctly
   bao demo                     cycle the states to check the robot animates
@@ -133,6 +142,7 @@ ${c.b('OPTIONS')}
   --dir <path>     for \`watch\`: where that agent keeps its session logs
   --no-overlay     for \`start\`: server only
   --browser        for \`start\`: open the robot in a browser tab instead of a window
+  --no-watch       for \`start\`: do not run the log watchers (they run by default)
 `);
 }
 
@@ -185,10 +195,78 @@ function spawnOverlay(port) {
   return child;
 }
 
+// 日志观察器作为独立子进程跑：某个适配器里的意外异常只会带走它自己，不会
+// 把 server 和机器人窗口一起拖下水；`cmdStart` 负责在它退出后重启。
+function spawnWatchChild(port) {
+  const child = spawn(process.execPath, [path.join(ROOT, 'src', 'cli.js'), 'watch', 'all', '--supervised'], {
+    cwd: os.tmpdir(),
+    env: { ...process.env, BAOANLIGHT_PORT: String(port) },
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.on('error', () => {});
+  return child;
+}
+
+// 整机子进程：server + 窗口 + 观察器都由它带起来（见 cmdStart）。
+// 守护者只负责在它非零退出后重开，不关心它内部怎么分工。
+//
+// 用户的选择必须全部传下去：`--no-watch` 漏传时，前台子进程会把「没写」当成
+// 「默认开」，于是 `bao start --no-watch` 照样拉起一整套观察器 —— 参数被静默
+// 吞掉，比不支持还糟。
+function startChildArgs(port, flags = {}) {
+  const args = [path.join(ROOT, 'src', 'cli.js'), 'start', '--foreground', '--port', String(port)];
+  if (flags['no-watch']) args.push('--no-watch');
+  else args.push('--watch');
+  if (flags['no-overlay']) args.push('--no-overlay');
+  if (flags.browser) args.push('--browser');
+  return args;
+}
+
+function spawnStartChild(port, flags = {}) {
+  const args = startChildArgs(port, flags);
+  const child = spawn(process.execPath, args, {
+    cwd: os.tmpdir(),
+    env: { ...process.env, BAOANLIGHT_PORT: String(port) },
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.on('error', () => {});
+  return child;
+}
+
+// `bao start` 的脱离进程实际跑的是这个：它一遍遍地拉起 `start --foreground`，
+// 直到那个进程正常退出（用户主动退出 / `bao stop`）。
+function cmdSupervise(flags = {}) {
+  const port = Number(flags.port) || config.port();
+  const sup = supervise(() => spawnStartChild(port, flags), {
+    log: ({ code, wait }) => console.error(
+      `${c.yel('!')} the robot exited (${code}) — restarting in ${Math.round(wait / 1000)}s`
+    ),
+  });
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { sup.stop(); process.exit(0); });
+  return new Promise(() => {});
+}
+
 // `bao start` detaches by default: a desk robot should not hold a shell
 // hostage, and closing that terminal should not take the robot down.
 async function cmdStartDetached(flags) {
   const port = Number(flags.port) || config.port();
+
+  // 一个桌面只该有一个机器人。端口文件里可能记着另一个端口上的旧实例（默认
+  // 4747，这次用户写了 `--port 5000`）—— 那个实例还活着的话，再起一个会得到
+  // 两个 server，并把端口文件改写成 5000：之后 `bao status` / `bao stop` 全部
+  // 指向新的那个，桌面上真正在跑的旧机器人变成谁也管不到的孤儿。
+  const filePort = config.portFromFile();
+  if (filePort && filePort !== port) {
+    const other = await client.healthAt(filePort);
+    if (other) {
+      console.error(`${c.red('●')} another robot is already running on http://127.0.0.1:${filePort} (pid ${other.pid}).`);
+      console.error(c.dim('  one robot per desktop — `bao stop` it first, or start on that port.'));
+      process.exitCode = 1;
+      return;
+    }
+  }
 
   const running = await client.health();
   if (running && (running.clients > 0 || flags['no-overlay'])) {
@@ -204,9 +282,12 @@ async function cmdStartDetached(flags) {
     return cmdOverlay(flags);
   }
 
-  const args = [path.join(ROOT, 'src', 'cli.js'), 'start', '--foreground', '--port', String(port)];
+  // 脱离出去的是守护进程，不是机器人本体：本体崩溃时由它按退避重开。
+  // 一条 `bao start` 就够 —— server、窗口、观察器都在被守护的这一层里面。
+  const args = [path.join(ROOT, 'src', 'cli.js'), 'supervise', '--port', String(port)];
   if (flags['no-overlay']) args.push('--no-overlay');
   if (flags.browser) args.push('--browser');
+  if (flags['no-watch']) args.push('--no-watch');
 
   const child = spawn(process.execPath, args, {
     detached: true,
@@ -233,6 +314,15 @@ async function cmdStartDetached(flags) {
   }
 
   if (!up) {
+    // 别把脱离出去的守护进程留在后台：它会每隔 5–60 秒重开一个注定失败的
+    // 子进程（端口被别的程序占着时永远起不来），而 `bao stop` 找不到 server，
+    // 也不会去停它 —— 用户只会看到一个没人管的 node 进程一直重试。
+    try {
+      require('child_process').execFileSync(
+        'taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+    } catch {
+      try { child.kill(); } catch { /* 已经退了 */ }
+    }
     console.error(`${c.red('●')} it did not come up within ${Math.round(budgetMs / 1000)}s.`);
     console.error(c.dim('  run it attached to see the error:  bao start --foreground'));
     process.exitCode = 1;
@@ -307,6 +397,52 @@ async function cmdStart(flags) {
     await cmdServer({ port });
   }
 
+  // ---- 自动化：守护日志观察器 -------------------------------------------
+  // `bao start` 也负责 watcher，并在它意外退出后按 5s → 10s → 30s → 60s 退避
+  // 重启；稳定跑满一分钟后重置退避。退出码 3 表示「另一个 watcher 已经在看」，
+  // 那是正常状态，不能再重启 —— 否则会变成一个 5 秒一次的失败循环。
+  let watchChild = null;
+  let watchTimer = null;
+  let watchBackoff = 5000;
+  let watchStartedAt = 0;
+  let watchConflicts = 0;
+  let shuttingDown = false;
+  const stopWatching = () => {
+    clearTimeout(watchTimer);
+    watchTimer = null;
+    if (watchChild) { try { watchChild.kill(); } catch { /* 已经退了 */ } watchChild = null; }
+  };
+  const startWatching = () => {
+    if (shuttingDown || flags['no-watch']) return;
+    watchStartedAt = Date.now();
+    watchChild = spawnWatchChild(port);
+    watchChild.on('exit', (code) => {
+      watchChild = null;
+      if (shuttingDown) return;
+      if (Date.now() - watchStartedAt > 60_000) {
+        watchBackoff = 5000;
+        watchConflicts = 0;
+      }
+      if (code === 3) {
+        // 另一个 watcher 已经在看（常见于整机重启后旧进程还没退干净）：等一分钟
+        // 再看一次，最多三次。之后认定那是用户自己的选择，安静退场 —— 不能为了
+        // 接管而每 5 秒重启一个注定失败的子进程。
+        watchConflicts += 1;
+        if (watchConflicts > 3) return;
+        watchTimer = setTimeout(startWatching, 60_000);
+        return;
+      }
+      watchTimer = setTimeout(startWatching, watchBackoff);
+      watchBackoff = Math.min(watchBackoff * 2, 60_000);
+    });
+  };
+  // 默认就带观察器（`--no-watch` 关闭）：前台调试窗口时也一样，否则用户
+  // 用 `bao start --foreground` 会得到一个「灯永远不亮」的机器人。
+  if (!flags['no-watch']) startWatching();
+  // 所有分支（含 --no-overlay / --browser）退出时都要带走 watcher，否则它
+  // 会变成一个替已关闭机器人的指示灯继续工作的孤儿进程。
+  process.on('exit', () => { shuttingDown = true; stopWatching(); });
+
   // Same reason as the overlay's cwd: this process outlives the command that
   // started it, so it must not sit holding the directory it was launched from.
   // Everything the server serves resolves from __dirname.
@@ -323,9 +459,11 @@ async function cmdStart(flags) {
 
   if (flags.browser) {
     const url = `http://127.0.0.1:${port}/`;
-    const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-    spawn(opener, [url], {
-      shell: process.platform === 'win32',
+    // Windows 的 `start` 是 cmd 内建命令，没有可执行文件可查，必须交给 cmd。
+    // 不走 shell: true —— Node 24 起它会在 stderr 打一条 DEP0190 弃用警告，
+    // 而用户看到的应当是「打开了浏览器」，不是一段无关的警告。
+    // 第一个参数空字符串是 start 的窗口标题占位（`start "标题" 目标`）。
+    spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '', url], {
       stdio: 'ignore',
       windowsHide: true,
     }).on('error', () => {});
@@ -363,10 +501,38 @@ async function cmdStart(flags) {
 
   // Take the window down with us, rather than leaving an orphan holding files.
   // Killing the parent does not kill the child on Windows.
-  const shutdown = () => { try { child.kill(); } catch {} };
+  let overlay = child;
+  let overlayRestarts = 0;
+  const shutdown = () => { shuttingDown = true; stopWatching(); try { overlay.kill(); } catch {} };
   process.on('exit', shutdown);
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { shutdown(); process.exit(0); });
-  child.on('exit', () => process.exit(0));
+
+  // 窗口正常退出 = 用户点了退出（工具栏 ✕ / 托盘退出）：跟着收摊。非零退出
+  // 通常是渲染进程崩了 —— 自动重开，最多 3 次，别让桌面上少一只机器人。
+  const wireOverlay = (proc) => {
+    const spawnedAt = Date.now();
+    proc.on('exit', (code) => {
+      if (shuttingDown) return;
+      // 刚拉起就正常退出：几乎一定是「另一个窗口已经占了单实例锁」（整机崩溃
+      // 重启后旧窗口还活着）。server 要留着 —— 旧窗口会自己重连到新 server。
+      if (code === 0 && Date.now() - spawnedAt < 4000) {
+        console.log(c.dim('  another robot window is already open — keeping the server'));
+        return;
+      }
+      if (code !== 0 && overlayRestarts < 3) {
+        overlayRestarts += 1;
+        const next = spawnOverlay(port);
+        if (next) {
+          overlay = next;
+          console.log(`${c.yel('!')} the robot window exited (${code}) — reopened it`);
+          wireOverlay(next);
+          return;
+        }
+      }
+      process.exit(0);
+    });
+  };
+  wireOverlay(overlay);
 
   try { process.chdir(os.tmpdir()); } catch { /* see hold() */ }
 }
@@ -406,6 +572,19 @@ async function cmdStop() {
     process.exitCode = 1;
     return;
   }
+  // 等监听真的消失再报 stopped：`bao stop && bao start` 是常见连招，旧进程还
+  // 在退出的那 150ms 里时，新 start 会误以为「已经在运行」，然后两边一起消失。
+  let down = false;
+  for (let i = 0; i < 40; i++) {
+    if (!(await client.health())) { down = true; break; }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (!down) {
+    console.error(`${c.red('●')} stop was acknowledged, but the server is still answering.`);
+    console.error(c.dim('  it may be an older instance that ignored the request — end it manually'));
+    process.exitCode = 1;
+    return;
+  }
   console.log('stopped');
 }
 
@@ -414,7 +593,16 @@ function cmdAutostart(positional) {
   const action = String(positional[0] || 'status').toLowerCase();
 
   if (action === 'on' || action === 'install' || action === 'enable') {
-    const file = autostart.install();
+    let file;
+    try {
+      file = autostart.install();
+    } catch (err) {
+      // 启动文件夹被安全软件锁定 / PowerShell 没写成功：说清楚，别打「已开启」。
+      console.error(`${c.red('●')} could not enable autostart: ${err.message}`);
+      console.error(c.dim('  try again, or add a shortcut to `bao start` to the Startup folder yourself.'));
+      process.exitCode = 1;
+      return;
+    }
     console.log(`${c.grn('●')} 开机自启已开启`);
     console.log(c.dim(`  ${file}`));
     return;
@@ -429,7 +617,18 @@ function cmdAutostart(positional) {
     process.exit(1);
   }
   const s = autostart.status();
-  console.log(s.enabled ? `${c.grn('●')} 开机自启：已开启` : `${c.dim('○')} 开机自启：已关闭`);
+  if (s.enabled) {
+    console.log(`${c.grn('●')} 开机自启：已开启`);
+  } else if (s.broken) {
+    // 启动项还在、脚本没了：登录时什么都不会发生。说清楚，并给出一步修复。
+    console.log(`${c.yel('!')} 开机自启：已失效（启动脚本不见了）`);
+    console.log(c.dim(`  ${s.launcher}`));
+    console.log(c.dim('  修复：bao autostart on'));
+    process.exitCode = 1;
+    return;
+  } else {
+    console.log(`${c.dim('○')} 开机自启：已关闭`);
+  }
   console.log(c.dim(`  ${s.file}`));
 }
 
@@ -483,7 +682,19 @@ async function cmdFuel(positional, flags) {
 
 async function cmdClear(flags) {
   if (flags.session) {
-    await client.setState({ session: flags.session, state: 'offline' });
+    const res = await client.setState({ session: flags.session, state: 'offline' });
+    // 服务没起来 / token 不匹配时不能照打「cleared」：那是一句假话，用户会以为
+    // 残影已经清掉，实际上灯还挂着。和 `bao set` 用同一套失败处理。
+    if (!res) {
+      console.error(c.dim('(no server listening — start it with `bao start`)'));
+      process.exitCode = 1;
+      return;
+    }
+    if (res.error) {
+      console.error(`${c.red('●')} ${res.error}`);
+      process.exitCode = 1;
+      return;
+    }
     console.log(`cleared ${flags.session}`);
     return;
   }
@@ -618,7 +829,8 @@ function cmdAgents() {
   console.log('');
   console.log(c.dim('  Anything else: bao hook --agent <name>  (one JSON event on stdin)'));
   console.log(c.dim('  Or over HTTP (writes need the local token):'));
-  console.log(c.dim('    curl -H "x-bao-token: $(bao token)" "http://127.0.0.1:4747/set/busy?agent=my-bot"\n'));
+  console.log(c.dim("    $h = @{ 'x-bao-token' = (bao token) }"));
+  console.log(c.dim('    Invoke-RestMethod -Headers $h "http://127.0.0.1:4747/set/busy?agent=my-bot"\n'));
 }
 
 function cmdWatch(positional, flags) {
@@ -696,36 +908,81 @@ function releaseWatchAllLock() {
 }
 
 function cmdWatchAll(flags = {}) {
-  if (!acquireWatchAllLock()) return undefined;
-  // 以前每个软件一个 node 子进程：四个子进程 = 四份常驻内存、四条 SSE 长连接、
-  // 四次目录扫描。对一个一整天坐在桌面上的程序，这笔开销是持续的。各 watcher 的
-  // run() 本来就是非阻塞的（内部靠定时器活着），所以直接在同一进程里跑，各自
-  // 独立开关；其中一个的来源坏掉，只停它自己，不会拖垮别的。
+  // `--supervised` 表示这个 watcher 是被 `bao start` 拉起并守护的。它只需要
+  // 区分一种情况：锁被另一个 watcher 占着（别人已经在干活）——这时用退出码 3
+  // 告诉守护者「别再重启我」，否则会每 5 秒重启一个注定失败的子进程。
+  const supervised = !!flags.supervised;
+  if (!acquireWatchAllLock()) {
+    if (supervised) process.exitCode = 3;
+    return undefined;
+  }
   const SOURCES = [
     ['codex', 'log-watch'],
     ['deepseek', 'dsh-watch'],
     ['workbuddy', 'task-watch'],
     ['codebuddy', 'wbt-watch'],
   ];
-  const handles = [];
-  const started = [];
-  for (const [name, mod] of SOURCES) {
+  // 每 30 秒重试一次没起来的来源：软件可能是开机之后才装的、日志目录可能被
+  // 挪走又挪回来。以前启动时找不到就直接退出，那个 source 从此永远缺席，
+  // 直到用户手动重启一次 —— 而这正是「需要人工干预」的来源。
+  const RETRY_MS = Number(flags.retry) > 0 ? Number(flags.retry) : 30_000;
+
+  const handles = new Map();
+  const pending = new Map(SOURCES);
+  const started = new Set();
+  const warned = new Set();
+  let retryTimer = null;
+
+  const startSource = (name, mod) => {
+    if (handles.has(name)) return true;
     try {
       const w = require(`./adapters/${mod}`);
-      const h = w.run({ agent: name, quiet: flags.quiet, interval: flags.interval });
-      handles.push(h);
-      started.push(name);
+      // throwOnMissing: a missing log directory must not call process.exit()
+      // here — that would kill every other watcher in this process.
+      const h = w.run({
+        agent: name, quiet: flags.quiet, interval: flags.interval, throwOnMissing: true,
+      });
+      handles.set(name, h);
+      pending.delete(name);
+      if (!started.has(name)) {
+        started.add(name);
+        console.log(`${c.grn('●')} watching ${name}`);
+      }
+      return true;
     } catch (err) {
-      console.error(`${c.yel('!')} ${name} watcher could not start: ${err.message}`);
+      // 每个来源只解释一次；之后每 30 秒的静默重试不该刷屏。
+      if (!warned.has(name)) {
+        warned.add(name);
+        console.error(`${c.yel('!')} ${name} watcher not ready: ${err.message}`);
+      }
+      return false;
     }
+  };
+
+  for (const [name, mod] of [...pending]) startSource(name, mod);
+
+  if (started.size) {
+    console.log(`${c.grn('●')} watching ${[...started].join(' · ')} — Ctrl+C to stop`);
+  } else {
+    console.error(`${c.dim('  no watchable log source yet — checking again every 30s')}`);
+  }
+  if (pending.size) {
+    retryTimer = setInterval(() => {
+      for (const [name, mod] of [...pending]) startSource(name, mod);
+      if (!pending.size) {
+        clearInterval(retryTimer);
+        retryTimer = null;
+        console.log(`${c.grn('●')} watching ${[...started].join(' · ')} — Ctrl+C to stop`);
+      }
+    }, RETRY_MS);
   }
 
-  console.log(`${c.grn('●')} watching ${started.join(' · ')} — Ctrl+C to stop`);
-
   const stop = () => {
-    for (const h of handles) {
+    clearInterval(retryTimer);
+    retryTimer = null;
+    for (const h of handles.values()) {
       try {
-        // 各 run() 返回形状不同：log/dsh/task 返回 { stop }，wbt 返回一个定时器。
+        // 各 run() 都返回 { stop }；这个 else 分支留给以后某个返回定时器的实现。
         if (h && typeof h.stop === 'function') h.stop();
         else if (h && typeof h === 'object') clearInterval(h);
       } catch { /* 已经在停 */ }
@@ -795,7 +1052,17 @@ function cmdInstall(positional, flags) {
     return;
   }
   if (target === 'codex') {
-    const r = install.installCodex();
+    let r;
+    try {
+      r = install.installCodex();
+    } catch (err) {
+      // 读不到 / 写不进用户的 config.toml（权限、被 Codex 占用、杀软）：和上面
+      // 两个入口一样，说清楚原因，而不是甩一段堆栈。
+      console.error(`${c.red('✗')} ${err.message}`);
+      console.error(c.dim('  Nothing was changed. Fix or move that file, then run it again.'));
+      process.exitCode = 1;
+      return;
+    }
     if (r.skipped) {
       // 不覆盖用户已有的通知钩子。一个 notify 槽位只能有一个主人。
       console.log(`${c.yel('!')} Codex already has its own notify hook — left untouched:`);
@@ -865,7 +1132,15 @@ function cmdUninstall(positional, flags) {
     return;
   }
   if (target === 'codex') {
-    const r = install.uninstallCodex();
+    let r;
+    try {
+      r = install.uninstallCodex();
+    } catch (err) {
+      console.error(`${c.red('✗')} ${err.message}`);
+      console.error(c.dim('  Nothing was changed.'));
+      process.exitCode = 1;
+      return;
+    }
     console.log(r.removed ? `removed baoanlight notify from ${r.file}` : `no baoanlight notify in ${r.file} — nothing to do`);
     return;
   }
@@ -906,7 +1181,12 @@ function cmdOnboard() {
     if (dir && fs.existsSync(dir)) return true;
     return agents.candidates(n).some((d) => fs.existsSync(d));
   };
-  const has = { codex: detect('codex'), deepseek: detect('deepseek'), workbuddy: detect('workbuddy') };
+  const has = {
+    codex: detect('codex'),
+    deepseek: detect('deepseek'),
+    workbuddy: detect('workbuddy'),
+    codebuddy: detect('codebuddy'),
+  };
 
   console.log(`\n${c.b('baoanlight onboarding')}\n`);
   console.log('  在这台机器上发现：');
@@ -914,6 +1194,7 @@ function cmdOnboard() {
   console.log(`    ${'Codex'.padEnd(15)}${has.codex ? c.grn('✓ 找到日志') : c.dim('○ 未找到')}`);
   console.log(`    ${'DeepSeek Harness'.padEnd(15)}${has.deepseek ? c.grn('✓ 找到日志') : c.dim('○ 未找到')}`);
   console.log(`    ${'WorkBuddy'.padEnd(15)}${has.workbuddy ? c.grn('✓ 找到日志') : c.dim('○ 未找到')}`);
+  console.log(`    ${'CodeBuddy'.padEnd(15)}${has.codebuddy ? c.grn('✓ 找到日志') : c.dim('○ 未找到')}`);
   console.log('');
 
   const options = [];
@@ -921,7 +1202,10 @@ function cmdOnboard() {
   if (has.codex) options.push(`  ${c.b('2')}  Codex          ${c.dim('bao watch codex')}`);
   if (has.deepseek) options.push(`  ${c.b('3')}  DeepSeek       ${c.dim('bao watch deepseek')}`);
   if (has.workbuddy) options.push(`  ${c.b('4')}  WorkBuddy      ${c.dim('bao watch workbuddy')}`);
-  if (has.codex || has.deepseek || has.workbuddy) options.push(`  ${c.b('A')}  全部日志观察器 ${c.dim('bao watch all，后台常驻')}`);
+  if (has.codebuddy) options.push(`  ${c.b('5')}  CodeBuddy      ${c.dim('bao watch codebuddy')}`);
+  if (has.codex || has.deepseek || has.workbuddy || has.codebuddy) {
+    options.push(`  ${c.b('A')}  全部日志观察器 ${c.dim('bao watch all，后台常驻')}`);
+  }
   options.push(`  ${c.b('S')}  跳过，直接启动机器人`);
 
   console.log('  想先接哪个？\n');
@@ -961,7 +1245,11 @@ function cmdOnboard() {
       console.log(`\n${c.grn('●')} 让 WorkBuddy 上报：`);
       console.log(`    ${c.b('bao watch workbuddy')}`);
       console.log(c.dim('  （粗粒度；要精确用 `bao hook --agent workbuddy`）'));
-    } else if (choice === 'a' && (has.codex || has.deepseek || has.workbuddy)) {
+    } else if (choice === '5' && has.codebuddy) {
+      console.log(`\n${c.grn('●')} 让 CodeBuddy 上报：`);
+      console.log(`    ${c.b('bao watch codebuddy')}`);
+      console.log(c.dim('  （每轮结束才更新；要实时用 `bao connect codebuddy`，需重启 IDE）'));
+    } else if (choice === 'a' && (has.codex || has.deepseek || has.workbuddy || has.codebuddy)) {
       console.log(`\n${c.grn('●')} 一次盯住全部：`);
       console.log(`    ${c.b('bao watch all')}`);
       console.log(c.dim('  配合开机自启：  bao autostart on'));
@@ -1002,6 +1290,7 @@ async function main() {
 
   switch (cmd) {
     case 'start':      return flags.foreground ? cmdStart(flags) : cmdStartDetached(flags);
+    case 'supervise':  return cmdSupervise(flags);
     case 'server':     return cmdServer(flags).then(() => new Promise(() => {}));
     case 'overlay':    return cmdOverlay(flags);
     case 'stop':       return cmdStop();
@@ -1013,8 +1302,14 @@ async function main() {
     case 'clear':      return cmdClear(flags);
     case 'doctor':     return require('./doctor').run();
     case 'onboard':    return cmdOnboard();
-    case 'setup':      return require('child_process')
-                         .spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'setup.js')], { stdio: 'inherit' });
+    case 'setup': {
+      // 把子进程的退出码带回来：下载失败时 setup.js 退出 1，而这里以前直接
+      // return 它的结果值，进程本身仍然是 0 —— 脚本/CI 会以为装好了。
+      const r = require('child_process')
+        .spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'setup.js')], { stdio: 'inherit' });
+      if (r.status) process.exitCode = r.status;
+      return;
+    }
     case 'fuel':       return cmdFuel(positional, flags);
     case 'demo':       return cmdDemo();
     case 'agents':     return cmdAgents();
@@ -1051,4 +1346,10 @@ async function main() {
   }
 }
 
-main().catch((err) => { console.error(err.message || err); process.exit(1); });
+// 只在作为命令运行时执行：测试要 require 这里的纯函数（例如 startChildArgs），
+// 不能因为 import 一次就把整个 CLI 跑起来。
+if (require.main === module) {
+  main().catch((err) => { console.error(err.message || err); process.exit(1); });
+}
+
+module.exports = { parse, startChildArgs };

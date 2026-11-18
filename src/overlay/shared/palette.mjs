@@ -19,6 +19,10 @@ export const SKIN_TONES = [
   { name: '森林绿', hex: '#4a6a3a', dark: '#334a28' },
   { name: '日落橙', hex: '#d8823a', dark: '#a85a20' },
   { name: '樱花粉', hex: '#d98aa8', dark: '#a85e7a' },
+  // 后加的两档：一冷一暗，给「金属/夜间」两套搭配多一个落点。追加在末尾，
+  // 不重排既有顺序 —— 随机换装和已存的配置都按名字取值，顺序只是界面顺序。
+  { name: '钛金白', hex: '#cfd6dd', dark: '#9aa3ad' },
+  { name: '午夜紫', hex: '#4a3a5a', dark: '#332742' },
 ];
 
 // 镜片接近黑玻璃，单独换它几乎看不出来；真正被看见的是里面那圈虹膜。
@@ -31,6 +35,8 @@ export const EYE_TONES = [
   { name: '红瞳', lens: '#2e0c0c', iris: '#5f1a1a' },
   { name: '橙瞳', lens: '#2e1a0c', iris: '#5f3a1a' },
   { name: '青瞳', lens: '#0c2a2a', iris: '#1a5a5a' },
+  { name: '白瞳', lens: '#1a1c20', iris: '#cfd6dd' },
+  { name: '玫红瞳', lens: '#2e0c1a', iris: '#a83a5f' },
 ];
 
 export const TRACK_TONES = [
@@ -41,6 +47,8 @@ export const TRACK_TONES = [
   { name: '深蓝', rubber: '#141a24', hi: '#283848' },
   { name: '暗红', rubber: '#240c0c', hi: '#48201a' },
   { name: '墨绿', rubber: '#141c14', hi: '#2a3a26' },
+  { name: '石墨', rubber: '#202024', hi: '#3a3a42' },
+  { name: '沙色', rubber: '#3a3024', hi: '#5a4a36' },
 ];
 
 export const ARM_TONES = [
@@ -52,6 +60,8 @@ export const ARM_TONES = [
   { name: '青铜', arm: '#8a6a3a', steel: '#a07e48', dark: '#3a2a18', eye: '#6a5030' },
   { name: '枪铁', arm: '#5a5f66', steel: '#6e737a', dark: '#22252a', eye: '#454a52' },
   { name: '香槟金', arm: '#c9b48a', steel: '#ddcba0', dark: '#6a5a3a', eye: '#a08a60' },
+  { name: '钛银', arm: '#9aa4ad', steel: '#c0cad3', dark: '#2a2e34', eye: '#6e7880' },
+  { name: '玫瑰金', arm: '#c9a08a', steel: '#e0bca6', dark: '#6a4a3a', eye: '#a87a62' },
 ];
 
 // 胸口仪表板的固定槽位。位置是契约的一部分：一个会移动的灯，就是每次开新会话

@@ -140,6 +140,12 @@ import {
   const sysMem  = document.getElementById('sys-mem');
   const sysCpuBar = document.getElementById('sys-cpu-bar');
   const sysMemBar = document.getElementById('sys-mem-bar');
+  const sysGpuRow = document.getElementById('sys-gpu-row');
+  const sysGpu = document.getElementById('sys-gpu');
+  const sysGpuBar = document.getElementById('sys-gpu-bar');
+  const sysMotionSel = document.getElementById('m-sys-motion');
+  const stuckBusyInput = document.getElementById('m-stuck-busy');
+  const stuckWaitInput = document.getElementById('m-stuck-wait');
   // 设置搜索框的引用放在最前面：动态重建的软件顺序/名称块也要按当前过滤词
   // 重新过滤（见 renderAliasUI 末尾），而那块在模块求值时就会画一次。
   const findInput = document.getElementById('m-find');
@@ -210,6 +216,11 @@ import {
       // 状态速览面板也要进热区：不然它在点击穿透区里，六个按钮全点不了。
       const pv = document.getElementById('preview');
       if (pv && !pv.hidden) boxes.push(pv.getBoundingClientRect());
+      // 便签是内容，不是装饰：它开着的时候必须可点、可输入。
+      const memoBox = document.getElementById('memo');
+      if (memoBox && !memoBox.hidden) boxes.push(memoBox.getBoundingClientRect());
+      const quickBox = document.getElementById('quick-add');
+      if (quickBox && !quickBox.hidden) boxes.push(quickBox.getBoundingClientRect());
       const pad = 5;
       const left = Math.min(...boxes.map((b) => b.left)) - pad;
       const top = Math.min(...boxes.map((b) => b.top)) - pad;
@@ -593,6 +604,8 @@ import {
       // 改名也要算进签名：这面板里每一行都显示 displayName，漏掉它就会出现
       // 「列表已经叫新名字了，战绩里还是旧的」，最长要等一分钟。
       cfg.aliases || {},
+      // 软件自定义色也在这块面板里显示：漏掉它，改色后要等下一次统计变化才生效。
+      cfg.agentColors || {},
       byMin, events, snap?.stats?.history || {},
     ]);
     if (sig === scoreSig) return;
@@ -646,7 +659,7 @@ import {
       for (const agent of names.slice().sort((a, b) => (byAgent[b] || 0) - (byAgent[a] || 0))) {
         const ms = byAgent[agent] || 0;
         if (ms <= 0) continue;
-        const color = AGENT_COLORS[names.indexOf(agent) % AGENT_COLORS.length];
+        const color = agentColor(agent);
         const seg = document.createElement('i');
         seg.style.width = `${((ms / totalMs) * 100).toFixed(2)}%`;
         seg.style.background = color;
@@ -671,10 +684,14 @@ import {
       const dur = (byAgent[agent] || 0) > 30000 ? fmtDur(byAgent[agent]) : '—';
       const row = textRow({ cls: 'recent score-row', label: displayName(agent), value: dur, note: bits.join(' · ') });
       // 时长条形：行背景按「本软件时长 / 今日最长」比例铺一条淡色进度条，数据可视化。
+      // 颜色和上方分布条一致：用户改了自己的软件色，两处必须一起变。
+      const ac = agentColor(agent);
       row.style.setProperty('--pct', Math.max(2, Math.round(((byAgent[agent] || 0) / maxMs) * 100)) + '%');
+      row.style.setProperty('--agent-color', hexToRgba(ac, 0.20));
+      row.style.setProperty('--agent-fade', hexToRgba(ac, 0));
       box.appendChild(row);
     }
-    // 最近 7 天的日期 key（今天在最右）：柱状图和「本周」共用。
+    // 最近 7 天的日期 key（今天在最右）：柱状图和「近 7 天」共用。
     const dayKeys = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date();
@@ -688,7 +705,7 @@ import {
       return ms;
     });
 
-    // 本周合计：只算最近 7 天。history 现在存 30 天，直接整个累加会多算三周。
+    // 近 7 天合计（不是自然周）：history 现在存 30 天，直接整个累加会多算三周。
     const week = { ms: 0, done: 0, error: 0 };
     for (const key of dayKeys) {
       const h = snap?.stats?.history?.[key];
@@ -702,20 +719,20 @@ import {
       const bits = [];
       if (week.done) bits.push(`完成 ${week.done}`);
       if (week.error) bits.push(`出错 ${week.error}`);
-      // 本周有数据的天数，用来算日均 —— 合计之外再看一眼「平均每天干了多久」。
+      // 近 7 天有数据的天数，用来算日均 —— 合计之外再看一眼「平均每天干了多久」。
       const activeDays = new Set();
       for (const key of dayKeys) {
         if (key === snap?.stats?.day && Object.values(byAgent).some((v) => (v || 0) > 0)) activeDays.add(key);
-        else if ((snap?.stats?.history?.[key]?.byAgent || {}) && Object.values(snap.stats.history[key].byAgent).some((v) => (v || 0) > 0)) activeDays.add(key);
+        else if (Object.values(snap?.stats?.history?.[key]?.byAgent || {}).some((v) => (v || 0) > 0)) activeDays.add(key);
       }
       if (activeDays.size > 1) bits.unshift(`日均 ${fmtDur(Math.round(week.ms / activeDays.size))}`);
-      const row = textRow({ label: '本周合计', value: fmtDur(week.ms), note: bits.join(' · ') });
+      const row = textRow({ label: '近 7 天合计', value: fmtDur(week.ms), note: bits.join(' · ') });
       row.style.borderTop = '1px solid rgba(255,255,255,.12)';
       row.style.paddingTop = '4px';
       box.appendChild(row);
     }
 
-    // 本月合计：今天 + 最近 30 天存档。只有比本周多时才单列一行，避免和本周重复。
+    // 近 30 天合计（不是自然月）：今天 + 最近 30 天存档。只有比近 7 天多时才单列一行。
     const month = { ms: 0, done: 0, error: 0 };
     for (const h of Object.values(snap?.stats?.history || {})) {
       for (const ms of Object.values(h.byAgent || {})) month.ms += ms || 0;
@@ -727,7 +744,7 @@ import {
       const bits = [];
       if (month.done) bits.push(`完成 ${month.done}`);
       if (month.error) bits.push(`出错 ${month.error}`);
-      box.appendChild(textRow({ label: '本月合计', value: fmtDur(month.ms), note: bits.join(' · ') }));
+      box.appendChild(textRow({ label: '近 30 天合计', value: fmtDur(month.ms), note: bits.join(' · ') }));
     }
     const maxDay = Math.max(1, ...dayMs);
     const chart = document.createElement('div');
@@ -782,9 +799,17 @@ import {
     // 「静音 1 小时」与「定时勿扰」必须对所有出口生效。这里原来直接调 bridge.notify，
     // 是唯一漏掉 isMuted()/isDnd() 的一条 —— 深夜勿扰时段里最不该弹的恰好是它（卡住提醒）。
     const canNotify = inElectron && bridge.notify && !isMuted() && !isDnd();
+    // 一个软件开了多个会话时，「某个会话安静了」不等于「这个软件卡住了」：
+    // 它在另一个窗口里还在正常干活。只有这个软件最近 5 分钟完全没有任何上报，
+    // 才值得说「好像卡住了」—— 否则提醒本身就是误报。
+    const freshAgents = new Set();
+    for (const s of sessions) {
+      if (!s.quiet || s.quietFor <= 5 * 60 * 1000) freshAgents.add(s.agent);
+    }
     for (const s of sessions) {
       // 关掉通知的软件，卡住提醒也不弹（否则「静音」只是少了一类噪音）。
       if (isAgentMuted(s.agent)) continue;
+      if (freshAgents.has(s.agent)) continue;
       if (s.state === 'busy' && s.quiet && s.quietFor > 5 * 60 * 1000) {
         stuckAgents.add(s.agent);
         if (!stuckNotified.has(s.agent)) {
@@ -910,10 +935,18 @@ import {
   // 只关「弹窗」这一条通道 —— 灯、列表、铭牌、广告牌照常，提示音也不受影响
   // （它是按聚合状态播的，不是按软件）。
   const isAgentMuted = (agent) => (cfg.mutedAgents || []).includes(agent);
+  // 另一条独立通道：只关提示音/语音，系统通知照旧。
+  const isSoundMuted = (agent) => (cfg.mutedSoundAgents || []).includes(agent);
 
   function notifySlots(slots) {
     if (!inElectron || !bridge.notify) return;
     if (isDnd()) return;
+    // 这一帧里消失的软件（关掉/退出/被清空）也要把记录清掉，理由同下面的离线槽位。
+    // 调用方现在传的是「全部在跑的软件」而不是面板前 8 行，所以这里负责兜底。
+    const liveAgents = new Set((slots || []).filter((s) => s && s.count).map((s) => s.agent));
+    for (const agent of [...slotSeen.keys()]) {
+      if (!liveAgents.has(agent)) { slotSeen.delete(agent); slotNotifiedAt.delete(agent); }
+    }
     for (const s of slots || []) {
       // 离线槽位 = 这个软件的状态归零。必须把它记的状态清掉：否则软件关掉再
       // 打开、第一个事件又是同一种 waiting/error 时，会被当成「没变化」而永远
@@ -992,6 +1025,12 @@ import {
   // 那正是这笔开销的来源）。
   const pillPool = new Map();   // agent -> { el, refs }
   let moreRow = null;
+  // 展开的软件：点行尾的 ×N 把它的每个会话各列一行。默认收起，避免把桌面撑长。
+  const expandedAgents = new Set();
+  // 「默认展开多会话」打开时，手动收起的软件记在这里，否则每一帧都会被重新
+  // 展开 —— 用户会觉得自己按的按钮坏了。
+  const autoCollapsed = new Set();
+  const subPool = new Map();    // session -> sub-row element
 
   function pillRow(agent) {
     const hit = pillPool.get(agent);
@@ -1000,7 +1039,7 @@ import {
     el.className = 'pill';
     el.dataset.agent = agent;
     // 这段标记是静态的，永远不会掺进服务端字符串（其余字段一律走 textContent）。
-    el.innerHTML = '<i></i><b></b><span></span><em><u></u></em>';
+    el.innerHTML = '<i></i><b></b><span></span><em><u></u></em><button class="pill-expand" type="button" hidden></button>';
     const entry = {
       el,
       refs: {
@@ -1009,6 +1048,7 @@ import {
         detail: el.querySelector('span'),
         fuelWrap: el.querySelector('em'),
         fuel: el.querySelector('em u'),
+        expand: el.querySelector('.pill-expand'),
       },
     };
     pillPool.set(agent, entry);
@@ -1038,14 +1078,25 @@ import {
       el.setAttribute('aria-pressed', String(agent === focusedAgent));
       el.setAttribute('aria-label', `${displayName(agent)}${count > 1 ? ` ×${count}` : ''}`
         + ` — ${VERB[s.state] || s.state}`
-        + (isAgentMuted(agent) ? '，系统通知已关闭' : ''));
+        + (isAgentMuted(agent) ? '，系统通知已关闭' : '')
+        + (isSoundMuted(agent) ? '，提示音已关闭' : ''));
       el.removeAttribute('aria-disabled');
     }
-    refs.dot.dataset.color = COLOR[s.state] || 'grey';
-    // `×N`：一个软件开了多个会话时，这一行代表的是它们里最坏的那个。文档一直这么
-    // 承诺，但列表里从来没写出来 —— 用户看到「Claude 出错了」却不知道是三个里哪个。
-    const times = count > 1 ? ` ×${count}` : '';
-    refs.name.textContent = displayName(agent) + times;
+    refs.dot.dataset.color = COLOR[s.state] || (offline ? 'off' : 'grey');
+    // `×N`：一个软件开了多个会话时，这一行代表的是它们里最坏的那个。
+    // 数字本身是个按钮：点开就把每个会话单独列出来。
+    refs.name.textContent = displayName(agent);
+    el.classList.toggle('has-multi', count > 1);
+    refs.expand.hidden = count <= 1;
+    if (count > 1) {
+      const open = expandedAgents.has(agent);
+      // 「×2 ▸」：数字说明有几个会话，箭头说明这一下会发生什么。只有数字时，
+      // 没人会想到它其实是个按钮。
+      refs.expand.textContent = `×${count} ${open ? '▾' : '▸'}`;
+      refs.expand.title = open ? `收起 ${count} 个会话` : `展开 ${count} 个会话`;
+      refs.expand.setAttribute('aria-label', `${open ? '收起' : '展开'} ${displayName(agent)} 的 ${count} 个会话`);
+      refs.expand.setAttribute('aria-expanded', String(open));
+    }
     const cc = offline || cfg.showModel === false ? null : ccSwitchLabel(snap.ccSwitch && snap.ccSwitch[agent]);
     // busy 的时长/预估：有历史节奏就估「预计还需」，超了就说「比平时慢」。
     const elapsed = s.state === 'busy' && s.since ? Date.now() - s.since : 0;
@@ -1069,29 +1120,227 @@ import {
     // 关掉通知的软件在 tooltip 里说清楚：否则「为什么它出错了我没收到通知」
     // 会变成一个查不出来的问题。
     const mutedNote = isAgentMuted(agent) ? ' — 系统通知已关闭' : '';
+    const soundNote = isSoundMuted(agent) ? ' — 提示音已关闭' : '';
     el.title = offline
       ? `${displayName(agent)} — 未运行${mutedNote}`
       : (cc ? `用 ${cc} — ` : '') + (s.cwd ? s.cwd + ' — ' : '') + detail + quietFor
         + (s.cwd ? ' — 右键在终端打开' : '')
         + (agent === focusedAgent ? ' — 点击取消聚焦' : ' — 点击聚焦')
-        + mutedNote;
+        + mutedNote + soundNote;
+  }
+
+  // 一条会话行：状态点 + 目录/短 id + 这一条在做什么 + 时长 + 终端入口。
+  function sessionRow(session) {
+    let el = subPool.get(session);
+    if (el) return el;
+    el = document.createElement('div');
+    el.className = 'subpill';
+    el.dataset.session = session;
+    el.innerHTML = '<i></i><span class="sid"></span><span class="what"></span>'
+      + '<span class="age"></span><button class="subterm" type="button" hidden>&gt;_</button>';
+    subPool.set(session, el);
+    return el;
+  }
+
+  function paintSessionRow(el, s) {
+    const hex = HEX[COLOR[s.state]] || '#7a828c';
+    el.dataset.state = s.state;
+    el.dataset.agent = s.agent || '';
+    el.dataset.cwd = s.cwd || '';
+    el.classList.toggle('quiet', !!s.quiet);
+    el.classList.toggle('focused', s.agent === focusedAgent);
+    el.style.setProperty('--c', hex);
+    const sid = String(s.session || '').split(':').pop().slice(0, 8);
+    // 只给 uuid 前 8 位，几行会话长得一模一样：「在哪干的活」才是人认得出的
+    // 信息。目录名放前面，短 id 留在后面用于区分同一目录下的两个会话。
+    const dir = String(s.cwd || '').split(/[\\/]/).filter(Boolean).pop() || '';
+    el.querySelector('.sid').textContent = dir ? `${dir} · ${sid}` : sid;
+    const what = s.detail || VERB[s.state] || s.state;
+    el.querySelector('.what').textContent = what;
+    // 时长直接写在行上：不用展开主行、也不用悬停才知道它跑了多久/静了多久。
+    const ageEl = el.querySelector('.age');
+    const mins = (ms) => Math.max(1, Math.round(ms / 60000));
+    if (s.quiet && s.quietFor) ageEl.textContent = `静默 ${mins(s.quietFor)} 分`;
+    else if (s.state === 'busy' && s.since) {
+      const elapsed = Date.now() - s.since;
+      ageEl.textContent = elapsed >= 60000 ? `运行 ${mins(elapsed)} 分` : '刚刚';
+    } else ageEl.textContent = '';
+    const term = el.querySelector('.subterm');
+    term.hidden = !s.cwd;
+    if (s.cwd) {
+      term.title = `在终端打开 ${s.cwd}`;
+      term.setAttribute('aria-label', `在终端打开 ${dir || sid}`);
+    }
+    // 会话行也能点：点它和点主行一样，把主灯聚焦到这个软件。
+    el.tabIndex = 0;
+    el.setAttribute('role', 'button');
+    el.setAttribute('aria-label',
+      `${dir || sid} ${what}${ageEl.textContent ? ` ${ageEl.textContent}` : ''} — 聚焦 ${displayName(s.agent)}`);
+    el.title = `${s.session}${s.cwd ? `\n${s.cwd}` : ''}\n${s.state}${s.quiet ? ' · 已静默' : ''}`
+      + (s.cwd ? '\n右键在终端打开' : '');
+  }
+
+  // 一个软件展开后最多先列 6 条；再多就是「还有 N 个会话」，点开再看全部。
+  // 否则十个会话会把整张桌面推下去，其他软件一个都看不见。
+  const SUB_LIMIT = 6;
+  const expandedAllSessions = new Set();
+
+  // 展开一个软件时，回答「为什么是这个颜色」：驱动这一行颜色的最近事件，以及
+  // 距上次真实事件过了多久。诊断只读客户端时间与 lastEventAt，不参与颜色计算 ——
+  // 它解释颜色，不改变颜色。
+  function whyBlock(worst, sessions, used) {
+    const rows = sessions
+      .filter((x) => x.agent === worst.agent && x.state !== 'offline')
+      .sort((a, b) => (PRIO[b.state] - PRIO[a.state]) || (b.updatedAt - a.updatedAt));
+    const s = rows[0];
+    if (!s) return;
+    // 和其它展开行共用 subPool：按 key 复用，收起时由同一轮清理移除，
+    // 否则每帧 SSE 都会再堆一个副本，收起后也不会消失。
+    const key = `why:${worst.agent}`;
+    let el = subPool.get(key);
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'why';
+      subPool.set(key, el);
+    }
+    el.textContent = '';
+    const title = document.createElement('b');
+    title.textContent = '为什么是这个颜色';
+    el.appendChild(title);
+    const evs = (Array.isArray(s.events) ? s.events : []).slice(-5);
+    if (!evs.length) {
+      const p = document.createElement('p');
+      p.textContent = '还没有可展示的事件，等待下一次上报。';
+      el.appendChild(p);
+    } else {
+      const ol = document.createElement('ol');
+      for (const e of evs) {
+        const li = document.createElement('li');
+        const t = new Date(e.at).toLocaleTimeString('zh-CN', { hour12: false });
+        li.textContent = `${t} · ${e.source || 'api'} · ${e.event || '状态'} → ${VERB[e.state] || e.state}`;
+        ol.appendChild(li);
+      }
+      el.appendChild(ol);
+    }
+    const mins = Math.max(0, Math.floor((Date.now() - (s.lastEventAt || s.updatedAt || Date.now())) / 60000));
+    const busyMin = Number(cfg.stuckBusyMin) || 15;
+    const waitMin = Number(cfg.stuckWaitMin) || 10;
+    let text = `已静默 ${mins} 分钟`;
+    if (s.state === 'busy' && mins >= busyMin) text += ' · 疑似卡住：可能卡在长工具调用，或进程/日志已停止';
+    else if (s.state === 'waiting' && mins >= waitMin) text += ' · 已经等你很久，它仍停在确认这一步';
+    else if (s.state === 'error' && mins >= 30) text += ' · 错误已 30 分钟未处理';
+    const p = document.createElement('p');
+    p.textContent = text;
+    el.appendChild(p);
+    labels.appendChild(el);
+    used.add(key);
+  }
+
+  function appendSessionRows(worst, sessions, used) {
+    if (!expandedAgents.has(worst.agent)) return;
+    const rows = sessions
+      .filter((x) => x.agent === worst.agent && x.state !== 'offline')
+      .sort((a, b) => (PRIO[b.state] - PRIO[a.state]) || (b.updatedAt - a.updatedAt));
+    const shown = expandedAllSessions.has(worst.agent) ? rows : rows.slice(0, SUB_LIMIT);
+    for (const s of shown) {
+      const el = sessionRow(s.session);
+      paintSessionRow(el, s);
+      labels.appendChild(el);
+      used.add(s.session);
+    }
+    if (rows.length > shown.length) {
+      const key = `more:${worst.agent}`;
+      let el = subPool.get(key);
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'subpill more';
+        el.innerHTML = '<span class="more-text"></span>';
+        el.tabIndex = 0;
+        el.setAttribute('role', 'button');
+        subPool.set(key, el);
+      }
+      el.dataset.agent = worst.agent;
+      el.dataset.more = '1';
+      el.querySelector('.more-text').textContent = `还有 ${rows.length - shown.length} 个会话 · 点击展开`;
+      el.setAttribute('aria-label', `展开 ${displayName(worst.agent)} 剩下的 ${rows.length - shown.length} 个会话`);
+      labels.appendChild(el);
+      used.add(key);
+    }
+    whyBlock(worst, sessions, used);
   }
 
   // 一次绑定：点击聚焦、键盘聚焦、右键开终端。行被复用时不需要重绑。
   labels.addEventListener('click', (e) => {
+    // ×N 按钮：展开/收起会话，不要顺带切换聚焦。
+    const more = e.target.closest('.pill-expand');
+    if (more) {
+      e.stopPropagation();
+      const pill = more.closest('.pill');
+      const agent = pill && pill.dataset.agent;
+      if (!agent) return;
+      if (expandedAgents.has(agent)) {
+        expandedAgents.delete(agent);
+        autoCollapsed.add(agent);
+        expandedAllSessions.delete(agent);
+      } else {
+        expandedAgents.add(agent);
+        autoCollapsed.delete(agent);
+      }
+      if (lastSnap) render(lastSnap);
+      return;
+    }
+    // 会话行尾的终端按钮：在它自己的目录开终端。
+    const term = e.target.closest('.subterm');
+    if (term) {
+      const sub = term.closest('.subpill');
+      const cwd = sub && sub.dataset.cwd;
+      if (cwd && inElectron && bridge.openTerminal) bridge.openTerminal(cwd);
+      e.stopPropagation();
+      return;
+    }
+    // 「还有 N 个会话」：展开这一组的全部会话。
+    const moreSub = e.target.closest('.subpill.more');
+    if (moreSub) {
+      expandedAllSessions.add(moreSub.dataset.agent);
+      if (lastSnap) render(lastSnap);
+      return;
+    }
+    const sub = e.target.closest('.subpill');
+    if (sub) {
+      e.stopPropagation();
+      if (sub.dataset.agent) toggleFocus(sub.dataset.agent);
+      return;
+    }
     const el = e.target.closest('.pill');
     if (!el || !el.dataset.agent || el.classList.contains('offline')) return;
     toggleFocus(el.dataset.agent);
   });
   labels.addEventListener('keydown', (e) => {
+    if (e.target.closest('.pill-expand') || e.target.closest('.subterm')) return;
     if (e.key !== 'Enter' && e.key !== ' ') return;
+    const moreSub = e.target.closest('.subpill.more');
+    if (moreSub) {
+      e.preventDefault();
+      expandedAllSessions.add(moreSub.dataset.agent);
+      if (lastSnap) render(lastSnap);
+      return;
+    }
+    const sub = e.target.closest('.subpill');
+    if (sub) {
+      e.preventDefault();
+      if (sub.dataset.agent) toggleFocus(sub.dataset.agent);
+      return;
+    }
     const el = e.target.closest('.pill');
     if (!el || !el.dataset.agent || el.classList.contains('offline')) return;
     e.preventDefault();
     toggleFocus(el.dataset.agent);
   });
   labels.addEventListener('contextmenu', (e) => {
-    const el = e.target.closest('.pill');
+    // 会话行有自己的目录：右键它应当在那个会话的目录里开终端，而不是软件的
+    // 最后一个目录 —— 同一软件的两个会话常常跑在两个仓库里。
+    const sub = e.target.closest('.subpill');
+    const el = sub || e.target.closest('.pill');
     const cwd = el && el.dataset.cwd;
     if (!cwd) return;
     e.preventDefault();
@@ -1099,10 +1348,16 @@ import {
     if (inElectron && bridge.openTerminal) bridge.openTerminal(cwd);
   });
 
+  // 某个软件被单独静音后，只有当这个聚合状态里的**所有**软件都被静音时才不响；
+  // 两个软件同时 waiting、只静音了一个，另一个仍然应该叫你。
+  const allSoundMuted = (state, sessions) => {
+    const agents = new Set((sessions || []).filter((s) => s.state === state).map((s) => s.agent));
+    return agents.size > 0 && [...agents].every(isSoundMuted);
+  };
   function render(snap) {
     lastSnap = snap;
     let overall = snap.overall || 'offline';
-    if (!previewing) announce(overall);
+    if (!previewing && !allSoundMuted(overall, snap.sessions || [])) announce(overall);
     // 有新版本时在「系统」里给一行提示。只在真的更新时显示，其余帧不碰 DOM。
     const updEl = document.getElementById('m-update');
     if (updEl) {
@@ -1169,6 +1424,17 @@ import {
       const cur = seen.get(s.agent);
       if (!cur || PRIO[s.state] > PRIO[cur.state]) seen.set(s.agent, s);
     }
+    // 设置里打开「默认展开多会话」：有多个会话的软件自动展开。手动收起的除外。
+    if (cfg.expandSessions) {
+      for (const [agent, n] of counts) {
+        if (n > 1 && !autoCollapsed.has(agent)) expandedAgents.add(agent);
+      }
+    }
+    // 通知要看**全部**软件，而不是面板里塞得下的前 8 个：第 9 个软件进入
+    // 「需要你」时如果被槽位截断吞掉，用户会看到红灯却收不到任何提醒。
+    const notifyRows = [...seen.values()].map((s) => ({
+      agent: s.agent, state: s.state, count: counts.get(s.agent) || 1,
+    }));
     // 每个注册软件始终各占一行：offline 也是暗行，位置固定 —— 和胸口槽位、灯环一致。
     // 顺序直接取服务端的固定槽位表（它已经把离线软件排在固定位置），再按用户在
     // 「软件顺序」里的排列调整：slots 说明「有哪些软件」，agentOrder 说明「排第几」。
@@ -1230,9 +1496,11 @@ import {
     }
     document.body.dataset.mainSlot = String(mainSlotIdx);
     // 真实状态变化才响一次；预览不响（realChanged 里已经排除了预览）。
-    if (realChanged) cue(displayState);
+    // 软件级静音只影响声音：灯、列表和系统通知照常。
+    const voiceOff = allSoundMuted(displayState, sessions);
+    if (realChanged && !voiceOff) cue(displayState);
     // 第二条输出通道：同上，只在真实状态变化时说一次，不跟着每帧念。
-    if (realChanged) speakState(displayState, slots[mainSlotIdx] && slots[mainSlotIdx].agent);
+    if (realChanged && !voiceOff) speakState(displayState, slots[mainSlotIdx] && slots[mainSlotIdx].agent);
 
     // 预览期间冻结真实状态的这三条出口（镜面灯、槽位、3D 事件）。否则任何
     // 一条 SSE 帧都会把槽位和 3D 拉回真实颜色，而 --state 还是预览色：同一台
@@ -1264,6 +1532,12 @@ import {
       errorTotal += events[agent] && events[agent].error || 0;
     }
     document.body.dataset.events = JSON.stringify({ done: doneTotal, error: errorTotal });
+    // 广告牌的「需要你 / 今日完成 / 会话数」三种模式需要的是计数，不是时长。
+    document.body.dataset.signcounts = JSON.stringify({
+      needs: sessions.filter((s) => s.state === 'waiting').length,
+      done: doneTotal,
+      sessions: sessions.filter((s) => s.state !== 'offline').length,
+    });
     renderScore(snap);
 
     // 里程碑：合计时长跨过整点小时庆祝一次（跨天自动清零）。
@@ -1309,16 +1583,19 @@ import {
     // `.pill.worst` 会在这一帧里无声消失。退一步取当前最要紧的那个槽位，
     // 但只在这个槽位真的有会话时才这么做（否则就是给「什么都没在跑」编名字）。
     const fallback = slots[mainSlotIdx] && slots[mainSlotIdx].count > 0 ? slots[mainSlotIdx] : null;
+    // `unknown` has no slot of its own, so it falls back to the most urgent
+    // visible row. When the winner lives beyond the visible slots (overflow),
+    // naming a calm visible row as "worst" would simply be wrong.
     const top = focusedAgent
       ? slots.find((s) => s.agent === focusedAgent && s.count > 0)
-      : (slots.find((s) => s.state === overall && s.count > 0) || fallback);
+      : (slots.find((s) => s.state === overall && s.count > 0) || (overall === 'unknown' ? fallback : null));
     const agentLabel = top ? displayName(top.agent) : '';
     const worstKey = top ? top.agent : '';
 
     // 聚焦某个软件时，通知要说「被聚焦的那个」，而不是聚合里的最坏者——
     // 否则会弹出「Claude 出错了」但其实是你在盯的 Codex 出错。
     // 逐软件检测「进入」边沿：聚合状态没变时，也要能提醒第二个需要你的软件。
-    if (!previewing) notifySlots(slots);
+    if (!previewing) notifySlots(notifyRows);
     renderFuel(snap.fuel);
     if (!previewing) notifyFuel(snap.fuel);
     // sessions arrive newest-first, so [0] is the software that spoke last
@@ -1333,6 +1610,7 @@ import {
     for (const [agent, entry] of pillPool) {
       if (!keep.has(agent)) { entry.el.remove(); pillPool.delete(agent); }
     }
+    const usedSubs = new Set();
     if (showPills) {
       // Four rows fit comfortably; the rest collapse into a count rather than
       // pushing the robot off the bottom of the desk.
@@ -1341,6 +1619,8 @@ import {
         paintPill({ el, refs: pillPool.get(s.agent).refs }, s, snap, worstKey, counts.get(s.agent) || 1);
         // appendChild 对已在文档里的节点是「移动」，所以这一行同时保证顺序。
         labels.appendChild(el);
+        // 展开的软件：紧跟着它的主行，一个会话一行。
+        appendSessionRows(s, sessions, usedSubs);
       }
       if (hiddenCount > 0) {
         if (!moreRow) {
@@ -1354,6 +1634,12 @@ import {
       }
     } else if (moreRow && moreRow.parentNode) {
       moreRow.remove();
+    }
+    // 收起、被行数挤掉、或者会话已经结束的展开行都要消失。
+    for (const [key, el] of subPool) {
+      if (usedSubs.has(key)) continue;
+      el.remove();
+      subPool.delete(key);
     }
 
     // Say the awkward thing out loud instead of showing a blank robot.
@@ -1586,6 +1872,435 @@ import {
         && !bar.contains(e.target)) setSizer(false);
   });
 
+  // ---------------------------------------------------------------- 今日待办
+  // 一张纸，不是一块 UI：记下今天要做的事，勾掉它，机器人定期提醒。
+  // 它和代理状态完全无关 —— 不参与主灯，不借用红黄绿，也不会被 TTL 清掉。
+  const memoEl = document.getElementById('memo');
+  const memoList = document.getElementById('memo-list');
+  const memoInput = document.getElementById('memo-input');
+  const memoBadge = document.getElementById('memo-badge');
+  const memoPeek = document.getElementById('memo-peek');
+  const memoCount = document.getElementById('memo-count');
+  const memoMore = document.getElementById('memo-more');
+  const memoFoot = document.getElementById('memo-foot');
+  const memoDoneNote = document.getElementById('memo-done-note');
+  const memoSnooze = document.getElementById('memo-snooze');
+  const memoClear = document.getElementById('memo-clear');
+  const memoExport = document.getElementById('memo-export');
+  const memoUndo = document.getElementById('memo-undo');
+  const memoUndoBtn = document.getElementById('memo-undo-btn');
+  const quickEl = document.getElementById('quick-add');
+  const quickInput = document.getElementById('quick-add-input');
+  const NOTES_REMIND_CHOICES = [0, 15, 30, 60, 120];
+  let notesState = { day: '', items: [], open: 0, done: 0, doneToday: 0, olderOpen: 0 };
+  let noteRemindAt = 0;
+  // 「稍后 10 分钟」只是一个暂停窗口；到点后照常按设置的间隔提醒。
+  let memoSnoozeUntil = 0;
+  let lastNoteOpen = -1;
+  let memoSignature = null;
+  let memoUndoItems = null;
+  let memoUndoTimer = 0;
+
+  const noteDayLabel = (day) => {
+    if (!day || day === notesState.day) return '';
+    const d = new Date(`${day}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return '';
+    return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+
+  // 未完成数在两处露面：工具栏按钮上的角标，以及机器人脚边的小纸片
+  // （面板关着时它是唯一入口）。两处永远读同一个数字。
+  function updateMemoMarks() {
+    const open = Number(notesState.open) || 0;
+    memoBadge.hidden = open <= 0;
+    memoBadge.textContent = open > 99 ? '99+' : String(open);
+    if (memoPeek) {
+      memoPeek.hidden = !(open > 0 && memoEl.hidden);
+      memoPeek.querySelector('b').textContent = open > 99 ? '99+' : String(open);
+      memoPeek.title = open > 0 ? `今日待办：${open} 项未完成` : '今日待办';
+      memoPeek.setAttribute('aria-label', open > 0 ? `打开今日待办，${open} 项未完成` : '打开今日待办');
+    }
+  }
+
+  // 列表末端还有没有没露出来的条目。覆盖式滚动条在 Windows 上平时不可见，
+  // 所以用一行字回答「下面还有没有」；滚到底就收起，不再骗人。
+  function updateMemoOverflow() {
+    if (!memoMore) return;
+    const more = memoList.scrollHeight - memoList.clientHeight - memoList.scrollTop > 2;
+    if (memoMore.hidden === !more) return;
+    memoMore.hidden = !more;
+    if (!memoEl.hidden) fit();
+  }
+
+  // 一行待办：置顶 / 勾选 / 文字 / 删除。抽出来是因为分组后每个条目都要画
+  // 同一套东西，复制四份早晚会有一份漏掉置顶状态。
+  function memoRow(item) {
+    const row = document.createElement('div');
+    row.className = 'memo-item' + (item.done ? ' done' : '');
+    row.dataset.id = item.id;
+    row.setAttribute('role', 'listitem');
+
+    const pin = document.createElement('button');
+    pin.type = 'button';
+    pin.className = 'memo-pin';
+    pin.textContent = item.pinned ? '★' : '☆';
+    pin.setAttribute('aria-pressed', String(!!item.pinned));
+    pin.setAttribute('aria-label', item.pinned ? '取消置顶' : '置顶这条待办');
+    pin.title = item.pinned ? '取消置顶' : '置顶';
+    pin.disabled = !!item.done;
+
+    const check = document.createElement('button');
+    check.type = 'button';
+    check.className = 'memo-check';
+    check.textContent = item.done ? '✓' : '';
+    check.setAttribute('aria-pressed', String(!!item.done));
+    check.setAttribute('aria-label', item.done ? '标记为未完成' : '标记完成');
+
+    const text = document.createElement('span');
+    text.className = 'memo-text';
+    text.textContent = item.text;
+    text.title = '双击编辑';
+    const label = noteDayLabel(item.day);
+    if (label) {
+      const d = document.createElement('span');
+      d.className = 'memo-day';
+      d.textContent = label;
+      text.appendChild(d);
+    }
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'memo-del';
+    del.textContent = '×';
+    del.setAttribute('aria-label', '删除这条待办');
+
+    row.append(pin, check, text, del);
+    return row;
+  }
+
+  function renderMemo(force = false) {
+    const items = Array.isArray(notesState.items) ? notesState.items : [];
+    const open = Number(notesState.open) || 0;
+    memoCount.textContent = open > 0 ? `${open} 项未完成` : '都做完了';
+    updateMemoMarks();
+
+    // 数据没变就不重建列表：15 秒一次的轮询在面板关着时也在跑，每次都重建
+    // DOM 等于让一张看不见的纸持续耗电。
+    const sig = JSON.stringify(notesState);
+    if (!force && sig === memoSignature) return;
+    memoSignature = sig;
+
+    // 整张便签都画出来，不再截断成 12 条：滚动由列表自己负责（CSS max-height），
+    // 否则第 13 条之后的待办在界面上根本不存在，用户会以为它丢了。
+    // 重建前记住滚动位置：勾掉第 16 条后列表跳回顶部，等于让人重新找一遍。
+    const keepScroll = memoList.scrollTop;
+    memoList.textContent = '';
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'memo-empty';
+      empty.textContent = '还没有待办。把今天要做的事记下来。';
+      memoList.appendChild(empty);
+    } else {
+      // 分组：置顶 / 今天 / 更早 / 已完成。长便签里需要一个方向标，
+      // 也把「昨天遗留」和「今天新记」分开，不让它们混成一天的任务。
+      const today = notesState.day;
+      const groups = [
+        ['置顶', items.filter((i) => !i.done && i.pinned)],
+        ['今天', items.filter((i) => !i.done && !i.pinned && (!i.day || i.day === today))],
+        ['更早', items.filter((i) => !i.done && !i.pinned && i.day && i.day !== today)],
+        ['已完成', items.filter((i) => i.done)],
+      ];
+      for (const [name, list] of groups) {
+        if (!list.length) continue;
+        const head = document.createElement('div');
+        head.className = 'memo-group';
+        head.textContent = name === '已完成' ? `已完成 · ${list.length}` : name;
+        memoList.appendChild(head);
+        for (const item of list) memoList.appendChild(memoRow(item));
+      }
+    }
+    // 页脚常驻：导出入口不该依赖「有没有已完成的事」。
+    memoFoot.hidden = false;
+    const doneToday = Number(notesState.doneToday) || 0;
+    memoDoneNote.textContent = notesState.done
+      ? `已完成 ${notesState.done}${doneToday > 0 ? ` · 今天 ${doneToday}` : ''}`
+      : '';
+    memoClear.hidden = !notesState.done;
+    memoSnooze.hidden = open <= 0;
+    if (keepScroll) memoList.scrollTop = keepScroll;
+    updateMemoOverflow();
+    // 异步加载完成后列表才长出来：窗口必须重新量一次，否则热区/高度停在
+    // 「空便签」那一版，最后几条既看不到也点不到。
+    if (!memoEl.hidden) fit();
+  }
+
+  function applyNotes(data) {
+    if (!data || typeof data !== 'object' || data.error) return;
+    const first = lastNoteOpen === -1;
+    notesState = data;
+    renderMemo();
+    // 未完成数变了：重新开始计时，别在用户刚记下一条时就催他。
+    if (notesState.open !== lastNoteOpen) {
+      lastNoteOpen = notesState.open;
+      noteRemindAt = Date.now();
+    }
+    // 刚启动时如果已经有没做完的事，先轻轻说一句 —— 面板关着也看得到，
+    // 而不是等半小时后的第一次定时提醒。不改灯，只占用那行提示。
+    // 更早记下、今天还没做完的要单独说：它们不是今天新加的任务。
+    if (first && notesState.open > 0 && !isMuted() && !isDnd()) {
+      const older = Number(notesState.olderOpen) || 0;
+      flashNote(older > 0 ? `昨天还有 ${older} 件没做完` : `有 ${notesState.open} 件待办`);
+    }
+  }
+
+  async function fetchNotes() {
+    try {
+      if (inElectron && bridge.getNotes) return await bridge.getNotes();
+      // 浏览器模式只能读：写操作要 token，而页面拿不到它。
+      const r = await fetch(`${location.origin}/notes`, { cache: 'no-store' });
+      return r.ok ? await r.json() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function saveNote(action) {
+    if (!(inElectron && bridge.saveNotes)) {
+      flashNote('桌面版才能编辑待办');
+      return null;
+    }
+    const res = await bridge.saveNotes(action);
+    if (res && !res.error) {
+      applyNotes(res);
+      return res;
+    }
+    flashNote(res && res.error ? `待办保存失败：${res.error}` : '待办保存失败');
+    return null;
+  }
+
+  // 删除不是不可逆的：6 秒内可以原样放回来（文字、完成状态、置顶、记下的日子）。
+  function hideUndo() {
+    clearTimeout(memoUndoTimer);
+    memoUndoTimer = 0;
+    memoUndoItems = null;
+    if (!memoUndo.hidden) {
+      memoUndo.hidden = true;
+      if (!memoEl.hidden) fit();
+    }
+  }
+  function offerUndo(removed) {
+    if (!removed || !removed.length) return;
+    memoUndoItems = removed.map((i) => ({
+      text: i.text, done: !!i.done, pinned: !!i.pinned, day: i.day,
+    }));
+    memoUndo.querySelector('span').textContent = `已删除 ${removed.length} 条`;
+    memoUndo.hidden = false;
+    // 保持单一计时器：上一次的 6 秒不能把这一次的提示提前关掉。
+    clearTimeout(memoUndoTimer);
+    memoUndoTimer = setTimeout(hideUndo, 6000);    if (!memoEl.hidden) fit();
+  }
+
+  function setMemo(open, { persist = true, focus = true } = {}) {
+    memoEl.hidden = !open;
+    cfg.memoOpen = !!open;
+    updateMemoMarks();
+    if (open) {
+      refreshNotes();
+      // 面板隐藏时量不出高度（display:none），打开后要重新判断列表有没有溢出。
+      updateMemoOverflow();
+      if (focus) requestAnimationFrame(() => memoInput.focus({ preventScroll: true }));
+    }
+    // 记住这张纸是不是留在桌面上：重启后它应该还在原来的地方，而不是每次都
+    // 要重新从工具栏里找出来。
+    if (persist && inElectron) saveConfig({ memoOpen: !!open });
+    fit();
+  }
+
+  const refreshNotes = async () => applyNotes(await fetchNotes());
+
+  document.getElementById('btn-memo').onclick = (e) => {
+    e.stopPropagation();
+    setMemo(memoEl.hidden);
+  };
+  document.getElementById('memo-close').onclick = () => setMemo(false);
+  if (memoPeek) memoPeek.onclick = () => setMemo(true);
+  // 双击一条待办就地改字：删掉重打会丢掉它的创建日，而「哪天记下的」正是
+  // 这张便签愿意保留的信息。
+  memoList.addEventListener('dblclick', (e) => {
+    const textEl = e.target.closest('.memo-text');
+    const row = textEl && textEl.closest('.memo-item');
+    if (!row) return;
+    const item = notesState.items.find((i) => i.id === row.dataset.id);
+    if (!item) return;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'memo-edit';
+    input.maxLength = 140;
+    input.value = item.text;
+    input.setAttribute('aria-label', '编辑待办');
+    textEl.replaceWith(input);
+    input.focus();
+    input.select();
+    let settled = false;
+    const finish = async (save) => {
+      if (settled) return;
+      settled = true;
+      const next = input.value.trim();
+      if (save && next && next !== item.text) {
+        await saveNote({ action: 'edit', id: item.id, text: next });
+      } else {
+        // 取消（或没有改动）：强制重画，把输入框换回文字。
+        memoSignature = null;
+        renderMemo(true);
+      }
+    };
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
+  });
+  document.getElementById('memo-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = memoInput.value.trim();
+    if (!text) return;
+    memoInput.value = '';
+    const before = new Set((notesState.items || []).map((i) => i.id));
+    const saved = await saveNote({ action: 'add', text });
+    memoInput.focus({ preventScroll: true });
+    // 记下的事可能在分组里的任何位置（置顶/更早都可能排在它后面）：
+    // 按「新出现的 id」找到它本身，再滚进视野。
+    if (saved) {
+      requestAnimationFrame(() => {
+        const added = (notesState.items || []).find((i) => !before.has(i.id) && i.text === text);
+        const row = added && memoList.querySelector(`.memo-item[data-id="${added.id}"]`);
+        if (row) row.scrollIntoView({ block: 'nearest' });
+      });
+    }
+  });
+  memoList.addEventListener('click', async (e) => {
+    const row = e.target.closest('.memo-item');
+    if (!row) return;
+    const id = row.dataset.id;
+    const item = notesState.items.find((i) => i.id === id);
+    if (e.target.closest('.memo-del')) {
+      const res = await saveNote({ action: 'remove', id });
+      if (res && item) offerUndo([item]);
+      return;
+    }
+    if (e.target.closest('.memo-pin')) {
+      saveNote({ action: 'pin', id, pinned: !(item && item.pinned) });
+      return;
+    }
+    if (e.target.closest('.memo-check')) {
+      saveNote({ action: 'toggle', id, done: !(item && item.done) });
+    }
+  });
+  memoUndoBtn.onclick = async () => {
+    const removed = memoUndoItems;
+    hideUndo();
+    if (removed && removed.length) await saveNote({ action: 'restore', items: removed });
+  };
+  document.getElementById('memo-clear').onclick = async () => {
+    const removed = notesState.items.filter((i) => i.done);
+    const res = await saveNote({ action: 'clearDone' });
+    if (res) offerUndo(removed);
+  };
+  // 「稍后 10 分钟」：只是暂停这一小段时间，不改变提醒间隔。
+  memoSnooze.onclick = () => {
+    memoSnoozeUntil = Date.now() + 10 * 60_000;
+    noteRemindAt = Date.now();
+    flashNote('10 分钟后再提醒');
+  };
+  // 导出 Markdown：换台机器、或者想放进日报里时，待办得能带走。
+  memoExport.onclick = () => {
+    const items = Array.isArray(notesState.items) ? notesState.items : [];
+    if (!items.length) { flashNote('还没有待办'); return; }
+    const day = notesState.day || 'today';
+    const lines = [`# 今日待办 · ${day}`, ''];
+    const open = items.filter((i) => !i.done);
+    const done = items.filter((i) => i.done);
+    lines.push(`## 未完成 · ${open.length}`, '');
+    for (const i of open) {
+      const tag = i.pinned ? '[置顶] ' : '';
+      const d = i.day && i.day !== day ? `（${i.day}）` : '';
+      lines.push(`- [ ] ${tag}${i.text}${d}`);
+    }
+    if (done.length) {
+      lines.push('', `## 已完成 · ${done.length}`, '');
+      for (const i of done) lines.push(`- [x] ${i.text}`);
+    }
+    const blob = new Blob([`\ufeff${lines.join('\r\n')}\r\n`], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `bao-notes-${day}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  // 快速记一条：只开一条输入，不摊开整张便签。
+  function setQuickAdd(open) {
+    quickEl.hidden = !open;
+    if (open) {
+      quickInput.value = '';
+      requestAnimationFrame(() => quickInput.focus({ preventScroll: true }));
+    }
+    fit();
+  }
+  document.getElementById('quick-add-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = quickInput.value.trim();
+    if (!text) return;
+    quickInput.value = '';
+    const saved = await saveNote({ action: 'add', text });
+    if (saved) {
+      setQuickAdd(false);
+      flashNote('已记下');
+    }
+  });
+  quickInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      setQuickAdd(false);
+    }
+  });
+  memoList.addEventListener('scroll', updateMemoOverflow);
+  document.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
+    if (e.key === 'm' || e.key === 'M') {
+      e.preventDefault();
+      setMemo(memoEl.hidden);
+    } else if (e.key === 'n' || e.key === 'N') {
+      // 快速记一条：不打开整张便签，也不抢当前正在做的事情太久。
+      e.preventDefault();
+      setQuickAdd(quickEl.hidden);
+    }
+  });
+
+  renderMemo();
+  refreshNotes();
+  setInterval(refreshNotes, 15_000);
+  // 提醒：只在有未完成、没静音、没过勿扰时出现，频率由设置里的「提醒间隔」决定。
+  // 它只 flash 一行字 / 弹通知，绝不改变灯的颜色。
+  setInterval(() => {
+    const open = Number(notesState.open) || 0;
+    const mins = NOTES_REMIND_CHOICES.includes(Number(cfg.notesRemindMinutes))
+      ? Number(cfg.notesRemindMinutes) : 30;
+    if (!open || mins <= 0 || document.hidden) return;
+    if (isMuted() || isDnd()) return;
+    if (Date.now() < memoSnoozeUntil) return;
+    if (Date.now() - noteRemindAt < mins * 60_000) return;
+    noteRemindAt = Date.now();
+    flashNote(`还有 ${open} 件待办没做完`);
+    if (inElectron && bridge.notify && cfg.notesNotify !== false) {
+      bridge.notify('待办提醒', `还有 ${open} 件没完成`);
+    }
+    if (cfg.voice) say(`还有 ${open} 件待办`);
+  }, 30_000);
+
   document.getElementById('m-size').addEventListener('input', (e) => {
     applyScale(Number(e.target.value) / 100, { persist: false });
   });
@@ -1614,9 +2329,40 @@ import {
     const m = HEX_RE.exec(String(v == null ? '' : v).trim());
     return m ? `#${m[1].toLowerCase()}` : null;
   };
+  // 软件色和状态色是两套东西：这里只用于「今日战绩」的分布条/时长条。
+  // 默认色按 agent 名做稳定哈希，而不是按当前列表下标 —— 否则新接一个软件，
+  // 其他软件的颜色会整体错位，昨天记住的颜色今天对不上。
+  const agentColorIndex = (agent) => {
+    let h = 0;
+    for (const ch of String(agent || '')) h = ((h * 31) + ch.codePointAt(0)) >>> 0;
+    return h % AGENT_COLORS.length;
+  };
+  const defaultAgentColor = (agent) => AGENT_COLORS[agentColorIndex(agent)];
+  const agentColor = (agent) => normHex(cfg.agentColors && cfg.agentColors[agent]) || defaultAgentColor(agent);
+  const hexToRgba = (hex, alpha) => {
+    const v = normHex(hex) || '#78beff';
+    const n = parseInt(v.slice(1), 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+  };
 
   // 今日时长广告牌：显示哪个软件、放哪一侧、什么颜色、什么形状。
-  const SIGN_MODES = { '最多': 'top', '合计': 'total', '轮播': 'cycle', '关闭': 'off' };
+  // 「陪伴天数」：首次运行算第 1 天。firstRun 写的是本地日期，这里也必须按本地
+  // 日期算 —— 用 UTC 会让东八区 0–8 点装的人永远差一天。
+  function daysTogether() {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(cfg.firstRun || ''));
+    if (!m) return 0;
+    const start = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    const now = new Date();
+    const a = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+    const b = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return Math.max(1, Math.round((b - a) / 86400000) + 1);
+  }
+
+  const SIGN_MODES = {
+    '最多': 'top', '合计': 'total', '轮播': 'cycle', '需要你': 'needs',
+    '今日完成': 'done', '会话数': 'sessions',
+    '时钟': 'clock', '今日目标': 'goal', '陪伴天数': 'days', '关闭': 'off',
+  };
   const SIGN_POS = { '右侧': 'right', '左侧': 'left' };
   const SIGN_COLORS = { '金色': '#ffd54a', '白色': '#e9edf2', '青色': '#4ad5ff', '粉色': '#ff8ac2', '紫色': '#b48aff', '绿色': '#34c759', '红色': '#ff3b30', '蓝色': '#4a9dff' };
   const SIGN_SHAPES = { '圆角': '圆角', '胶囊': '胶囊', '方正': '方正' };
@@ -1650,6 +2396,26 @@ import {
   const signColorValue = () => (signColorSel.value === CUSTOM
     ? (normHex(signCustomInput.value) || SIGN_COLORS['金色'])
     : (SIGN_COLORS[signColorSel.value] || SIGN_COLORS['金色']));
+  // 广告牌被拖到哪里：机器人局部坐标的偏移。手改配置/导入文件里的脏值
+  // （字符串、NaN、把牌子拖到画布外）在这里统一收成有限数并夹住范围。
+  const normalizeSignOffset = (raw) => {
+    const x = Number(raw && raw.x);
+    const y = Number(raw && raw.y);
+    return {
+      x: Number.isFinite(x) ? Math.max(-3, Math.min(3, x)) : 0,
+      y: Number.isFinite(y) ? Math.max(-2.6, Math.min(2.6, y)) : 0,
+    };
+  };
+  const signCustomNote = document.getElementById('m-sign-custom');
+  const signResetBtn = document.getElementById('m-sign-reset');
+  // 「位置已自定义」只在真的拖过之后出现，同时决定重置按钮能不能按 ——
+  // 一个永远可按、按了也没变化的按钮，看起来就像坏的。
+  function updateSignCustomState() {
+    const off = normalizeSignOffset(cfg.signOffset);
+    const moved = Math.abs(off.x) > 0.001 || Math.abs(off.y) > 0.001;
+    if (signCustomNote) signCustomNote.hidden = !moved;
+    if (signResetBtn) signResetBtn.disabled = !moved;
+  }
   function applySign() {
     const mode = SIGN_MODES[signSel.value] || 'top';
     const pos = SIGN_POS[signPosSel.value] || 'right';
@@ -1658,10 +2424,30 @@ import {
     signCustomRow.hidden = !custom;
     if (custom) signCustomInput.value = signColorValue();   // 归一化：取色器只认 #rrggbb
     const color = signColorValue();
-    window.dispatchEvent(new CustomEvent('bao:sign', { detail: { mode, pos, color, shape } }));
+    // 目标与陪伴天数都随配置走：牌面自己算不了「今天的目标」和「第几天」。
+    const goalHours = Math.max(0, Math.min(12, Number(cfg.dailyGoalHours) || 0));
+    window.dispatchEvent(new CustomEvent('bao:sign', {
+      detail: {
+        mode, pos, color, shape, goalHours, days: daysTogether(),
+        offset: normalizeSignOffset(cfg.signOffset),
+      },
+    }));
     if (inElectron) saveConfig({ signMode: mode, signPos: pos, signColor: color, signShape: shape });
+    updateSignCustomState();
     return custom;
   }
+  // 拖完由 3D 那边把最终偏移发回来：这里只负责记住并落盘，画面上它已经在
+  // 手指底下了 —— 不能再反过来触发一次重排。
+  window.addEventListener('bao:sign-offset', (e) => {
+    cfg.signOffset = normalizeSignOffset(e.detail);
+    if (inElectron) saveConfig({ signOffset: cfg.signOffset });
+    updateSignCustomState();
+  });
+  document.getElementById('m-sign-reset').onclick = () => {
+    cfg.signOffset = { x: 0, y: 0 };
+    if (inElectron) saveConfig({ signOffset: cfg.signOffset });
+    applySign();
+  };
   signSel.addEventListener('change', applySign);
   signPosSel.addEventListener('change', applySign);
   signColorSel.addEventListener('change', (e) => {
@@ -1701,6 +2487,7 @@ import {
   bodySel.addEventListener('change', (e) => {
     window.dispatchEvent(new CustomEvent('bao:body', { detail: { body: e.target.value } }));
     if (inElectron) saveConfig({ body: e.target.value });
+    renderLookSummary();
   });
 
   // 底座灯效列表（与 robot3d.js 的 BASE_EFFECTS 对应）。「状态色」是默认：四软件
@@ -1819,6 +2606,7 @@ import {
         saveConfig(custom ? { [p.detailKey]: CUSTOM, [p.configKey]: custom } : { [p.detailKey]: p.sel.value });
       }
       syncThemeLabel();
+      renderLookSummary();
     });
     // 拖动取色器时实时预览，松手（change）才落盘，避免一拖写几十次配置。
     // 预览本身也要限速：皮肤每次上色要重画两张 256×256 的做旧纹理，而拖动
@@ -1885,7 +2673,10 @@ import {
     window.dispatchEvent(new CustomEvent('bao:wear', { detail: { wear: w } }));
   });
   wearInput.addEventListener('change', () => {
-    if (inElectron) saveConfig({ wear: pushWear() });
+    // 松手这一下必须再推一次最终值：拖动时的 input 有 90ms 限速，最后几格
+    // 很可能被丢掉，而它才是用户真正停在的位置。
+    const w = pushWear();
+    if (inElectron) saveConfig({ wear: w });
   });
   finishSel.addEventListener('change', (e) => {
     window.dispatchEvent(new CustomEvent('bao:finish', { detail: { finish: e.target.value } }));
@@ -1957,6 +2748,7 @@ import {
     // 读它 —— 主题名一直是靠 syncThemeLabel() 现算的。一个只写、永不读的配置项，
     // 只会让「配置里到底哪些有用」这个问题多一个坑。
     if (inElectron) saveConfig({ skin: t.skin, eyestyle: t.eye, trackstyle: t.track, armskin: t.arm });
+    renderLookSummary();
   });
 
   // 胳膊形状（双板/圆筒/桁架）。
@@ -1990,6 +2782,7 @@ import {
   decorationSel.addEventListener('change', (e) => {
     window.dispatchEvent(new CustomEvent('bao:decoration', { detail: { decoration: e.target.value } }));
     if (inElectron) saveConfig({ decoration: e.target.value });
+    renderLookSummary();
   });
   headtypeSel.addEventListener('change', (e) => {
     window.dispatchEvent(new CustomEvent('bao:headtype', { detail: { headtype: e.target.value } }));
@@ -2016,9 +2809,13 @@ import {
     o.value = n; o.textContent = n; sceneSel.appendChild(o);
   }
   sceneSel.addEventListener('change', (e) => {
+    // 记住手动选择：自动切换把下拉改成「此刻生效值」时，cfg.scene 必须还是
+    // 用户手动选的那一档，关掉自动后才能还原回来。
+    cfg.scene = e.target.value;
     window.dispatchEvent(new CustomEvent('bao:scene', { detail: { scene: e.target.value } }));
     if (inElectron) saveConfig({ scene: e.target.value });
     updateSwatch('scene-swatch', SCENE_COLORS[e.target.value]);
+    renderLookSummary();
   });
 
   // 场景按时间自动切换：白天一个、夜晚一个，夜晚时段可跨午夜。打开后上面的「场景」
@@ -2076,14 +2873,19 @@ import {
     refreshAutoSceneUI();
     lastAutoScene = '';
     applyAutoScene();
+    renderLookSummary();
   };
   autoSceneInput.addEventListener('change', (e) => {
     cfg.autoScene = e.target.checked;
     saveAutoScene();
     if (!cfg.autoScene) {
-      // 退回手动模式：把场景还原成用户之前选的，别停在自动切到的那一档。
-      window.dispatchEvent(new CustomEvent('bao:scene', { detail: { scene: sceneSel.value } }));
-      updateSwatch('scene-swatch', SCENE_COLORS[sceneSel.value]);
+      // 退回手动模式：还原成用户之前手动选的场景。`sceneSel.value` 此刻已经被
+      // applyAutoScene 改成了「自动切到的那一档」，拿它还原等于什么都没做 ——
+      // 用户关掉自动切换后，场景会永远停在刚才那个时间和季节上。
+      const manual = SCENE_NAMES.includes(cfg.scene) ? cfg.scene : '无';
+      sceneSel.value = manual;
+      window.dispatchEvent(new CustomEvent('bao:scene', { detail: { scene: manual } }));
+      updateSwatch('scene-swatch', SCENE_COLORS[manual]);
     }
   });
   daySceneSel.addEventListener('change', (e) => { cfg.dayScene = e.target.value; saveAutoScene(); });
@@ -2153,7 +2955,58 @@ import {
   haloSel.addEventListener('change', (e) => {
     window.dispatchEvent(new CustomEvent('bao:halo', { detail: { halo: e.target.value } }));
     if (inElectron) saveConfig({ halo: e.target.value });
+    renderLookSummary();
   });
+
+  // 人格：性格是「机器人的脾气」，决定待机动作频率与语气，不参与状态判断。
+  // 它一直在配置里、3D 那边也一直在读，却从来没有入口 —— 用户只能羡慕别人的
+  // 机器人更安静。现在补上，并和其它外观项一样可恢复、可导出。
+  const PERSONALITY_NAMES = ['活泼', '沉稳', '话痨', '害羞'];
+  const personalitySel = document.getElementById('m-personality');
+  for (const n of PERSONALITY_NAMES) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n;
+    personalitySel.appendChild(o);
+  }
+  const setPersonality = (name) => {
+    const p = PERSONALITY_NAMES.includes(name) ? name : '活泼';
+    cfg.personality = p;
+    // robot3d 每帧读 body.dataset.personality，改这一处就会立刻生效。
+    document.body.dataset.personality = p;
+    personalitySel.value = p;
+    renderLookSummary();
+    return p;
+  };
+  personalitySel.addEventListener('change', () => {
+    const p = setPersonality(personalitySel.value);
+    if (inElectron) saveConfig({ personality: p });
+  });
+  setPersonality(cfg.personality || '活泼');
+
+  // 菜单顶部的「当前外观」摘要：打开设置第一眼就能看到现在是什么样，
+  // 改任何一项都即时更新。它不是设置项，只是一行可扫读的状态。
+  function renderLookSummary() {
+    const box = document.getElementById('m-look');
+    if (!box) return;
+    const scene = cfg.autoScene ? '自动' : sceneSel.value;
+    const bits = [
+      ['配色', themeSel.value || '自定义'],
+      ['体型', bodySel.value],
+      ['场景', scene],
+      ['人格', personalitySel.value],
+    ];
+    box.textContent = '';
+    for (const [k, v] of bits) {
+      const chip = document.createElement('span');
+      chip.append(`${k} `);
+      const b = document.createElement('b');
+      b.textContent = v;
+      chip.appendChild(b);
+      box.appendChild(chip);
+    }
+  }
+  // 浏览器模式没有 getConfig，控件此刻就是默认值：先画一次，菜单不会空着。
+  renderLookSummary();
 
   // 设置搜索：菜单里已经五十多个控件、十个分组，记得住名字但记不住位置。
   // 只改可见性 —— 没命中的行收起，整组没命中就收起整组；清空后恢复过滤前的
@@ -2287,6 +3140,37 @@ import {
       input.addEventListener('input', commit);
       input.addEventListener('change', commit);
       row.appendChild(input);
+      // 这个软件在「今日战绩」里的颜色。默认色按 agent 名稳定分配，用户改过
+      // 就用改过的；旁边的小箭头恢复默认。
+      const color = document.createElement('input');
+      color.type = 'color';
+      color.className = 'agent-color';
+      color.value = agentColor(agent);
+      color.title = `「${builtin}」在今日战绩里的颜色`;
+      color.setAttribute('aria-label', `「${builtin}」在今日战绩里的颜色`);
+      color.addEventListener('change', () => {
+        const hex = normHex(color.value);
+        if (!hex) return;
+        cfg.agentColors = { ...(cfg.agentColors || {}), [agent]: hex };
+        if (inElectron) saveConfig({ agentColors: cfg.agentColors });
+        if (lastSnap) renderScore(lastSnap);
+      });
+      row.appendChild(color);
+      const colorReset = document.createElement('button');
+      colorReset.type = 'button';
+      colorReset.className = 'agent-color-reset';
+      colorReset.textContent = '↺';
+      colorReset.title = '恢复默认颜色';
+      colorReset.setAttribute('aria-label', `恢复「${builtin}」的默认颜色`);
+      colorReset.onclick = () => {
+        const next = { ...(cfg.agentColors || {}) };
+        delete next[agent];
+        cfg.agentColors = next;
+        color.value = defaultAgentColor(agent);
+        if (inElectron) saveConfig({ agentColors: next });
+        if (lastSnap) renderScore(lastSnap);
+      };
+      row.appendChild(colorReset);
       // 通知开关：只关这个软件的系统通知，灯/列表/铭牌照旧。
       const bell = document.createElement('input');
       bell.type = 'checkbox';
@@ -2305,9 +3189,77 @@ import {
       });
       row.classList.toggle('muted', !bell.checked);
       row.appendChild(bell);
+      // 提示音开关（独立于上面的通知开关）：状态灯和通知照旧，只是不响。
+      const sound = document.createElement('button');
+      sound.type = 'button';
+      sound.className = 'agent-sound';
+      sound.textContent = isSoundMuted(agent) ? '静' : '声';
+      sound.classList.toggle('off', isSoundMuted(agent));
+      sound.title = isSoundMuted(agent) ? '提示音已关闭（点击开启）' : '提示音已开启（点击关闭）';
+      sound.setAttribute('aria-label', `「${builtin}」的提示音`);
+      sound.setAttribute('aria-pressed', String(!isSoundMuted(agent)));
+      sound.onclick = () => {
+        const next = new Set(cfg.mutedSoundAgents || []);
+        if (next.has(agent)) next.delete(agent); else next.add(agent);
+        cfg.mutedSoundAgents = [...next];
+        const off = isSoundMuted(agent);
+        sound.textContent = off ? '静' : '声';
+        sound.classList.toggle('off', off);
+        sound.title = off ? '提示音已关闭（点击开启）' : '提示音已开启（点击关闭）';
+        sound.setAttribute('aria-pressed', String(!off));
+        if (inElectron) saveConfig({ mutedSoundAgents: cfg.mutedSoundAgents });
+      };
+      row.appendChild(sound);
       box.appendChild(row);
     }
     // 重建出来的行默认是可见的：正在搜索时要把它们也过一遍过滤。
+    applyFind();
+  }
+  // 日志目录：每个软件从哪里读状态。默认自动查找，找不到或被放在奇怪的位置时
+  // 在这里填一个路径，省得每次启动都带 --dir。watcher 在启动时读配置，所以
+  // 改完要重启 `bao watch all`（设置里写清楚，避免「改了没反应」）。
+  const LOG_DIR_AGENTS = ['codex', 'deepseek', 'workbuddy', 'codebuddy'];
+  const DIR_HINTS = {
+    codex: '例如 ~/.codex/sessions',
+    deepseek: '例如 …/session_projcache/sessions',
+    workbuddy: '例如 ~/.workbuddy/tasks',
+    codebuddy: '例如 ~/.workbuddy/projects',
+  };
+  function renderAgentDirs() {
+    const box = document.getElementById('m-agentdirs');
+    if (!box) return;
+    box.innerHTML = '';
+    for (const agent of LOG_DIR_AGENTS) {
+      const entry = cfg.agents && cfg.agents[agent];
+      const current = entry && typeof entry.dir === 'string' ? entry.dir : '';
+      const row = document.createElement('label');
+      row.className = 'row agent-dir';
+      const name = document.createElement('span');
+      name.textContent = LABEL[agent] || agent;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = current;
+      input.placeholder = DIR_HINTS[agent] || '自动查找';
+      input.title = '留空自动查找';
+      input.spellcheck = false;
+      input.setAttribute('aria-label', `${LABEL[agent] || agent} 的日志目录`);
+      input.addEventListener('change', () => {
+        const dir = input.value.trim().slice(0, 512);
+        input.value = dir;
+        const agents = { ...(cfg.agents || {}) };
+        const prev = agents[agent] && typeof agents[agent] === 'object' && !Array.isArray(agents[agent])
+          ? { ...agents[agent] } : {};
+        if (dir) prev.dir = dir; else delete prev.dir;
+        if (Object.keys(prev).length) agents[agent] = prev; else delete agents[agent];
+        cfg.agents = agents;
+        if (inElectron) saveConfig({ agents });
+        flashNote(dir
+          ? `已设置 ${LABEL[agent] || agent} 的日志目录（重启 watch all 生效）`
+          : `${LABEL[agent] || agent} 恢复自动查找`);
+      });
+      row.append(name, input);
+      box.appendChild(row);
+    }
     applyFind();
   }
   function moveAgent(agent, dir) {
@@ -2326,6 +3278,7 @@ import {
   // 不在这里画的话「软件顺序/软件名称」会是一块空白，而这些控件本身是可用的。
   // Electron 里 config 读回来后会再画一次。
   renderOrderUI();
+  renderAgentDirs();
 
   // 状态手势：五个状态各配一种手势（动作系统核心）。
   const POSE_NAMES = ['环抱', '举手', '泵动', '摊开', '垂放', '叉腰', '鼓掌', '托下巴', '握拳'];
@@ -2458,12 +3411,35 @@ import {
     if (inElectron) saveConfig({ clickThrough: cfg.clickThrough });
   });
 
-  // 全局快捷键开关：主进程收到 hotkeyOn 会立刻重新注册/注销，无需重启窗口。
+  // 全局快捷键：主进程收到 hotkeyOn / hotkey 会立刻重新注册，无需重启窗口。
+  // 可选项与主进程白名单保持一致；配置里手写的非法值在这里就被收回默认。
+  const HOTKEY_CHOICES = [
+    ['CommandOrControl+Alt+B', 'Ctrl+Alt+B（默认）'],
+    ['CommandOrControl+Shift+B', 'Ctrl+Shift+B'],
+    ['Alt+Shift+B', 'Alt+Shift+B'],
+    ['CommandOrControl+Alt+Shift+B', 'Ctrl+Alt+Shift+B'],
+    ['CommandOrControl+Alt+R', 'Ctrl+Alt+R'],
+  ];
   const hotkeyInput = document.getElementById('m-hotkey');
+  const hotkeySelect = document.getElementById('m-hotkey-key');
+  for (const [value, label] of HOTKEY_CHOICES) {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    hotkeySelect.appendChild(o);
+  }
+  const syncHotkeyUI = () => { hotkeySelect.disabled = !hotkeyInput.checked; };
+  hotkeySelect.value = HOTKEY_CHOICES[0][0];
   hotkeyInput.addEventListener('change', (e) => {
     cfg.hotkeyOn = e.target.checked;
     if (inElectron) saveConfig({ hotkeyOn: cfg.hotkeyOn });
+    syncHotkeyUI();
   });
+  hotkeySelect.addEventListener('change', () => {
+    cfg.hotkey = hotkeySelect.value;
+    if (inElectron) saveConfig({ hotkey: cfg.hotkey });
+  });
+  syncHotkeyUI();
 
   // 开机自启：真正的安装由 server（node 进程）完成，主进程只代发一条带 token
   // 的本地请求 —— 在 Electron 里装会把启动项写成 Electron 可执行文件。
@@ -2496,9 +3472,31 @@ import {
       }
     });
   }
+  document.getElementById('m-notes-remind').addEventListener('change', (e) => {
+    cfg.notesRemindMinutes = Number(e.target.value) || 0;
+    if (inElectron) saveConfig({ notesRemindMinutes: cfg.notesRemindMinutes });
+  });
+  document.getElementById('m-notes-notify').addEventListener('change', (e) => {
+    cfg.notesNotify = e.target.checked;
+    if (inElectron) saveConfig({ notesNotify: cfg.notesNotify });
+  });
+  // 便签要不要留在桌面上。setMemo 自己负责写 memoOpen（用户按开关和点纸片
+  // 走的是同一条路径）。
+  document.getElementById('m-notes-open').addEventListener('change', (e) => {
+    setMemo(e.target.checked);
+  });
+
   document.getElementById('m-labels').addEventListener('change', (e) => {
     cfg.showLabels = e.target.checked;
     if (inElectron) saveConfig({ showLabels: cfg.showLabels });
+    if (lastSnap) render(lastSnap);
+  });
+  document.getElementById('m-expand-sessions').addEventListener('change', (e) => {
+    cfg.expandSessions = e.target.checked;
+    // 重新打开时清掉「手动收起」的记忆：用户刚刚要求默认展开，之前收起的
+    // 那几个也应当跟着展开一次。
+    if (cfg.expandSessions) autoCollapsed.clear();
+    if (inElectron) saveConfig({ expandSessions: cfg.expandSessions });
     if (lastSnap) render(lastSnap);
   });
 
@@ -2533,6 +3531,8 @@ import {
   goalSel.addEventListener('change', (e) => {
     cfg.dailyGoalHours = Number(e.target.value) || 0;
     if (inElectron) saveConfig({ dailyGoalHours: cfg.dailyGoalHours });
+    // 信息牌可能正显示「今日目标」：目标改了，牌面要立刻跟着改。
+    applySign();
     if (lastSnap) render(lastSnap);
   });
 
@@ -2558,7 +3558,31 @@ import {
     const memTitle = `已用 ${fmtGB(mem.used)} / 共 ${fmtGB(mem.total)}`;
     sysMem.title = memTitle;
     sysMem.parentElement.title = memTitle;
-    if (was !== sysEl.hidden) fit();
+
+    // GPU 行只在真的有 NVIDIA 读数时出现。没有就整行收起来 —— 空着一格
+    // 「—」只会让人以为是坏了。条上是显存占用（AI 工作里真正会卡住你的数字），
+    // 利用率放在悬停提示里，两者都能看到。
+    const g = data.gpu && Number.isFinite(Number(data.gpu.percent)) ? data.gpu : null;
+    const gpuWas = sysGpuRow.hidden;
+    sysGpuRow.hidden = !g;
+    if (g) {
+      const gm = g.mem || {};
+      const total = Number(gm.total) || 0;
+      const vram = total > 0 ? Math.max(0, Math.min(100, Math.round((Number(gm.used) / total) * 100))) : 0;
+      sysGpu.textContent = `${vram}%`;
+      sysGpuBar.style.width = `${vram}%`;
+      sysGpuBar.classList.toggle('hot', vram >= 85);
+      const gpuTitle = `${g.name ? g.name + ' · ' : ''}显存 已用 ${fmtGB(gm.used)} / 共 ${fmtGB(gm.total)}`
+        + ` · GPU 利用率 ${Math.round(g.percent)}%`;
+      sysGpu.title = gpuTitle;
+      sysGpu.parentElement.title = gpuTitle;
+    } else {
+      sysGpuBar.classList.remove('hot');
+    }
+    // 「仅高负载时」模式靠这个类决定动不动：70% 以上 CPU/GPU、85% 以上内存。
+    sysCpuBar.classList.toggle('hot', cpu >= 70);
+    sysMemBar.classList.toggle('hot', mp >= 85);
+    if (was !== sysEl.hidden || gpuWas !== sysGpuRow.hidden) fit();
   }
   async function pollSys() {
     if (cfg.showSys === false || document.hidden) return;
@@ -2575,6 +3599,39 @@ import {
     if (inElectron) saveConfig({ showSys: cfg.showSys });
     if (cfg.showSys) pollSys(); else renderSys(null);
   });
+
+  // 系统面板动效：常驻 / 仅高负载 / 关闭。只影响那块小面板的扫光，
+  // 不碰主灯、状态色与代理行为。reduced-motion 仍然优先于这个设置。
+  const SYS_MOTION = [
+    ['always', '常驻跑马灯'],
+    ['load', '仅高负载时'],
+    ['off', '关闭动效'],
+  ];
+  const sysMotionValue = () => (SYS_MOTION.some(([v]) => v === cfg.sysMotion) ? cfg.sysMotion : 'always');
+  const applySysMotion = () => { sysEl.dataset.motion = sysMotionValue(); };
+  for (const [value, label] of SYS_MOTION) {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    sysMotionSel.appendChild(o);
+  }
+  sysMotionSel.value = sysMotionValue();
+  applySysMotion();
+  sysMotionSel.addEventListener('change', (e) => {
+    cfg.sysMotion = SYS_MOTION.some(([v]) => v === e.target.value) ? e.target.value : 'always';
+    if (inElectron) saveConfig({ sysMotion: cfg.sysMotion });
+    applySysMotion();
+  });
+  // 卡住诊断的两个阈值（分钟）：只用于展开区的诊断文案，不参与状态推导。
+  // 范围外的手改值当场收回默认，避免输入框显示一个文案永远不会用到的数字。
+  const saveThreshold = (key, input, fallback) => {
+    const n = Math.round(Number(input.value));
+    cfg[key] = n >= 1 && n <= 240 ? n : fallback;
+    input.value = String(cfg[key]);
+    if (inElectron) saveConfig({ [key]: cfg[key] });
+  };
+  stuckBusyInput.addEventListener('change', () => saveThreshold('stuckBusyMin', stuckBusyInput, 15));
+  stuckWaitInput.addEventListener('change', () => saveThreshold('stuckWaitMin', stuckWaitInput, 10));
 
   // 菜单底部两块面板的可见性：纯显示开关。不关心战绩/动态的用户收起它们，
   // 菜单短一截；对状态、灯、通知没有任何影响。
@@ -2636,11 +3693,54 @@ import {
       baseEffect: effectSel, decoration: decorationSel, finish: finishSel,
     };
     for (const [k, sel] of Object.entries(sets)) {
+      // 自动场景开着时，场景下拉只是「此刻生效值」的显示器。应用方案/重置外观
+      // 在这里派发 change 会把自动结果顶掉，而且要等下一分钟轮询才会恢复。
+      if (k === 'scene' && cfg.autoScene) continue;
       if (look[k] != null && [...sel.options].some((o) => o.value === String(look[k]))) {
         sel.value = String(look[k]);
         sel.dispatchEvent(new Event('change'));
       }
     }
+    // 场景自动切换：先落到 cfg 和控件，再复用 saveAutoScene 的保存/夜昼判定。
+    let sceneTouched = false;
+    if (typeof look.autoScene === 'boolean') { cfg.autoScene = look.autoScene; autoSceneInput.checked = look.autoScene; sceneTouched = true; }
+    if (SCENE_NAMES.includes(look.dayScene)) { cfg.dayScene = look.dayScene; daySceneSel.value = look.dayScene; sceneTouched = true; }
+    if (SCENE_NAMES.includes(look.nightScene)) { cfg.nightScene = look.nightScene; nightSceneSel.value = look.nightScene; sceneTouched = true; }
+    if (TIME_RE.test(look.nightStart)) { cfg.nightStart = look.nightStart; nightStartInput.value = look.nightStart; sceneTouched = true; }
+    if (TIME_RE.test(look.nightEnd)) { cfg.nightEnd = look.nightEnd; nightEndInput.value = look.nightEnd; sceneTouched = true; }
+    if (sceneTouched) { lastAutoScene = ''; saveAutoScene(); }
+    // 广告牌：模式/位置/颜色/形状。应用方案也要把这些一起还原，否则「方案」
+    // 只换了机器人，桌面上的牌子和昨天不一样。
+    let signTouched = false;
+    const mapKey = (map, value) => Object.keys(map).find((k) => map[k] === value);
+    if (look.signMode) {
+      const key = mapKey(SIGN_MODES, look.signMode);
+      if (key) { signSel.value = key; signTouched = true; }
+    }
+    if (look.signPos) {
+      const key = mapKey(SIGN_POS, look.signPos);
+      if (key) { signPosSel.value = key; signTouched = true; }
+    }
+    if (look.signShape) {
+      const key = mapKey(SIGN_SHAPES, look.signShape);
+      if (key) { signShapeSel.value = key; signTouched = true; }
+    }
+    const customSign = normHex(look.customSign);
+    if (customSign) signCustomInput.value = customSign;
+    // 拖出来的位置也是「看上去是什么样」的一部分：方案切回来时，牌子应该
+    // 落在上次摆的地方，而不是跳回肩侧。
+    if (look.signOffset) {
+      cfg.signOffset = normalizeSignOffset(look.signOffset);
+      signTouched = true;
+    }
+    const signHex = normHex(look.signColor);
+    if (signHex) {
+      const key = mapKey(SIGN_COLORS, signHex);
+      signColorSel.value = key || CUSTOM;
+      if (!key) signCustomInput.value = signHex;
+      signTouched = true;
+    }
+    if (signTouched) applySign();
     for (const st of POSE_STATE_KEYS) {
       const p = look.poses && look.poses[st];
       if (p && poseSels[st]) { poseSels[st].value = p; poseSels[st].dispatchEvent(new Event('change')); }
@@ -2657,6 +3757,7 @@ import {
       wearInput.value = String(v);
       pushWear();
     }
+    renderLookSummary();
   }
 
   document.getElementById('m-reset-look').onclick = () => applyLook(LOOK_DEFAULTS);
@@ -2684,7 +3785,22 @@ import {
     const poses = {};
     for (const st of POSE_STATE_KEYS) poses[st] = poseSels[st].value;
     const brightness = Math.max(0.5, Math.min(1, Number(document.getElementById('m-brightness').value) / 100));
-    const look = { poses, brightness, wear: wearValue() };
+    // 方案不只存机器人本体：场景的自动切换与广告牌也是「看上去是什么样」的
+    // 一部分，只存一半会让「应用方案」之后还要手动补三四个开关。
+    const look = {
+      poses, brightness, wear: wearValue(),
+      autoScene: !!cfg.autoScene,
+      dayScene: daySceneSel.value,
+      nightScene: nightSceneSel.value,
+      nightStart: nightStartInput.value,
+      nightEnd: nightEndInput.value,
+      signMode: SIGN_MODES[signSel.value] || cfg.signMode,
+      signPos: SIGN_POS[signPosSel.value] || cfg.signPos,
+      signColor: signColorValue(),
+      signShape: SIGN_SHAPES[signShapeSel.value] || cfg.signShape,
+      signOffset: normalizeSignOffset(cfg.signOffset),
+      customSign: normHex(signCustomInput.value) || cfg.customSign,
+    };
     const dom = {
       skin: skinSel, eyestyle: eyestyleSel, eyeshape: eyeshapeSel, trackstyle: trackstyleSel,
       tracktype: tracktypeSel, armskin: armskinSel, claw: clawSel, armtype: armtypeSel,
@@ -2714,6 +3830,7 @@ import {
     }
     cfg.clickThrough = document.getElementById('m-click').checked;
     cfg.hotkeyOn = document.getElementById('m-hotkey').checked;
+    cfg.hotkey = hotkeySelect.value;
     cfg.idleActions = idleSel.checked;
     cfg.idleFreq = idlefreqSel.value;
     cfg.signMode = SIGN_MODES[signSel.value] || cfg.signMode;
@@ -2723,6 +3840,8 @@ import {
     // 颜色写进 customSign，用户的自定义色就再也回不来了。
     if (signColorSel.value === CUSTOM) cfg.customSign = normHex(signCustomInput.value) || cfg.customSign;
     cfg.signShape = SIGN_SHAPES[signShapeSel.value] || cfg.signShape;
+    // 拖动位置由 3D 侧回写，这里只做一次归一化，导出时不会漏掉它。
+    cfg.signOffset = normalizeSignOffset(cfg.signOffset);
     // 取色器里的颜色即使当前没选「自定义」也要记住：用户切回自定义时应当
     // 看到自己上次调的那个色，而不是出厂色。
     for (const p of PARTS) cfg[p.configKey] = p.hex();
@@ -2735,11 +3854,16 @@ import {
     cfg.showSys = document.getElementById('m-sys').checked;
     cfg.showScore = scorePanelInput.checked;
     cfg.showRecent = recentPanelInput.checked;
+    cfg.notesRemindMinutes = Number(document.getElementById('m-notes-remind').value) || 0;
+    cfg.notesNotify = document.getElementById('m-notes-notify').checked;
+    cfg.expandSessions = document.getElementById('m-expand-sessions').checked;
+    // 便签的开关是「界面即状态」：面板此刻在不在桌面上就是配置值。
+    cfg.memoOpen = !memoEl.hidden;
     cfg.doNotDisturb = document.getElementById('m-dnd').checked;
     cfg.dndStart = document.getElementById('m-dnd-start').value || cfg.dndStart;
     cfg.dndEnd = document.getElementById('m-dnd-end').value || cfg.dndEnd;
     cfg.agentOrder = [...agentOrder];
-    cfg.personality = cfg.personality || document.body.dataset.personality;
+    cfg.personality = personalitySel.value;
     return cfg;
   }
 
@@ -2785,7 +3909,7 @@ import {
   };
 
   // 键盘出口：工具栏和尺寸条都依赖指针，键盘用户至少要有办法打开设置、
-  // 关掉浮层。Esc 关菜单/尺寸条，Ctrl/⌘+, 开设置（和大多数应用的偏好设置一致）。
+  // 关掉浮层。Esc 关菜单/尺寸条，Ctrl+, 开设置（和大多数应用的偏好设置一致）。
   window.addEventListener('keydown', (e) => {
     // 焦点在文本框/下拉里时，这些是「打字」不是「快捷键」。以前没这层判断：
     // 在铭牌或台词框里按 Esc，会把整块设置连同刚输入还没提交的文字一起关掉；
@@ -2807,7 +3931,7 @@ import {
     if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
     if (e.key === '=' || e.key === '+') { e.preventDefault(); applyScale(scale + 0.1, { persist: true }); }
     // Shift 按着时 '-' 的 e.key 是 '_'：只认 '-' 的话，界面上写着的那条快捷键
-    // （Ctrl/⌘+Shift+-）按下去什么都不会发生。
+    // （Ctrl+Shift+-）按下去什么都不会发生。
     else if (e.key === '-' || e.key === '_') { e.preventDefault(); applyScale(scale - 0.1, { persist: true }); }
     else if (e.key === '0') { e.preventDefault(); applyScale(1, { persist: true }); }
   });
@@ -2869,9 +3993,12 @@ import {
     'autoScene', 'dayScene', 'nightScene', 'nightStart', 'nightEnd', 'motion',
     'idleActions', 'idleFreq', 'halo', 'agentOrder', 'poses', 'phrases', 'nameplate', 'sound', 'soundStyle',
     'soundVolume', 'soundDone', 'notifyDone', 'dailyGoalHours', 'clickAction', 'doubleClick', 'muteMinutes', 'wear', 'finish',
-    'voice', 'clickThrough', 'hotkeyOn', 'showLabels', 'showOffline', 'showModel', 'maxRows', 'showSys',
+    'voice', 'clickThrough', 'hotkeyOn', 'hotkey', 'showLabels', 'showOffline', 'showModel', 'maxRows', 'showSys', 'sysMotion',
     'showScore', 'showRecent', 'doNotDisturb', 'dndStart', 'dndEnd', 'customSkin', 'customEye', 'customTrack', 'customArm',
-    'customSign', 'presets', 'aliases', 'mutedAgents', 'signMode', 'signPos', 'signColor', 'signShape', 'decoration'];
+    'notesRemindMinutes', 'notesNotify', 'memoOpen', 'expandSessions',
+    'stuckBusyMin', 'stuckWaitMin',
+    'customSign', 'presets', 'aliases', 'mutedAgents', 'mutedSoundAgents', 'agentColors', 'agents',
+    'signMode', 'signPos', 'signColor', 'signShape', 'signOffset', 'decoration', 'personality'];
   // "HH:MM"（24 小时制）。勿扰时间是要拿去和当前时间比较的，一个随手写的
   // "abc" 会让整段时间静默失效：界面显示「已开启」，而那段时间永远不会来。
   const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -2906,6 +4033,10 @@ import {
         && v.every((x) => typeof x === 'string' && x.length <= 64)) out[k] = v;
       else if (k === 'poses' && v && typeof v === 'object' && !Array.isArray(v)
         && Object.values(v).every((x) => typeof x === 'string' && x.length <= 16)) out[k] = v;
+      else if (k === 'signOffset' && v && typeof v === 'object' && !Array.isArray(v)) {
+        const x = Number(v.x); const y = Number(v.y);
+        if (Number.isFinite(x) && Number.isFinite(y)) out[k] = normalizeSignOffset({ x, y });
+      }
       else if (k === 'presets' && v && typeof v === 'object' && !Array.isArray(v)
         && JSON.stringify(v).length <= 20000) out[k] = v;
       else if (k === 'aliases' && v && typeof v === 'object' && !Array.isArray(v)) {
@@ -2916,6 +4047,27 @@ import {
           if (agent === '__proto__' || !/^[\w-]{1,32}$/.test(agent)) continue;
           if (typeof name !== 'string' || !name.trim()) continue;
           map[agent] = name.trim().slice(0, 10);
+        }
+        out[k] = map;
+      } else if (k === 'agentColors' && v && typeof v === 'object' && !Array.isArray(v)) {
+        // 软件展示色：只收合法 agent 键 + 合法十六进制，别的颜色渲染不出来。
+        const map = {};
+        for (const [agent, color] of Object.entries(v)) {
+          if (agent === '__proto__' || !/^[\w-]{1,32}$/.test(agent)) continue;
+          const hex = normHex(color);
+          if (hex) map[agent] = hex;
+        }
+        out[k] = map;
+      } else if (k === 'agents' && v && typeof v === 'object' && !Array.isArray(v)) {
+        // 日志目录覆盖：只收 { dir: "..." }，长度和键名都收窄。导入别人的配置
+        // 不应该有机会往 agents 里塞执行路径之外的东西。
+        const map = {};
+        for (const [agent, entry] of Object.entries(v)) {
+          if (agent === '__proto__' || !/^[\w-]{1,32}$/.test(agent)) continue;
+          if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+          if (typeof entry.dir !== 'string') continue;
+          const dir = entry.dir.trim().slice(0, 512);
+          if (dir) map[agent] = { dir };
         }
         out[k] = map;
       }
@@ -2946,6 +4098,10 @@ import {
       const n = Math.round(out.maxRows);
       out.maxRows = n >= 2 && n <= 8 ? n : 5;
     }
+    // 系统面板动效只有三档；别的字符串会让 data-motion 变成一个没有样式的值。
+    if (out.sysMotion !== undefined) {
+      out.sysMotion = ['always', 'load', 'off'].includes(out.sysMotion) ? out.sysMotion : 'always';
+    }
     // 勿扰时间必须是真时间：写不出 HH:MM 就整条丢掉（保留当前设置），
     // 而不是存一个让这段静音永远不触发的字符串。
     for (const k of ['dndStart', 'dndEnd']) {
@@ -2962,6 +4118,11 @@ import {
       if (!TIME_RE.test(out[k])) delete out[k];
     }
     if (out.autoScene !== undefined) out.autoScene = !!out.autoScene;
+    // 全局快捷键只接受主进程白名单里的组合：其他字符串注册不上去，界面还会
+    // 显示一个按了没反应的键。
+    if (out.hotkey !== undefined) {
+      out.hotkey = HOTKEY_CHOICES.some(([v]) => v === out.hotkey) ? out.hotkey : HOTKEY_CHOICES[0][0];
+    }
     // 铭牌在机器人身上只画得下 16 个字（robot3d 会硬截断）。这里就截到同一个
     // 长度，否则设置里看到的和机器人身上写的永远不是同一句话。
     if (out.nameplate !== undefined) out.nameplate = out.nameplate.slice(0, 16);
@@ -2969,6 +4130,12 @@ import {
       if (out[k] === undefined) continue;
       const hex = normHex(out[k]);
       if (hex) out[k] = hex; else delete out[k];
+    }
+    for (const key of ['stuckBusyMin', 'stuckWaitMin']) {
+      if (out[key] !== undefined) {
+        const n = Math.round(Number(out[key]));
+        out[key] = n >= 1 && n <= 240 ? n : (key === 'stuckBusyMin' ? 15 : 10);
+      }
     }
     return out;
   }
@@ -3017,6 +4184,142 @@ import {
     reader.readAsText(file);
     e.target.value = '';
   });
+
+  // ---- 工作记录导出 ----
+  // 统计一直在本机，用户却没有办法把它带走。日报/CSV 都从 lastSnap.stats 生成，
+  // 不额外读盘：看到的就是统计缓存里的同一份数字。名字走 displayName，
+  // 但 CSV 额外保留原始 agent 键，方便脚本按稳定的 id 汇总。
+  const mdCell = (v) => String(v == null ? '' : v).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ').trim();
+  // agent 名是任意上报方给的字符串，而这份 CSV 会被拿去 Excel / WPS 打开：
+  // 以 = + - @ 开头的单元格会被当成公式执行（DDE、HYPERLINK 类攻击都是这么来的）。
+  // 前置一个单引号是 Excel 认可的字面量前缀，其它解析器看到的也只是多一个可读字符。
+  const csvCell = (v) => {
+    let s = String(v == null ? '' : v);
+    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const statsDays = (stats) => {
+    const out = [];
+    const history = stats && stats.history && typeof stats.history === 'object' ? stats.history : {};
+    for (const [day, h] of Object.entries(history)) {
+      if (!h || typeof h !== 'object') continue;
+      out.push({ day, byAgent: h.byAgent || {}, events: h.events || {} });
+    }
+    if (stats && stats.day) out.push({ day: stats.day, byAgent: stats.byAgent || {}, events: stats.events || {} });
+    return out.sort((a, b) => a.day.localeCompare(b.day));
+  };
+  const dayTotals = ({ byAgent, events }) => {
+    let ms = 0; let done = 0; let error = 0;
+    for (const v of Object.values(byAgent || {})) ms += Number(v) || 0;
+    for (const ev of Object.values(events || {})) {
+      done += Number(ev && ev.done) || 0;
+      error += Number(ev && ev.error) || 0;
+    }
+    return { ms, done, error };
+  };
+  const agentRows = ({ byAgent, events }) => {
+    const names = [...new Set([...Object.keys(byAgent || {}), ...Object.keys(events || {})])];
+    return names.map((agent) => {
+      const ev = (events && events[agent]) || {};
+      return {
+        agent, name: displayName(agent),
+        ms: Number(byAgent && byAgent[agent]) || 0,
+        done: Number(ev.done) || 0, error: Number(ev.error) || 0,
+      };
+    }).filter((r) => r.ms > 0 || r.done || r.error)
+      .sort((a, b) => (b.ms - a.ms) || a.name.localeCompare(b.name));
+  };
+  function reportMarkdown(stats) {
+    const days = statsDays(stats);
+    const today = days.find((d) => stats && d.day === stats.day) || days[days.length - 1];
+    const rows = today ? agentRows(today) : [];
+    const t = today ? dayTotals(today) : { ms: 0, done: 0, error: 0 };
+    const range = days.length ? `${days[0].day} 至 ${days[days.length - 1].day}` : '无数据';
+    const sum = (arr) => arr.reduce((acc, d) => {
+      const x = dayTotals(d);
+      acc.ms += x.ms; acc.done += x.done; acc.error += x.error;
+      return acc;
+    }, { ms: 0, done: 0, error: 0 });
+    const week = sum(days.slice(-7));
+    const month = sum(days.slice(-30));
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const out = [
+      '# baoanlight 工作记录',
+      '',
+      `- 生成时间：${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} `
+        + `${pad(now.getHours())}:${pad(now.getMinutes())}`,
+      `- 数据范围：${range}`,
+      '',
+      `## 今天（${today ? today.day : '无'}）`,
+      '',
+      '| 软件 | 忙碌 | 完成 | 出错 |',
+      '| --- | ---: | ---: | ---: |',
+      ...rows.map((r) => `| ${mdCell(r.name)} | ${fmtDur(r.ms)} | ${r.done} | ${r.error} |`),
+      `| **合计** | ${fmtDur(t.ms)} | ${t.done} | ${t.error} |`,
+      '',
+      '## 最近 7 个有记录的日子',
+      '',
+      `- 忙碌：${fmtDur(week.ms)}`,
+      `- 完成：${week.done} · 出错：${week.error}`,
+      '',
+      '## 最近 30 个有记录的日子',
+      '',
+      `- 忙碌：${fmtDur(month.ms)}`,
+      `- 完成：${month.done} · 出错：${month.error}`,
+      '',
+      '## 按天',
+      '',
+      '| 日期 | 忙碌 | 完成 | 出错 |',
+      '| --- | ---: | ---: | ---: |',
+      ...days.slice(-30).map((d) => {
+        const x = dayTotals(d);
+        return `| ${d.day} | ${fmtDur(x.ms)} | ${x.done} | ${x.error} |`;
+      }),
+      '',
+    ];
+    return out.join('\n');
+  }
+  function reportCsv(stats) {
+    const lines = ['date,agent,name,minutes,done,error'];
+    for (const d of statsDays(stats).slice(-30)) {
+      for (const r of agentRows(d)) {
+        lines.push([
+          d.day, csvCell(r.agent), csvCell(r.name),
+          Math.round(r.ms / 60000), r.done, r.error,
+        ].join(','));
+      }
+    }
+    // Excel 打开 UTF-8 CSV 需要 BOM，否则中文软件名会变成乱码。
+    return `\ufeff${lines.join('\r\n')}\r\n`;
+  }
+  const downloadText = (filename, text, type) => {
+    const blob = new Blob([text], { type });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    // 必须挂进 DOM 才能 click；revoke 要延后，否则下载还没开始 URL 就被作废。
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  document.getElementById('m-report-md').onclick = () => {
+    const stats = lastSnap && lastSnap.stats;
+    if (!stats) { flashNote('还没有可导出的统计'); return; }
+    downloadText(`baoanlight-report-${stats.day || 'today'}.md`,
+      reportMarkdown(stats), 'text/markdown;charset=utf-8');
+    flashNote('日报已导出');
+  };
+  document.getElementById('m-report-csv').onclick = () => {
+    const stats = lastSnap && lastSnap.stats;
+    if (!stats) { flashNote('还没有可导出的统计'); return; }
+    downloadText(`baoanlight-report-${stats.day || 'today'}.csv`,
+      reportCsv(stats), 'text/csv;charset=utf-8');
+    flashNote('CSV 已导出');
+  };
+
   document.getElementById('m-quit').onclick = () => (inElectron ? bridge.quit() : window.close());
 
   // ---------------------------------------------------------------- drag
@@ -3029,9 +4332,38 @@ import {
   let pokeTimes = [];   // 三连击彩蛋的时间戳
   let pendingReaction = null;   // 延迟派发的单击/双击反应（等确认不是连击再发）
   let comfortTimer = null;   // 长按 1 秒 = 安抚
+  // 广告牌拖动。3D 牌子在 canvas 里，DOM 拿不到它的节点，所以由 robot3d 每帧
+  // 把它的屏幕矩形写在 #bot.dataset.signRect 上（单位是 #bot 的内部 CSS 像素）。
+  // 这里只做命中测试和像素增量的转发，世界坐标换算留在 3D 那一侧。
+  let signDrag = null;       // { id, sx, sy, k }
+  const signHit = (clientX, clientY) => {
+    const raw = botEl.dataset.signRect;
+    if (!raw) return null;
+    const [x, y, w, h] = raw.split(',').map(Number);
+    if (!(w > 0 && h > 0)) return null;
+    const r = botEl.getBoundingClientRect();
+    // 窗口整体有 transform: scale()：dataset 是内部像素，指针是屏幕像素。
+    const k = botEl.clientWidth ? r.width / botEl.clientWidth : 1;
+    const left = r.left + x * k;
+    const top = r.top + y * k;
+    if (clientX < left || clientX > left + w * k) return null;
+    if (clientY < top || clientY > top + h * k) return null;
+    return { k: k || 1 };
+  };
   robot.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     if (e.target.closest('button, input, .pill')) return;
+    // 按在广告牌上 = 搬牌子，不是搬机器人。抢在窗口拖动之前处理，否则整台
+    // 机器会跟着光标走，而牌子反而留在原地。
+    const hit = signHit(e.clientX, e.clientY);
+    if (hit) {
+      signDrag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, k: hit.k };
+      try { robot.setPointerCapture(e.pointerId); } catch { /* 老引擎不支持 */ }
+      robot.style.cursor = 'move';
+      window.dispatchEvent(new CustomEvent('bao:sign-drag-start'));
+      e.preventDefault();
+      return;
+    }
     pressAt = Date.now();
     // 用**屏幕坐标**判断「松手时有没有移动过」。窗口是跟着光标走的，所以拖动
     // 机器人时 clientX/clientY 几乎不变 —— 拿它判断的话，每次拖拽都会被当成
@@ -3056,6 +4388,14 @@ import {
   });
   const endDrag = (e) => {
     clearTimeout(comfortTimer);
+    // 搬牌子：收尾时让 3D 那边把最终偏移回传，由本文件写进配置。
+    if (signDrag) {
+      signDrag = null;
+      robot.style.cursor = '';
+      window.dispatchEvent(new CustomEvent('bao:sign-drag-end'));
+      pressAt = 0;
+      return;
+    }
     if (dragging) {
       dragging = false;
       if (inElectron) bridge.dragEnd();
@@ -3106,8 +4446,35 @@ import {
   // 按下后真的移动了（拖窗口）就取消长按安抚：否则按住拖过 1 秒，机器人会在
   // 被搬动的过程中突然眯眼+抖动（安抚的抖动叠在位移上），像卡住了一样。
   window.addEventListener('pointermove', (e) => {
+    if (signDrag && e.pointerId === signDrag.id) {
+      const k = signDrag.k || 1;
+      window.dispatchEvent(new CustomEvent('bao:sign-drag', {
+        detail: {
+          dx: (e.clientX - signDrag.sx) / k,
+          dy: (e.clientY - signDrag.sy) / k,
+        },
+      }));
+      return;
+    }
     if (!pressAt || !e.buttons) return;
     if (Math.hypot(e.screenX - pressX, e.screenY - pressY) > 5) clearTimeout(comfortTimer);
+  });
+  // 光标停在牌子上时换成「可搬动」的手型：不然没人会想到这块 3D 牌子能拖。
+  robot.addEventListener('pointermove', (e) => {
+    if (dragging || signDrag) return;
+    robot.style.cursor = signHit(e.clientX, e.clientY) ? 'move' : '';
+  });
+  robot.addEventListener('pointerleave', () => {
+    if (!dragging && !signDrag) robot.style.cursor = '';
+  });
+  // 双击广告牌 = 回到默认位置。拖动之后想复原时，不必再进设置翻一页。
+  robot.addEventListener('dblclick', (e) => {
+    if (!signHit(e.clientX, e.clientY)) return;
+    e.preventDefault();
+    cfg.signOffset = { x: 0, y: 0 };
+    if (inElectron) saveConfig({ signOffset: cfg.signOffset });
+    applySign();
+    flashNote('广告牌已复位');
   });
 
   // ---------------------------------------------------------------- controls
@@ -3144,8 +4511,7 @@ import {
       }
       // 人格种子：首次随机固定一个，之后不再变——它「天生」是这脾气。
       if (!cfg.personality) {
-        const PERSONALITIES = ['活泼', '沉稳', '话痨', '害羞'];
-        cfg.personality = PERSONALITIES[Math.floor(Math.random() * PERSONALITIES.length)];
+        cfg.personality = PERSONALITY_NAMES[Math.floor(Math.random() * PERSONALITY_NAMES.length)];
         saveConfig({ personality: cfg.personality });
       }
       // 软件改名：只保留短字符串，脏值（手改配置、旧版本导入、空名字）丢掉。
@@ -3161,7 +4527,25 @@ import {
       cfg.mutedAgents = Array.isArray(cfg.mutedAgents)
         ? [...new Set(cfg.mutedAgents.filter((a) => typeof a === 'string' && /^[\w-]{1,32}$/.test(a)))]
         : [];
-      document.body.dataset.personality = cfg.personality;
+      cfg.mutedSoundAgents = Array.isArray(cfg.mutedSoundAgents)
+        ? [...new Set(cfg.mutedSoundAgents.filter((a) => typeof a === 'string' && /^[\w-]{1,32}$/.test(a)))]
+        : [];
+      // 软件自定义色：只收合法 agent 键 + 合法十六进制。手改配置塞进来的
+      // "red" / 超长字符串不能让战绩条变成一块透明或黑色。
+      const rawColors = cfg.agentColors && typeof cfg.agentColors === 'object' && !Array.isArray(cfg.agentColors)
+        ? cfg.agentColors : {};
+      const cleanColors = {};
+      for (const [agent, color] of Object.entries(rawColors)) {
+        if (agent === '__proto__' || !/^[\w-]{1,32}$/.test(agent)) continue;
+        const hex = normHex(color);
+        if (hex) cleanColors[agent] = hex;
+      }
+      cfg.agentColors = cleanColors;
+      // 每个软件的日志目录：watcher 读的是同一份结构，界面只负责写。
+      cfg.agents = cfg.agents && typeof cfg.agents === 'object' && !Array.isArray(cfg.agents)
+        ? { ...cfg.agents } : {};
+      // 人格：脏值（手改配置、旧版本、导入的怪字符串）回落到出厂脾气。
+      setPersonality(cfg.personality);
       setThemeMode(cfg.theme);
       setCollapsed(!!cfg.collapsed);
       goalSel.value = String([0, 2, 4, 6, 8].includes(Number(cfg.dailyGoalHours)) ? Number(cfg.dailyGoalHours) : 0);
@@ -3178,15 +4562,32 @@ import {
       notifyDoneInput.checked = cfg.notifyDone !== false;
       document.getElementById('m-click').checked = cfg.clickThrough !== false;
       document.getElementById('m-hotkey').checked = cfg.hotkeyOn !== false;
+      cfg.hotkey = HOTKEY_CHOICES.some(([v]) => v === cfg.hotkey) ? cfg.hotkey : HOTKEY_CHOICES[0][0];
+      hotkeySelect.value = cfg.hotkey;
+      hotkeySelect.disabled = !hotkeyInput.checked;
       document.getElementById('m-labels').checked = cfg.showLabels !== false;
       document.getElementById('m-offline').checked = cfg.showOffline !== false;
       document.getElementById('m-model').checked = cfg.showModel !== false;
       document.getElementById('m-sys').checked = cfg.showSys !== false;
       if (cfg.showSys === false) renderSys(null);
+      cfg.sysMotion = ['always', 'load', 'off'].includes(cfg.sysMotion) ? cfg.sysMotion : 'always';
+      sysMotionSel.value = cfg.sysMotion;
+      applySysMotion();
+      stuckBusyInput.value = String(cfg.stuckBusyMin >= 1 && cfg.stuckBusyMin <= 240 ? cfg.stuckBusyMin : 15);
+      stuckWaitInput.value = String(cfg.stuckWaitMin >= 1 && cfg.stuckWaitMin <= 240 ? cfg.stuckWaitMin : 10);
       scorePanelInput.checked = cfg.showScore !== false;
       panelScore.hidden = cfg.showScore === false;
       recentPanelInput.checked = cfg.showRecent !== false;
       panelRecent.hidden = cfg.showRecent === false;
+      const nrMins = Number(cfg.notesRemindMinutes);
+      document.getElementById('m-notes-remind').value =
+        String(NOTES_REMIND_CHOICES.includes(nrMins) ? nrMins : 30);
+      document.getElementById('m-notes-notify').checked = cfg.notesNotify !== false;
+      document.getElementById('m-notes-open').checked = cfg.memoOpen === true;
+      // 上次关掉机器人时便签还开着：这次启动也把它放回桌面。不抢焦点 ——
+      // 开机时用户可能正在别的窗口里打字。
+      if (cfg.memoOpen === true) setMemo(true, { persist: false, focus: false });
+      document.getElementById('m-expand-sessions').checked = cfg.expandSessions === true;
       document.getElementById('m-dnd').checked = !!cfg.doNotDisturb;
       // 手改过的配置里可能是一个写不出 HH:MM 的值。直接塞进 input[type=time]
       // 会得到一个空框，而空框让这段勿扰永远不生效 —— 回落到出厂时段更诚实。
@@ -3219,7 +4620,7 @@ import {
       const fn = FINISH_NAMES.includes(cfg.finish) ? cfg.finish : '标准';
       finishSel.value = fn;
       window.dispatchEvent(new CustomEvent('bao:finish', { detail: { finish: fn } }));
-      const sm = ['top', 'total', 'cycle', 'off'].includes(cfg.signMode) ? cfg.signMode : 'top';
+      const sm = Object.values(SIGN_MODES).includes(cfg.signMode) ? cfg.signMode : 'top';
       signSel.value = Object.keys(SIGN_MODES).find((k) => SIGN_MODES[k] === sm) || '最多';
       const sp = cfg.signPos === 'left' ? 'left' : 'right';
       signPosSel.value = Object.keys(SIGN_POS).find((k) => SIGN_POS[k] === sp) || '右侧';
@@ -3237,7 +4638,15 @@ import {
       const scol = signColorValue();
       const sh = ['圆角', '胶囊', '方正'].includes(cfg.signShape) ? cfg.signShape : '圆角';
       signShapeSel.value = sh;
-      window.dispatchEvent(new CustomEvent('bao:sign', { detail: { mode: sm, pos: sp, color: scol, shape: sh } }));
+      cfg.signOffset = normalizeSignOffset(cfg.signOffset);
+      window.dispatchEvent(new CustomEvent('bao:sign', {
+        detail: {
+          mode: sm, pos: sp, color: scol, shape: sh,
+          goalHours: Math.max(0, Math.min(12, Number(cfg.dailyGoalHours) || 0)),
+          days: daysTogether(),
+          offset: cfg.signOffset,
+        },
+      }));
       const bd = BODY_NAMES.includes(cfg.body) ? cfg.body : '标准';
       bodySel.value = bd;
       window.dispatchEvent(new CustomEvent('bao:body', { detail: { body: bd } }));
@@ -3280,6 +4689,8 @@ import {
       sceneSel.value = sc;
       window.dispatchEvent(new CustomEvent('bao:scene', { detail: { scene: sc } }));
       // 自动切换打开时，上面按 cfg.scene 设的那一下要被时间决定的结果覆盖掉。
+      // 开关本身也必须恢复：只把下拉置灰、开关却显示「关」，界面会自相矛盾。
+      autoSceneInput.checked = !!cfg.autoScene;
       refreshAutoSceneUI();
       lastAutoScene = '';
       applyAutoScene();
@@ -3302,6 +4713,7 @@ import {
         customOrder = true;
       }
       renderOrderUI();
+      renderAgentDirs();
       // 状态手势：默认映射来自 shared/palette.mjs（robot3d.js 读同一份）。
       const poses = cfg.poses || {};
       for (const st of POSE_STATE_KEYS) {
@@ -3312,6 +4724,8 @@ import {
       for (const p of PARTS) p.paint();
       updateSwatch('scene-swatch', SCENE_COLORS[sceneSel.value]);
       applyScale(cfg.scale || 1, { persist: false, anchor: 'top', expand: false });
+      // 所有控件都就位之后，再画顶部摘要：早画一次会把「配置里的值」显示成默认值。
+      renderLookSummary();
       fit();
     });
     // 任何一次过渡结束都重排一次的话，fuel 高度、pill 宽度、`.on` 透明度……

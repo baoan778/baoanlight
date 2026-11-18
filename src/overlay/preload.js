@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld('bao', {
   // 开机自启由主进程代发（它会带上 token，并让 server 在 node 进程里安装）。
   getAutostart: () => ipcRenderer.invoke('autostart:get'),
   setAutostart: (on) => ipcRenderer.invoke('autostart:set', !!on),
+  // 桌面便签：写操作由主进程代发（它会带上 token），渲染进程看不到秘密。
+  getNotes: () => ipcRenderer.invoke('notes:get'),
+  saveNotes: (action) => ipcRenderer.invoke('notes:save', action),
   hotRect: (rect) => ipcRenderer.send('window:hotrect', rect),
   contentSize: (size) => ipcRenderer.send('window:size', size),
   dragStart: () => ipcRenderer.send('window:drag-start'),

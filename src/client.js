@@ -53,10 +53,10 @@ function post(pathname, payload, { timeout = 1200 } = {}) {
   });
 }
 
-function get(pathname, { timeout = 1200 } = {}) {
+function get(pathname, { timeout = 1200, port } = {}) {
   return new Promise((resolve) => {
     const req = http.get(
-      { host: '127.0.0.1', port: config.runningPort(), path: pathname, timeout },
+      { host: '127.0.0.1', port: Number(port) || config.runningPort(), path: pathname, timeout },
       (res) => {
         let out = '';
         res.on('data', (c) => (out += c));
@@ -80,7 +80,13 @@ const health = async () => {
   const r = await get('/health');
   return r && r.name === 'baoanlight' ? r : null;
 };
+// 指定端口问一次：`bao start --port X` 要确认「端口文件里记着的那个旧实例」
+// 是不是还活着，而运行时端口函数只会返回这次的 X。
+const healthAt = async (port) => {
+  const r = await get('/health', { port });
+  return r && r.name === 'baoanlight' ? r : null;
+};
 const snapshot = () => get('/state');
 const quitServer = () => post('/quit', {});
 
-module.exports = { post, get, setState, noteUnknown, health, snapshot, quitServer };
+module.exports = { post, get, setState, noteUnknown, health, healthAt, snapshot, quitServer };

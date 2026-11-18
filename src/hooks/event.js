@@ -32,8 +32,37 @@ const CLAUDE_STYLE = {
   PreCompact: 'busy',
   Notification: 'waiting',
   Stop: 'idle',
+  // CodeBuddy / WorkBuddy 在会话彻底结束时补发 FinalStop；和 claude.js 一样
+  // 当作一次完成，而不是「无法识别的事件」。
+  FinalStop: 'done',
   SessionEnd: 'offline',
 };
+
+// 与 hooks/claude.js 同一套判断：Claude Code 的 Notification 既可能是「要你
+// 授权」，也可能只是「我闲着，等你输入」。后者若也亮黄灯，waiting 不会自己
+// 衰减，灯会一直停在错误的状态上。
+const IDLE_NOTICE = /waiting for (your|user)[\s-]+input|needs? (your|user)[\s-]+input|awaiting (your )?input/i;
+
+function claudeStyleState(name, evt) {
+  if (name !== 'Notification') {
+    // 一调用就停下来等人的工具（提问、退出计划模式）：这是黄灯，不是绿灯。
+    if (name === 'PreToolUse'
+      && /ask_?user|ask_?question|exit_?plan_?mode|user_?input|request_?approval|permission/i
+        .test(String(evt.tool_name || ''))) {
+      return 'waiting';
+    }
+    // 和 hooks/claude.js 同一套失败判定：工具结果里显式的 is_error / success:false
+    // 是唯一可靠的失败信号。通用钩子既然认 Claude 的事件形状，就不能在失败时
+    // 继续亮绿灯 —— 两个入口对同一件事给出两种颜色，灯就在自相矛盾。
+    if (name === 'PostToolUse' && evt.tool_response && typeof evt.tool_response === 'object'
+      && (evt.tool_response.is_error === true || evt.tool_response.success === false)) {
+      return 'error';
+    }
+    return CLAUDE_STYLE[name];
+  }
+  const text = `${evt.message || ''} ${evt.title || ''}`.trim();
+  return text && IDLE_NOTICE.test(text) ? 'idle' : 'waiting';
+}
 
 function parseArgs(argv) {
   const out = { flags: {}, positional: [] };
@@ -69,7 +98,7 @@ function pickState(evt, explicit) {
   // 只认自己表里的键：`CLAUDE_STYLE['constructor']` 会顺着原型链返回一个函数
   // （真值），于是一个 `{"hook_event_name":"constructor"}` 的载荷就能绕过
   // 「未知事件不许动灯」，让状态变成一个函数、JSON 里丢掉、服务端按 idle 建会话。
-  if (name && Object.prototype.hasOwnProperty.call(CLAUDE_STYLE, name)) return CLAUDE_STYLE[name];
+  if (name && Object.prototype.hasOwnProperty.call(CLAUDE_STYLE, name)) return claudeStyleState(name, evt);
 
   // Defer to the log watcher's table so a new agent only needs one vocabulary.
   const { classify } = require('../adapters/log-watch');
@@ -100,12 +129,17 @@ async function run(positional = [], flags = {}) {
 
   const cwd = evt.cwd || process.cwd();
 
+  const eventName = evt.hook_event_name || evt.event || evt.event_type || evt.eventType
+    || evt.type || evt.kind || evt.name || '';
+
   await setState({
     session: `${agent}:${String(sid).slice(0, 64)}`,
     agent,
     state,
     detail: String(detail).slice(0, 120),
     cwd: cwd || '',
+    source: 'hook',
+    event: eventName,
   });
 }
 

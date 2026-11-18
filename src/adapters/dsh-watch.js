@@ -28,13 +28,7 @@ const { setState } = require('../client');
 const { keepAliveWith } = require('./watchdog');
 
 function appDataDir() {
-  if (process.platform === 'win32') {
-    return process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-  }
-  if (process.platform === 'darwin') {
-    return path.join(os.homedir(), 'Library', 'Application Support');
-  }
-  return process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+  return process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
 }
 
 // Where the projection directory usually is, best guess first.
@@ -90,12 +84,24 @@ function deriveDshState(record) {
 // that is the one number here that behaves like a fuel gauge: it only grows,
 // and it is what will eventually stop the turn. Reported as "remaining", like
 // every other fuel source, so the gauge has exactly one meaning.
+//
+// 只认 provider 锚定的数字：`contextPressure.pressureTokens` 是最近一次请求真实
+// 上报的 prompt 大小，`projectedTokens` 再叠加那次采样之后表面的增减估计（见
+// dsh-token-meter 的 projection.d.ts）。`contextBreakdown.surfaceTokens` 是启发式的
+// 「组成」估算，文档明确说不要当总量 —— 它会超过窗口，拿它算剩余会得到 0%，
+// 一个其实还剩 86% 的忙碌会话被报成「快用完了」，这是最糟的一种假警报。
 function deriveDshFuel(record) {
   const rows = record?.rows || record?.record?.rows || record;
   const pressure = rows?.contextPressure?.val;
-  const used = Number(pressure?.surfaceTokens);
   const window = Number(pressure?.contextWindow);
-  if (!Number.isFinite(used) || !Number.isFinite(window) || window <= 0) return null;
+  if (!Number.isFinite(window) || window <= 0) return null;
+  const pick = (v) => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const used = pick(pressure?.projectedTokens) ?? pick(pressure?.pressureTokens);
+  if (used === null) return null;
   return {
     remaining: Math.max(0, Math.min(100, (1 - used / window) * 100)),
     label: 'context',
@@ -115,11 +121,16 @@ function sessionName(file) {
 }
 
 function run(opts = {}) {
-  const dir = opts.dir || projectionDirs().find((d) => {
+  // An explicit --dir wins, then the user's configured override (the same
+  // precedence every other watcher gets through agents.logDir), then the probe.
+  const configured = require('../config').load().agents?.deepseek?.dir;
+  const dir = opts.dir || configured || projectionDirs().find((d) => {
     try { return fs.existsSync(d); } catch { return false; }
   });
 
   if (!dir || !fs.existsSync(dir)) {
+    // In `bao watch all` this watcher must fail alone, not kill the process.
+    if (opts.throwOnMissing) throw new Error('no DeepSeek Harness session projections found');
     console.error('No DeepSeek Harness session projections found.');
     console.error('Looked in:');
     for (const d of projectionDirs()) console.error(`  ${d}`);
@@ -134,6 +145,9 @@ function run(opts = {}) {
 
   const pollMs = Number(opts.interval) || 1000;
   const lookbackMs = Number(opts.lookback) || 30 * 60 * 1000;
+  // 文件在变、状态没变 = 它还在干活。每隔这么久重报一次，把服务端的「静默」
+  // 计时推新；否则一个长时间跑工具的忙碌会话 90 秒后变暗、30 分钟后被丢掉。
+  const heartbeatMs = Number(opts.heartbeat) > 0 ? Number(opts.heartbeat) : 20_000;
   const quiet = !!opts.quiet;
   const tracked = new Map();   // file -> { session, state, mtimeMs }
 
@@ -142,6 +156,7 @@ function run(opts = {}) {
   const scan = () => {
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    const seen = new Set();
 
     for (const e of entries) {
       if (!e.isFile() || !/^session-.*\.json$/i.test(e.name)) continue;
@@ -149,9 +164,13 @@ function run(opts = {}) {
 
       let st;
       try { st = fs.statSync(file); } catch { continue; }
+      // 记下「文件还在」——即使它已经老到不在 lookback 里。老文件只是不再读，
+      // 不代表会话被删了；把它当成消失会误熄一盏仍该亮着的黄灯。
+      seen.add(file);
+      // 切到别的目录、或会话被清理时，lookback 之外的文件不再回看。
       if (st.mtimeMs < Date.now() - lookbackMs) continue;
 
-      const t = tracked.get(file) || { session: sessionName(file), state: null, mtimeMs: 0 };
+      const t = tracked.get(file) || { session: sessionName(file), state: null, mtimeMs: 0, reportedAt: 0 };
       tracked.set(file, t);
       if (st.mtimeMs === t.mtimeMs) continue;
       t.mtimeMs = st.mtimeMs;
@@ -166,21 +185,30 @@ function run(opts = {}) {
       // idle means real work just finished — announcing it is honest, and it is
       // also the only way the context gauge can appear for a session that was
       // already finished when the watcher started.
+      const now = Date.now();
       const stateChanged = !!next && next !== t.state;
       const fuelChanged = !!fuel
         && (!t.fuel || Math.round(fuel.remaining) !== Math.round(t.fuel.remaining));
-      if (!stateChanged && !fuelChanged) continue;
+      // 文件刚刚被重写过（能走到这里就说明 mtime 变了），而状态还是忙碌/等待：
+      // 这是一条「还活着」的证据，要重报一次。
+      const alive = !!next && (next === 'busy' || next === 'waiting')
+        && next === t.state && now - (t.reportedAt || 0) > heartbeatMs;
+      if (!stateChanged && !fuelChanged && !alive) continue;
 
       if (stateChanged) t.state = next;
       if (fuel) t.fuel = fuel;
+      t.reportedAt = now;
 
       const { cwd } = identityOf(rec);
       const payload = {
         session: `deepseek:${t.session}`,
         agent: 'deepseek',
         cwd: cwd || '',
+        source: 'file',
+        event: 'projection',
+        pulse: alive,
       };
-      if (stateChanged) {
+      if (stateChanged || alive) {
         payload.state = next;
         payload.detail = next === 'waiting' ? 'needs your answer'
           : next === 'busy' ? 'working'
@@ -194,6 +222,17 @@ function run(opts = {}) {
       setState(payload);
       if (!quiet && stateChanged) {
         console.log(`  ${new Date().toISOString().slice(11, 19)}  ${t.session.slice(0, 8)} -> ${next}`);
+      }
+    }
+
+    // 投影文件被删掉（会话清理、切换工作区）就是「证据没了」：不留一盏
+    // 替已经不存在的会话说话的灯。原来 tracked 只增不减，这类会话会一直
+    // 停在最后状态，直到服务端 6 小时 TTL。
+    for (const [file, t] of [...tracked]) {
+      if (seen.has(file)) continue;
+      tracked.delete(file);
+      if (t.state && t.state !== 'offline') {
+        setState({ session: `deepseek:${t.session}`, agent: 'deepseek', state: 'offline' });
       }
     }
   };

@@ -3,6 +3,10 @@ node_modules/
 *.signalhead-backup-*
 .DS_Store
 
+# 本地截图 / 临时分享产物，不属于项目源码
+.screenshots/
+.trae-html-share-packages/
+
 # playwright
 test-results/
 playwright-report/

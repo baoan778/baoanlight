@@ -1,11 +1,13 @@
 MIT License
 
 Copyright (c) 2026 baoan778
+https://github.com/baoan778/baoanlight
 
 This project is a derivative work of signalhead
 (https://github.com/deepak-hp/signalhead), which is also MIT licensed.
-Copyright (c) the signalhead contributors, whose permission notice is
-reproduced in full by the text below.
+The original portions remain under the upstream notice, reproduced verbatim:
+
+Copyright (c) 2026 ai-traffic-light contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

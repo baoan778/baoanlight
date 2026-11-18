@@ -30,12 +30,6 @@ async function probeWindows() {
   return /"claude\.exe"/i.test(out);
 }
 
-async function probeUnix() {
-  // pgrep exits non-zero when nothing matches, which run() turns into ''.
-  const out = await run('pgrep', ['-f', '(^|/)claude( |$)']);
-  return out.trim().length > 0;
-}
-
 // Cached, and in-flight work is shared: this is polled from a server that may
 // have several overlays asking, and spawning tasklist per request would be a
 // silly way to spend a user's battery.
@@ -44,7 +38,7 @@ function claudeRunning({ ttl = CACHE_MS } = {}) {
   if (cache.probe) return cache.probe;
   if (now - cache.at < ttl) return Promise.resolve(cache.value);
 
-  const next = (process.platform === 'win32' ? probeWindows() : probeUnix())
+  const next = probeWindows()
     .catch(() => false)
     .then((value) => {
       cache = { at: Date.now(), probe: null, value };
@@ -63,4 +57,4 @@ function reset() {
 // a probe, it only reports what the last one found.
 const lastValue = () => cache.value;
 
-module.exports = { claudeRunning, lastValue, reset, probeWindows, probeUnix };
+module.exports = { claudeRunning, lastValue, reset, probeWindows };

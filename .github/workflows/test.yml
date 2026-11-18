@@ -6,23 +6,38 @@ on:
   pull_request:
   workflow_dispatch:
 
+# The token only needs to read the checkout. Failures are reported through the
+# normal check run, so no write permission is required.
+permissions:
+  contents: read
+
+# A new push supersedes the previous run: cancel it instead of paying for two
+# full matrices that can only disagree about an older commit.
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  # The logic tests. These are the ones that catch real bugs, and they run
-  # everywhere because path handling and process spawning are exactly what
-  # differs between a Mac and a PC.
+  # The logic tests. These are the ones that catch real bugs. baoanlight is a
+  # Windows-only product, so that is the only platform the matrix needs.
   test:
-    name: ${{ matrix.os }} / node ${{ matrix.node }}
-    runs-on: ${{ matrix.os }}
+    name: windows / node ${{ matrix.node }}
+    runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
         node: [20, 22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ matrix.node }}-npm-${{ hashFiles('package-lock.json') }}
+          restore-keys: ${{ runner.os }}-node-${{ matrix.node }}-npm-
 
       # Electron and node-pty are both optional at runtime, and both are large or
       # need a toolchain. The suite must pass without either.
@@ -36,6 +51,11 @@ jobs:
 
       - name: Test
         run: npm test
+
+      # 打包契约：运行文件齐全、测试/密钥不会被打包。只在发布时才查的话，
+      # 一个写坏了的 `files` 会一路活到打 tag 的那天 —— 而那时版本号已经用掉。
+      - name: Package contents
+        run: npm run check:pack
 
       # A smoke test of the actual CLI, because "the modules are correct" and
       # "the tool works when you run it" are different claims.
@@ -66,7 +86,7 @@ jobs:
           node -e "
             const s=require('./.claude/settings.json');
             const n=Object.values(s.hooks).flat().flatMap(g=>g.hooks).length;
-            if(n!==9) throw new Error('expected 9 hooks, got '+n);
+            if(n!==8) throw new Error('expected 8 hooks, got '+n);
             if(!s.permissions) throw new Error('existing settings were clobbered');
           "
           node src/cli.js disconnect claude --scope project
@@ -76,56 +96,55 @@ jobs:
             if(!s.permissions) throw new Error('uninstall damaged unrelated settings');
           "
 
-  # Proves the overlay actually builds and launches a window, which the logic
-  # tests deliberately do not cover.
+  # Proves the Electron window actually builds and launches on Windows, which
+  # the logic tests deliberately do not cover.
   overlay:
-    name: overlay / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+    name: overlay / windows
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-overlay-npm-${{ hashFiles('package-lock.json') }}
+          restore-keys: ${{ runner.os }}-overlay-npm-
       - run: npm install --no-audit --no-fund
       - name: Fetch the Electron runtime
         run: npm run setup
       - name: Electron binary is usable
         run: node -e "const p=require('electron'); require('fs').accessSync(p); console.log('electron at', p)"
 
-      # Linux CI has no display, so the window itself is launched under a virtual
-      # one. This catches a crash-on-start, not how the window looks.
-      - name: Launch the overlay headlessly (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb libgtk-3-0 libnss3 libasound2t64 ||           sudo apt-get install -y -qq xvfb libgtk-3-0 libnss3 libasound2
-          node src/cli.js start --no-overlay --port 4790 &
-          sleep 2
-          xvfb-run -a node -e "
-            const {spawn}=require('child_process');
-            const e=require('electron');
-            const p=spawn(e,['src/overlay/main.js'],{env:{...process.env,BAOANLIGHT_PORT:'4790'},stdio:'inherit'});
-            setTimeout(()=>{ p.kill(); console.log('overlay survived startup'); }, 8000);
-          "
+      # 真正启动 Electron 并驱动窗口：preload 桥、SSE 状态、可见性与置顶。
+      - name: Electron main-process smoke test
+        run: npm run test:electron
 
   # Renders the real overlay and the landing page in a browser and measures them.
   # The logic suite cannot see a clipped glow, a lamp that drifts, or text that
   # fails contrast — this can.
   ui:
-    name: rendered UI
-    runs-on: ubuntu-latest
+    name: rendered UI / windows
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-ui-npm-${{ hashFiles('package-lock.json') }}
+          restore-keys: ${{ runner.os }}-ui-npm-
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.LOCALAPPDATA }}/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+          restore-keys: ${{ runner.os }}-playwright-
       - run: npm install --no-optional --no-audit --no-fund
       - run: npm install -D @playwright/test --no-audit --no-fund
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
       - run: npx playwright test
       - uses: actions/upload-artifact@v4
         if: failure()

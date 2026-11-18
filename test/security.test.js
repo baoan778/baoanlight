@@ -58,10 +58,6 @@ test('a token is generated on first run and kept to the owner', () => {
   assert.match(token, /^[0-9a-f]{64}$/, '32 random bytes, hex');
   const onDisk = fs.readFileSync(path.join(HOME, 'token'), 'utf8').trim();
   assert.equal(onDisk, token, 'the file is what hooks and the CLI read');
-  if (process.platform !== 'win32') {
-    const mode = fs.statSync(path.join(HOME, 'token')).mode & 0o777;
-    assert.equal(mode, 0o600, `token file must not be world-readable, got ${mode.toString(8)}`);
-  }
 });
 
 test('a write without the token is refused and changes nothing', async () => {
@@ -144,6 +140,18 @@ test('a file:// page (Origin: null) is refused', async () => {
   assert.equal(res.status, 403);
 });
 
+// 静态目录只该吐出 overlay 里的页面。`/../package.json` 这类路径一旦被
+// path.resolve 之外的字符串前缀判断放进来，就等于把整个安装目录暴露成本地网页
+// —— 而 package.json 里有版本和依赖，旁边还有 token 文件。URL 解析会先归一化
+// 点段，编码形式则要靠服务端的 resolve + 分隔符前缀校验。
+test('static files cannot escape the overlay directory', async () => {
+  for (const p of ['/../package.json', '/%2e%2e%2fpackage.json', '/..%5cpackage.json', '//etc/passwd']) {
+    const res = await raw({ path: p });
+    assert.equal(res.status, 404, `${p} must not be served`);
+    assert.equal(/"name"\s*:\s*"baoanlight"/.test(res.body), false, `${p} must not leak package.json`);
+  }
+});
+
 test('/quit cannot be triggered by another page', async () => {
   const res = await raw({
     method: 'POST',
@@ -198,6 +206,43 @@ test('the event log records state changes and is readable', async () => {
   assert.equal(res.status, 200);
   const events = JSON.parse(res.body).events || [];
   assert.ok(events.some((e) => /claude logtest → busy/.test(e.what)), `state change was logged: ${JSON.stringify(events)}`);
+});
+
+// 被拒的请求会连查询串一起记进事件日志（排障需要知道是谁没带 token），但日志
+// 本身是免 token 可读的：写请求里的 token 必须被抹掉，绝不能跟着抄进去。
+test('a refused request never writes its token into the readable log', async () => {
+  const secret = 'f'.repeat(64);
+  const res = await raw({ path: `/set/busy?agent=claude&session=leak&token=${secret}` });
+  assert.equal(res.status, 401);
+
+  const log = JSON.parse((await raw({ path: '/log' })).body).events || [];
+  const all = JSON.stringify(log);
+  assert.equal(all.includes(secret), false, 'the token must be redacted');
+  assert.match(all, /token=\*{3}/, 'the attempt itself is still recorded');
+});
+
+// 桌面便签：读免 token，写必须证明「我在这台机器上」。
+test('notes can be read, but only written with the token', async () => {
+  const denied = await raw({
+    method: 'POST',
+    path: '/notes',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'add', text: '不该写进去' }),
+  });
+  assert.equal(denied.status, 401);
+
+  const created = await raw({
+    method: 'POST',
+    path: '/notes',
+    headers: { 'content-type': 'application/json', 'x-bao-token': token },
+    body: JSON.stringify({ action: 'add', text: '写周报' }),
+  });
+  assert.equal(created.status, 200);
+  const data = JSON.parse(created.body);
+  assert.equal(data.open, 1);
+
+  const read = await raw({ path: '/notes' });
+  assert.equal(JSON.parse(read.body).items.some((i) => i.text === '写周报'), true);
 });
 
 // 预检请求不带 token，也不可能带：把它算成写操作会让每个跨源 CORS 预检都

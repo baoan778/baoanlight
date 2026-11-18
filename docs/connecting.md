@@ -1,7 +1,7 @@
 # 接入代理指南
 
 机器人自己不创造状态，它只如实显示「谁在干什么」。接得越准，灯就越可信。
-下面按「越靠前越准」排序，四种主流代理 + 兜底方式，Windows 优先。
+下面按「越靠前越准」排序，四种主流代理 + 兜底方式，面向 Windows。
 
 > 不确定本机装了哪些、该先接哪个？直接跑 **`bao onboard`**，它会探测并引导。
 
@@ -15,7 +15,7 @@
 | WorkBuddy | ★★★☆☆ 四态（任务板）/ ★★★★★（钩子） | 任务板 / 钩子 | `bao watch workbuddy` 或 `bao hook --agent workbuddy` |
 | Gemini / Aider / 其他 CLI | ★★★☆☆（猜） | 伪终端包装 | `bao wrap -- <命令>` |
 | 任意能执行命令的工具 | ★★★★★ | 通用钩子 | `bao hook --agent <name>` |
-| 任意能发 HTTP 的工具 | ★★★★★ | HTTP（写入带 token） | `curl -H "x-bao-token: $(bao token)" http://127.0.0.1:4747/set/busy?...` |
+| 任意能发 HTTP 的工具 | ★★★★★ | HTTP（写入带 token） | 见下方 PowerShell 示例 |
 
 ---
 
@@ -74,7 +74,7 @@ bao wrap -- gemini
 bao wrap -- aider --model sonnet
 ```
 
-输出在流动 = 黄；停在确认提示上 = 红；停下来但没提示 = 绿。**这是很好的猜测，不是事实。**
+输出在流动 = 绿灯（正在干活）；停在确认提示上 = 黄灯（需要你回答）；停下来但没有提示 = 白灯（空闲）。**这是很好的猜测，不是事实。**
 
 ### 长尾 agent 速查
 
@@ -99,9 +99,9 @@ bao hook --agent my-bot        # {"state":"busy"} 或 {"event":"task_complete"}
 
 能发 HTTP → 一行（写入要带本机 token，它只存在 `~/.baoanlight/token`，`bao token` 打印）：
 
-```bash
-curl -s -H "x-bao-token: $(bao token)" \
-  "http://127.0.0.1:4747/set/busy?agent=my-bot&detail=thinking"
+```powershell
+$h = @{ 'x-bao-token' = (bao token) }
+Invoke-RestMethod -Headers $h "http://127.0.0.1:4747/set/busy?agent=my-bot&detail=thinking"
 ```
 
 > 为什么不是随便发？任何网页都能往 `127.0.0.1` 发请求，没有 token 的话，
@@ -115,7 +115,7 @@ curl -s -H "x-bao-token: $(bao token)" \
 ```bash
 bao start          # 启动机器人（还没启动的话）
 bao status         # 看它现在说什么
-bao demo           # 依次播放四种状态，检查动效
+bao demo           # 依次播放五种状态，检查动效
 bao doctor         # 体检本机接线对不对
 bao autostart on   # 开机自启（机器人 + watch all）
 ```

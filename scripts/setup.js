@@ -24,21 +24,38 @@ function electronBinary() {
   }
 }
 
+// Electron 的下载缓存里可能同时躺着多个版本/架构的 zip。随便拿第一个解出来，
+// 在 arm64 机器上解到 x64 包、或把旧版本塞进新目录，表现都是「Electron 坏了」。
+// 文件名形如 electron-v38.0.0-win32-x64.zip，优先选与当前 package.json 版本、
+// 平台和架构都对得上的那个。
+function pickCachedZip(files, {
+  version = '', platform = 'win32', arch = process.arch,
+} = {}) {
+  const list = (Array.isArray(files) ? files : []).filter((f) => /\.zip$/i.test(f));
+  if (!list.length) return null;
+  const wantVersion = version ? `v${version}` : '';
+  const wantPlatform = `${platform}-${arch}`;
+  return list.find((f) => (!wantVersion || f.includes(wantVersion)) && f.includes(wantPlatform))
+    || list.find((f) => f.includes(wantPlatform))
+    || list.find((f) => wantVersion && f.includes(wantVersion))
+    || list[0];
+}
+
 function cachedZip() {
-  const base =
-    process.platform === 'win32'
-      ? path.join(process.env.LOCALAPPDATA || os.homedir(), 'electron', 'Cache')
-      : process.platform === 'darwin'
-        ? path.join(os.homedir(), 'Library', 'Caches', 'electron')
-        : path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'), 'electron');
+  const base = path.join(process.env.LOCALAPPDATA || os.homedir(), 'electron', 'Cache');
   if (!fs.existsSync(base)) return null;
-  for (const dir of fs.readdirSync(base)) {
+  const zips = [];
+  let dirs;
+  try { dirs = fs.readdirSync(base); } catch { return null; }
+  for (const dir of dirs) {
     const sub = path.join(base, dir);
-    if (!fs.statSync(sub).isDirectory()) continue;
-    const zip = fs.readdirSync(sub).find((f) => f.endsWith('.zip'));
-    if (zip) return path.join(sub, zip);
+    let entries;
+    try { entries = fs.readdirSync(sub); } catch { continue; }
+    for (const f of entries) if (/\.zip$/i.test(f)) zips.push(path.join(sub, f));
   }
-  return null;
+  let version = '';
+  try { version = require(path.join(ELECTRON_DIR, 'package.json')).version; } catch { /* 不知道版本 */ }
+  return pickCachedZip(zips, { version });
 }
 
 // The downloader reports success even when the unpack leaves an empty dist/, so
@@ -46,24 +63,18 @@ function cachedZip() {
 function extract(zip, dest) {
   fs.rmSync(dest, { recursive: true, force: true });
   fs.mkdirSync(dest, { recursive: true });
-  // Windows 分支不能把路径插进 -Command 字符串：路径里只要有一个引号或反引号，
-  // 这条命令就被改写（甚至被当成别的命令）。走环境变量，PowerShell 自己取值。
-  const cmd =
-    process.platform === 'win32'
-      ? ['powershell', ['-NoProfile', '-Command', 'Expand-Archive -LiteralPath $env:BAO_ZIP -DestinationPath $env:BAO_DEST -Force']]
-      : process.platform === 'darwin'
-        ? ['ditto', ['-x', '-k', zip, dest]]
-        : ['unzip', ['-oq', zip, '-d', dest]];
-  const r = spawnSync(cmd[0], cmd[1], {
+  // 不能把路径插进 -Command 字符串：路径里只要有一个引号或反引号，这条命令
+  // 就被改写。走环境变量，PowerShell 自己取值。
+  const r = spawnSync('powershell', [
+    '-NoProfile', '-Command',
+    'Expand-Archive -LiteralPath $env:BAO_ZIP -DestinationPath $env:BAO_DEST -Force',
+  ], {
     stdio: 'inherit',
     env: { ...process.env, BAO_ZIP: zip, BAO_DEST: dest },
   });
   if (r.status !== 0) throw new Error(`could not unpack ${zip}`);
 
-  const exe =
-    process.platform === 'win32' ? 'electron.exe'
-      : process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron'
-        : 'electron';
+  const exe = 'electron.exe';
   if (!fs.existsSync(path.join(dest, exe))) throw new Error('archive unpacked but no Electron binary in it');
   fs.writeFileSync(path.join(ELECTRON_DIR, 'path.txt'), exe);
 }
@@ -109,11 +120,8 @@ function main() {
       'Could not install Electron.',
       '',
       'Try clearing its download cache and running `bao setup` again (in a checkout: `npm run setup`):',
-      process.platform === 'win32'
-        ? '  rmdir /s /q "%LOCALAPPDATA%\\electron\\Cache"'
-        : process.platform === 'darwin'
-          ? '  rm -rf ~/Library/Caches/electron'
-          : '  rm -rf ~/.cache/electron',
+      '  PowerShell:  Remove-Item -Recurse -Force "$env:LOCALAPPDATA\\electron\\Cache"',
+      '  cmd:         rmdir /s /q "%LOCALAPPDATA%\\electron\\Cache"',
       '',
       'Or skip the desktop window entirely — this works right now:',
       '  node src/cli.js start --browser',
@@ -122,4 +130,6 @@ function main() {
   process.exit(1);
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = { pickCachedZip, cachedZip, electronBinary };

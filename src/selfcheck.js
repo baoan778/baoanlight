@@ -45,7 +45,7 @@ function run() {
     electronPath = typeof p === 'string' && exists(p) ? p : null;
   } catch { /* 未安装 */ }
   check('机器人窗口（Electron）', electronPath ? 'pass' : 'warn',
-    electronPath || '未安装 — 桌面机器人不可用', 'npm run setup');
+    electronPath || '未安装 — 桌面机器人不可用', 'bao setup');
 
   // ---- Claude Code 钩子（跨机器最常见失败：钩子指向的脚本/node 不存在）
   //

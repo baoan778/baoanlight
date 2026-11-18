@@ -39,7 +39,7 @@ const EVENT_STATE = {
   PreToolUse: 'busy',
   PostToolUse: 'busy',
   PreCompact: 'busy',
-  Notification: 'waiting',   // permission prompt / "Claude is waiting for your input"
+  Notification: 'waiting',   // 见 notificationState()：空闲提醒会被改成 idle
   Stop: 'idle',              // turn finished, ready for a new task
   // CodeBuddy / WorkBuddy 在会话彻底结束时补发 FinalStop（带 final_stop_reason）。
   // 不映射的话它会落到「无法识别的事件」，在面板上挂一条提示 —— 而这其实是个
@@ -67,9 +67,30 @@ function toolFailed(evt) {
 // so this adds nothing but a race.
 const IGNORED = new Set(['SubagentStop']);
 
+// Notification 是 Claude Code 里语义最杂的一个事件，两种完全不同的情况共用它：
+//
+//   "Claude needs your permission to use Bash"   -> 卡在你身上，黄灯
+//   "Claude is waiting for your input"           -> 这一轮已经结束，只是闲着
+//
+// 原来一律映射成 waiting：空闲提醒也亮黄灯，而 waiting 永远不会自己衰减
+// （只有 6 小时 TTL），于是一个早已停下的会话能把灯黄一整个下午。这是「状态
+// 不准」最直接的来源。没有 message 时仍然保守地按 waiting 处理。
+const IDLE_NOTICE = /waiting for (your|user)[\s-]+input|needs? (your|user)[\s-]+input|awaiting (your )?input/i;
+
+function notificationState(evt) {
+  const text = `${evt.message || ''} ${evt.title || ''}`.trim();
+  if (!text) return 'waiting';
+  return IDLE_NOTICE.test(text) ? 'idle' : 'waiting';
+}
+
+// 一调用就停下来等人的工具：提问、退出计划模式等。PreToolUse 映射成 busy 会让
+// 机器人在「它正等你回答」的时候亮绿灯 —— 而绿灯的承诺是「不用管它」。
+const AWAITING_TOOL = /ask_?user|ask_?question|exit_?plan_?mode|user_?input|needs?_?input|request_?approval|permission/i;
+
 function detailFor(evt) {
   switch (evt.hook_event_name) {
     case 'PreToolUse':
+      if (AWAITING_TOOL.test(String(evt.tool_name || ''))) return '等你回答';
       return evt.tool_name ? `running ${evt.tool_name}` : 'running a tool';
     case 'PostToolUse':
       return 'thinking';
@@ -122,7 +143,10 @@ async function main() {
     return;
   }
 
-  const state = name === 'PostToolUse' && toolFailed(evt) ? 'error' : EVENT_STATE[name];
+  const base = name === 'Notification' ? notificationState(evt) : EVENT_STATE[name];
+  const awaiting = name === 'PreToolUse' && AWAITING_TOOL.test(String(evt.tool_name || ''));
+  const state = name === 'PostToolUse' && toolFailed(evt) ? 'error'
+    : awaiting ? 'waiting' : base;
   const cwd = evt.cwd || process.cwd();
   log(`${name} -> ${state}${evt.tool_name ? ' (' + evt.tool_name + ')' : ''} [${sid}]`);
 
@@ -132,6 +156,8 @@ async function main() {
     state,
     detail: state === 'error' ? `${evt.tool_name || 'tool'} failed` : detailFor(evt),
     cwd: cwd || '',
+    source: 'hook',
+    event: name,
   });
 }
 

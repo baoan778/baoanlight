@@ -1,7 +1,7 @@
 'use strict';
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
-const { execFile, execFileSync } = require('node:child_process');
+const { execFile, execFileSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -63,6 +63,15 @@ test('server reports health and starts empty', async () => {
   assert.equal((await api('/state')).overall, 'offline');
 });
 
+// `bao start --port X` 用 healthAt 确认端口文件里记着的旧实例是否还活着：它必须
+// 能问一个「不是当前端口」的服务，否则那条防重复启动的守卫等于没写。
+test('health can be asked about a specific port, and a dead one is not baoanlight', async () => {
+  const client = require('../src/client');
+  const h = await client.healthAt(PORT);
+  assert.equal(h && h.name, 'baoanlight');
+  assert.equal(await client.healthAt(1), null, 'a closed port is not an answer');
+});
+
 // A running server with nobody watching is not a running traffic light. `sig
 // start` used to see the server, say "already running", and leave you staring
 // at a desktop with no window on it.
@@ -86,8 +95,31 @@ test('a full Claude turn drives the lamp end to end', async () => {
   await fire({ session_id: sid, hook_event_name: 'PostToolUse', tool_name: 'Bash', cwd: '/tmp/x' });
   assert.equal(await stateOf(sid), 'busy', 'answered -> working again');
 
+  // 提问工具一调用就停下来等你：这句必须变成黄灯，而不是继续绿着。
+  await fire({ session_id: sid, hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', cwd: '/tmp/x' });
+  assert.equal(await stateOf(sid), 'waiting', 'a question tool waits for you');
+  await fire({ session_id: sid, hook_event_name: 'PostToolUse', tool_name: 'AskUserQuestion', cwd: '/tmp/x' });
+  assert.equal(await stateOf(sid), 'busy', 'answered -> working again');
+
   await fire({ session_id: sid, hook_event_name: 'Stop', cwd: '/tmp/x' });
   assert.equal(await stateOf(sid), 'idle', 'turn finished -> ready');
+
+  const ev = (await api('/state')).sessions.find((x) => x.session === `claude:${sid}`);
+  assert.equal(ev.events[0].source, 'hook');
+  assert.equal(ev.events[0].event, 'UserPromptSubmit');
+  assert.ok(ev.events.some((e) => e.event === 'Stop'), 'the stop event is visible evidence');
+});
+
+// Regression: "Claude is waiting for your input" is Claude telling you the turn
+// is over — not a request for permission. Mapping it to waiting pinned the lamp
+// yellow for six hours, because a waiting session never writes another event.
+test('an idle notification does not pin the lamp on "needs you"', async () => {
+  const sid = 'notice-idle';
+  await fire({ session_id: sid, hook_event_name: 'UserPromptSubmit' });
+  assert.equal(await stateOf(sid), 'busy');
+
+  await fire({ session_id: sid, hook_event_name: 'Notification', message: 'Claude is waiting for your input' });
+  assert.equal(await stateOf(sid), 'idle', 'idle reminder -> ready, not waiting');
 });
 
 // Regression: SubagentStop lands a few seconds AFTER Stop at the end of a turn.
@@ -248,6 +280,21 @@ test('the CLI reports a rejected state instead of failing silently', async () =>
   assert.equal(good.stderr.trim(), '');
 });
 
+// 清理会话时说「cleared」必须等价于「服务端真的收到了 offline」。服务没起、
+// 或 token 不匹配时照打 cleared，用户会以为残影清掉了，而灯还挂在屏幕上。
+test('clearing a session does not claim success when nobody is listening', async () => {
+  const CLI = path.join(__dirname, '..', 'src', 'cli.js');
+  const out = await new Promise((resolve) => {
+    execFile(process.execPath, [CLI, 'clear', '--session', 'x'], {
+      env: { ...process.env, BAOANLIGHT_PORT: '4999', BAOANLIGHT_LOG: '0' },
+      timeout: 5000,
+    }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stdout, stderr }));
+  });
+  assert.equal(out.code, 1, 'a failed clear must exit non-zero');
+  assert.doesNotMatch(out.stdout, /cleared/, 'and must not pretend it worked');
+  assert.match(out.stderr, /no server listening/);
+});
+
 // A dark light and a prompt is not a finished setup. `start` used to end with
 // "stop it with: sig stop" — telling people how to quit something they had not
 // finished wiring up, with no mention of the step that makes it do anything.
@@ -256,7 +303,7 @@ test('start tells you the next step, and which one depends on what is connected'
   const fake = fs.mkdtempSync(path.join(os.tmpdir(), 'sig-fresh-'));
   const run = (env) =>
     new Promise((resolve) => {
-      const cp = execFile(process.execPath, [CLI, 'start', '--foreground', '--no-overlay', '--port', '4797'],
+      const cp = execFile(process.execPath, [CLI, 'start', '--foreground', '--no-overlay', '--no-watch', '--port', '4797'],
         { env: { ...process.env, ...env } }, () => {});
       let out = '';
       cp.stdout.on('data', (d) => (out += d));
@@ -392,6 +439,61 @@ test('a restarted watcher recovers a waiting session instead of going dark', asy
   }
 });
 
+// 连续的工具调用不会改变状态。如果日志里长时间没有 ambient 行（token_count 之类），
+// 服务端会按「静默 30 分钟」把一个仍在干活的会话丢掉 —— 灯自己灭了，而代理还在跑。
+// 通用日志观察器必须像 dsh / task / wbt 那三条一样，定期重报同一个 busy。
+test('a continuously busy session is re-reported so it never looks abandoned', async () => {
+  const logWatch = require('../src/adapters/log-watch');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-hb-'));
+  const file = path.join(dir, 'rollout-hb.jsonl');
+  const busyLine = JSON.stringify({ type: 'event_msg', payload: { type: 'function_call' } });
+  fs.writeFileSync(file, [
+    JSON.stringify({ type: 'session_meta', payload: { id: 'hb-1', cwd: '/tmp/x' } }),
+    busyLine,
+  ].join('\n') + '\n');
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const previousPort = process.env.BAOANLIGHT_PORT;
+  process.env.BAOANLIGHT_PORT = String(PORT);
+  const handle = logWatch.run({
+    agent: 'codex', dir, interval: 100, quiet: true, manual: true,
+    lookback: 3_600_000, heartbeat: 100,
+  });
+
+  try {
+    const find = async () => (await api('/state')).sessions.find((s) => s.session === 'codex:hb-1') || null;
+    let first = null;
+    for (let i = 0; i < 40 && !first; i++) {
+      first = await find();
+      if (!first) await sleep(100);
+    }
+    assert.ok(first, 'the busy session is on the lamp');
+
+    // 再写一条同状态的事件：没有任何状态变化，只有心跳能刷新 updatedAt。
+    await sleep(300);
+    fs.appendFileSync(file, busyLine + '\n');
+
+    let second = null;
+    for (let i = 0; i < 40; i++) {
+      second = await find();
+      if (second && second.updatedAt > first.updatedAt) break;
+      await sleep(100);
+    }
+    assert.ok(second && second.updatedAt > first.updatedAt,
+      'a same-state busy event refreshed the session instead of leaving it to time out');
+  } finally {
+    handle.stop();
+    await api('/state', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: 'codex:hb-1', state: 'offline' }),
+    });
+    if (previousPort === undefined) delete process.env.BAOANLIGHT_PORT;
+    else process.env.BAOANLIGHT_PORT = previousPort;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // End-to-end for the agent that has no hooks to install: a dsh session
 // projection on disk, and the real HTTP store on the other side.
 test('the dsh watcher follows a session projection through a whole turn', async () => {
@@ -413,14 +515,14 @@ test('the dsh watcher follows a session projection through a whole turn', async 
 
   write({
     turnBoundary: { val: { openTurnStartSeq: 1 } },
-    contextPressure: { val: { surfaceTokens: 64000, contextWindow: 256000 } },
+    contextPressure: { val: { pressureTokens: 64000, contextWindow: 256000 } },
   });
 
   // In-process, so unlike a spawned hook it has no per-process env of its own:
   // point the client at this test server's random port.
   const previousPort = process.env.BAOANLIGHT_PORT;
   process.env.BAOANLIGHT_PORT = String(PORT);
-  const handle = dsh.run({ dir, interval: 100, quiet: true, manual: true, lookback: 3_600_000 });
+  const handle = dsh.run({ dir, interval: 100, quiet: true, manual: true, lookback: 3_600_000, heartbeat: 50 });
 
   try {
     const busy = await waitFor('busy');
@@ -429,6 +531,23 @@ test('the dsh watcher follows a session projection through a whole turn', async 
     assert.equal(Math.round(busy.fuel.remaining), 75, '75% of the context window is left');
     assert.equal(busy.fuel.label, 'context');
 
+    // 文件继续更新、状态没变 = 它还在干活。时间戳必须被推新，否则 90 秒后
+    // 会被标成「静默」，30 分钟后直接当成失联从灯上丢掉。
+    const before = busy.updatedAt;
+    await sleep(80);
+    write({
+      turnBoundary: { val: { openTurnStartSeq: 1 } },
+      contextPressure: { val: { pressureTokens: 65000, contextWindow: 256000 } },
+    });
+    let refreshed = null;
+    for (let i = 0; i < 30 && !refreshed; i++) {
+      const snap = await api('/state');
+      const s = snap.sessions.find((x) => x.session === 'deepseek:proj-1');
+      if (s && s.updatedAt > before) refreshed = s;
+      else await sleep(100);
+    }
+    assert.ok(refreshed, 'an active turn refreshes its timestamp');
+
     await sleep(30);
     write({ userQuestions: { val: { questions: { active: [{ id: 'q1' }] } } } });
     assert.ok(await waitFor('waiting'), 'a pending question reports waiting');
@@ -436,6 +555,17 @@ test('the dsh watcher follows a session projection through a whole turn', async 
     await sleep(30);
     write({ turnBoundary: { val: { lastTurn: 1, openTurnStartSeq: null } } });
     assert.ok(await waitFor('idle'), 'a closed turn reports idle');
+
+    // 投影文件被删掉（会话清理 / 换工作区）= 证据没了。这盏灯必须熄，
+    // 而不是替一个已经不存在的会话挂到 6 小时 TTL。
+    fs.unlinkSync(file);
+    let gone = false;
+    for (let i = 0; i < 40; i++) {
+      const snap = await api('/state');
+      if (!snap.sessions.some((x) => x.session === 'deepseek:proj-1')) { gone = true; break; }
+      await sleep(100);
+    }
+    assert.equal(gone, true, 'a deleted projection turns the session off');
   } finally {
     handle.stop();
     await api('/state', {
@@ -443,6 +573,55 @@ test('the dsh watcher follows a session projection through a whole turn', async 
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ session: 'deepseek:proj-1', state: 'offline' }),
     });
+    if (previousPort === undefined) delete process.env.BAOANLIGHT_PORT;
+    else process.env.BAOANLIGHT_PORT = previousPort;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// 任务板的新鲜度必须看**板内文件**的 mtime，而不是目录的 mtime：文件是原地
+// 改写的，目录时间停在你建任务那天。按目录时间算，一块用了半天的板子会在
+// lookback 之后被当成过期，灯从此再也不亮。
+test('a long-lived WorkBuddy task board keeps reporting, and an empty one goes dark', async () => {
+  const taskWatch = require('../src/adapters/task-watch');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-task-'));
+  const folder = path.join(dir, 'task-1');
+  fs.mkdirSync(folder);
+  const item = path.join(folder, '1.json');
+  fs.writeFileSync(item, JSON.stringify({ status: 'in_progress' }));
+  // 把目录的 mtime 推到两天前，模拟一块一直在用、但目录本身很久没变过的板子。
+  const old = new Date(Date.now() - 2 * 86400 * 1000);
+  fs.utimesSync(folder, old, old);
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const stateOf = async (sid) => {
+    const snap = await api('/state');
+    return snap.sessions.find((x) => x.session === sid) || null;
+  };
+
+  const previousPort = process.env.BAOANLIGHT_PORT;
+  process.env.BAOANLIGHT_PORT = String(PORT);
+  const handle = taskWatch.run({ dir, interval: 100, quiet: true, manual: true, lookback: 60_000 });
+
+  try {
+    let busy = null;
+    for (let i = 0; i < 40 && !busy; i++) {
+      const s = await stateOf('workbuddy:task-1');
+      if (s && s.state === 'busy') busy = s;
+      else await sleep(100);
+    }
+    assert.ok(busy, 'a fresh item in an old folder still reports busy');
+
+    // 板子被清空 = 没有证据，灯要熄，而不是把 busy 留成残影。
+    fs.unlinkSync(item);
+    let gone = false;
+    for (let i = 0; i < 40; i++) {
+      if (!(await stateOf('workbuddy:task-1'))) { gone = true; break; }
+      await sleep(100);
+    }
+    assert.equal(gone, true, 'an emptied task board turns the session off');
+  } finally {
+    handle.stop();
     if (previousPort === undefined) delete process.env.BAOANLIGHT_PORT;
     else process.env.BAOANLIGHT_PORT = previousPort;
     fs.rmSync(dir, { recursive: true, force: true });
@@ -518,15 +697,80 @@ test('codex notify reports a finished turn as done, like the log watcher does', 
   assert.doesNotMatch(body, /return 'idle'/);
 });
 
-// 开机自启在 Windows 上跑「机器人 + watch all」，macOS/Linux 曾经只跑机器人：
-// 日志型代理永远不报状态，机器人一直显示离线。
-test('autostart starts the watchers on every platform', () => {
+// 开机自启只跑一条 `bao start`：server、窗口和日志观察器由它一起带起来。
+// 以前是「start + watch all」两条命令，两条会抢同一把 pid 锁，白起一个进程；
+// 而且第二条进程崩了没人重启。项目现在只支持 Windows，Linux/macOS 启动器
+// 不应该再出现在代码里。
+test('autostart starts the robot and its watchers with one command', () => {
   const src = srcFile('autostart.js');
-  const linux = src.slice(src.indexOf('function installLinux'), src.indexOf('function installDarwin'));
-  const darwin = src.slice(src.indexOf('function installDarwin'), src.indexOf('function install()'));
-  assert.match(linux, /launcher/, 'Linux goes through the launcher script');
-  assert.match(darwin, /launcher/, 'and so does macOS');
-  assert.match(src, /watch all/, 'the launcher runs the watchers');
+  const cli = srcFile('cli.js');
+  assert.doesNotMatch(src, /installLinux|installDarwin|LaunchAgents|systemd|\.desktop/,
+    'Windows-only autostart has no other platform branches');
+  assert.match(src, /start", 0, False/, 'Windows runs one detached start');
+  assert.doesNotMatch(src, /sh\.Run[^\n]*watch all/, 'no second process racing for the watcher lock');
+  // watcher 由 start 通过 --watch 带起来，并作为子进程被守护。
+  assert.match(cli, /'--watch'/, 'start asks for the watchers');
+  assert.match(cli, /watch', 'all', '--supervised'/, 'and supervises one watcher child');
+  assert.match(cli, /case 'supervise'/, 'the detached process is the whole-stack supervisor');
+});
+
+// 无人值守的关键：启动时一个来源都没有，不能退出。软件可能是开机之后才装的，
+// 日志目录也可能被挪走又挪回来 —— 观察器要自己等、自己接上。
+test('the watcher daemon waits for sources instead of exiting', async () => {
+  const CLI = path.join(__dirname, '..', 'src', 'cli.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-watchd-'));
+  const home = path.join(tmp, 'home');
+  const env = {
+    ...process.env,
+    BAOANLIGHT_HOME: path.join(tmp, 'state'),
+    USERPROFILE: home,
+    HOME: home,
+    APPDATA: path.join(tmp, 'appdata'),
+    CODEX_HOME: path.join(tmp, 'codex'),
+    DSH_HOME: path.join(tmp, 'dsh'),
+    WORKBUDDY_HOME: path.join(tmp, 'wb'),
+    BAOANLIGHT_PORT: '4998',     // 没有服务：watcher 的上报会静默失败，不影响启动
+    BAOANLIGHT_LOG: '0',
+  };
+  const cp = spawn(process.execPath,
+    [CLI, 'watch', 'all', '--supervised', '--retry', '150', '--quiet'], { env });
+  let out = '';
+  cp.stdout.on('data', (c) => { out += c; });
+  cp.stderr.on('data', (c) => { out += c; });
+
+  try {
+    await new Promise((r) => setTimeout(r, 700));
+    assert.equal(cp.exitCode, null, 'it must not exit just because nothing is installed yet');
+
+    // 装上一份 Codex 日志目录：重试循环要自己把它接进来，不需要人工重启。
+    fs.mkdirSync(path.join(tmp, 'codex', 'sessions'), { recursive: true });
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.match(out, /watching codex/, 'a source that appears later gets picked up');
+  } finally {
+    cp.kill();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// 被子进程守护时，「锁被另一个 watcher 占着」不是失败：退出码 3 让父进程
+// 别再重启它，否则会变成一个每 5 秒重启一次的失败循环。
+test('a supervised watcher steps aside when another one holds the lock', async () => {
+  const CLI = path.join(__dirname, '..', 'src', 'cli.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-watchl-'));
+  fs.writeFileSync(path.join(tmp, 'watch-all.pid'), String(process.pid));
+
+  const r = await new Promise((resolve) => {
+    execFile(process.execPath, [CLI, 'watch', 'all', '--supervised'], {
+      env: { ...process.env, BAOANLIGHT_HOME: tmp, BAOANLIGHT_LOG: '0' },
+      timeout: 5000,
+    }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stdout, stderr }));
+  });
+  try {
+    assert.equal(r.code, 3, 'the supervisor must not restart a watcher that lost the lock');
+    assert.match(r.stderr, /already running/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 // 演示命令要能看见出错闪烁和完成转圈 —— 它们是最容易被写坏的两段动效。
@@ -619,7 +863,7 @@ test('children spawned in the background never pop a console window', () => {
   const sites = [
     'const child = spawn(process.execPath, args,',   // server（detached）
     'const child = spawn(String(electron)',          // 窗口
-    'spawn(opener, [url],',                          // 浏览器
+    "spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '', url],",   // 浏览器
   ];
   for (const anchor of sites) {
     const at = js.indexOf(anchor);

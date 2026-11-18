@@ -24,6 +24,11 @@ process.env.BAOANLIGHT_HOME = testHome;
 
 const { start } = require('../src/server');
 
+// 这台机器上很可能正开着 Claude Code。presence 探测到它就会把「离线」升级成
+// 「未知」—— 于是空闲档、静止档、DOM 静止这些纯渲染契约全被一条与本文件无关的
+// 证据改掉，测试随开发者手头开没开 Claude 忽绿忽红。这里只测渲染，不测进程探测。
+require('../src/presence').claudeRunning = async () => false;
+
 let server;
 let base;
 let token;

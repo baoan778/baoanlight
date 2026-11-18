@@ -1,13 +1,16 @@
 {
   "name": "baoanlight",
   "version": "2.0.0",
-  "description": "A little tracked robot that floats on your desktop and shows what every AI coding agent is doing — Claude Code, Codex, DeepSeek Harness, WorkBuddy and anything else that can report.",
-  "author": "baoan778",
+  "description": "A little tracked robot that floats on your Windows desktop and shows what every AI coding agent is doing — Claude Code, Codex, DeepSeek Harness, WorkBuddy and anything else that can report.",
+  "author": {
+    "name": "baoan778",
+    "url": "https://github.com/baoan778"
+  },
   "bin": {
     "baoanlight": "src/cli.js",
     "bao": "src/cli.js"
   },
-  "main": "src/overlay/main.js",
+  "main": "src/cli.js",
   "type": "commonjs",
   "scripts": {
     "start": "node src/cli.js start",
@@ -19,16 +22,20 @@
     "status": "node src/cli.js status",
     "agents": "node src/cli.js agents",
     "test": "node --test",
+    "test:electron": "node test-electron/overlay-smoke.js",
+    "check:pack": "node scripts/check-pack.js",
     "lint": "eslint .",
     "doctor": "node src/cli.js doctor",
     "watch:codex": "node src/cli.js watch codex",
-    "test:linux": "bash scripts/run-linux-tests.sh",
     "test:ui": "playwright test",
     "test:all": "npm test && npm run test:ui"
   },
   "engines": {
     "node": ">=20"
   },
+  "os": [
+    "win32"
+  ],
   "license": "MIT",
   "optionalDependencies": {
     "electron": "^38.0.0",
@@ -47,6 +54,7 @@
     "ai-agent",
     "overlay",
     "desktop-robot",
+    "windows",
     "status",
     "always-on-top",
     "gemini-cli",
@@ -62,6 +70,11 @@
     "docs/robot.png",
     "docs/demo",
     "README.md",
+    "CHANGELOG.md",
+    "CODE_OF_CONDUCT.md",
+    "DEPLOY.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "bugs": {

@@ -203,6 +203,9 @@
   .pill i[data-color="green"] { background: var(--green); box-shadow: 0 0 7px var(--green); }
   .pill i[data-color="done"]  { background: var(--done);  box-shadow: 0 0 7px rgba(176,107,255,.55); }
   .pill i[data-color="grey"]  { background: var(--grey);  box-shadow: 0 0 7px rgba(204,211,220,.5); }
+  /* 未运行不是「未知」：一个灰点会让「没开」和「开着但说不清」看起来一样。
+     它该是一盏灭掉的灯。 */
+  .pill i[data-color="off"]   { background: #3a4049; box-shadow: none; }
   .pill i[data-color="white"] { background: #dfe5ec; box-shadow: 0 0 6px rgba(223,229,236,.5); }
   .pill[data-state="idle"] i[data-color="white"] { opacity: .55; box-shadow: none; }
   .pill b { font-weight: 650; overflow: hidden; text-overflow: ellipsis; }
@@ -329,6 +332,251 @@
   #bar button:focus-visible { outline: 2px solid #7fb8ff; outline-offset: 1px; }
   #bar button:hover { background: rgba(255,255,255,.13); color: #fff; }
   #bar button.danger:hover { background: #d0342c; color: #fff; }
+  #bar button { position: relative; }
+  /* 待办数量：工具按钮上的小角标。它不借用红黄绿 —— 待办不是代理状态。 */
+  #memo-badge {
+    position: absolute; top: -3px; right: -3px; min-width: 11px; height: 11px; padding: 0 3px;
+    border-radius: 999px; background: #e0a93b; color: #241a05;
+    font-size: 8px; line-height: 11px; font-weight: 700; letter-spacing: 0;
+  }
+  #memo-badge[hidden] { display: none; }
+
+  /* ---------- 多会话：把一行的 ×N 展开成每个会话各一行 ---------- */
+  .pill { position: relative; }
+  /* 只有需要展开时才多留一列，否则每行都白窄 24px。 */
+  .pill.has-multi { grid-template-columns: 8px minmax(48px, 96px) 1fr 26px 32px; }
+  .pill-expand {
+    width: 30px; height: 15px; padding: 0; border-radius: 999px;
+    border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.07);
+    color: #cfd6df; font: inherit; font-size: 9px; line-height: 13px; cursor: pointer;
+    letter-spacing: 0;
+  }
+  .pill-expand[hidden] { display: none; }
+  .pill-expand:hover { background: rgba(255,255,255,.18); color: #fff; }
+  .pill-expand[aria-expanded="true"] {
+    background: rgba(127,184,255,.26); border-color: rgba(127,184,255,.55); color: #eaf4ff;
+  }
+  .subpill {
+    display: grid; grid-template-columns: 8px minmax(64px, 104px) 1fr 42px 16px;
+    align-items: center; gap: 5px;
+    width: calc(100% - 44px); max-width: 284px; margin-left: 20px; padding: 2px 8px;
+    border-radius: 7px; background: rgba(14,16,20,.72);
+    border-left: 2px solid rgba(255,255,255,.10);
+    font-size: 10px; color: #aeb6c0;
+    cursor: pointer;
+  }
+  .subpill i { width: 7px; height: 7px; border-radius: 50%; background: var(--c, #7a828c); }
+  .subpill .sid {
+    font-variant-numeric: tabular-nums; opacity: .62;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .subpill .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #dfe5ec; }
+  .subpill .age {
+    font-size: 9px; color: #8b95a1; text-align: right;
+    overflow: hidden; white-space: nowrap;
+  }
+  /* 悬停时才出现的终端入口：不增加常驻噪音，但比右键好发现。 */
+  .subterm {
+    width: 16px; height: 16px; padding: 0; border: 0; border-radius: 4px;
+    background: transparent; color: #aeb6c0; font: inherit; font-size: 9px;
+    cursor: pointer; opacity: 0;
+  }
+  .subterm[hidden] { display: none; }
+  .subpill:hover .subterm, .subterm:focus-visible { opacity: .85; }
+  .subterm:hover { background: rgba(255,255,255,.14); color: #fff; opacity: 1; }
+  .subpill.quiet { opacity: .66; }
+  /* 会话行本身也是可点的（聚焦这个软件）：给一个跟主行一致的手型与高亮。 */
+  .subpill:hover { background: rgba(22,25,31,.92); box-shadow: inset 0 0 0 1px rgba(255,255,255,.14); }
+  .subpill.focused { box-shadow: inset 0 0 0 1px rgba(127,184,255,.55); }
+  .subpill:focus-visible { outline: 2px solid #7fb8ff; outline-offset: 1px; }
+  /* 「还有 N 个会话」：不是一条会话，排版上也不能装成一条。 */
+  .subpill.more {
+    display: block; width: auto; margin: 1px 22px 0 34px; padding: 1px 6px;
+    text-align: center; background: transparent; border-left: 0;
+    color: #8b95a1; font-size: 9.5px;
+  }
+  .subpill.more:hover { color: #dfe5ec; background: rgba(255,255,255,.05); }
+  /* 为什么是这个颜色：展开区里的一块证据，不是第二个状态灯。 */
+  .why { margin: 2px 0 6px 14px; padding: 6px 8px; border-left: 2px solid #3a4048; color: #9aa6b2; font-size: 10px; line-height: 1.5; }
+  .why b { display: block; color: #c9d3dd; font-size: 10px; font-weight: 600; margin-bottom: 2px; }
+  .why ol { margin: 0; padding-left: 14px; }
+  .why p { margin: 2px 0 0; color: #8a96a2; }
+
+  /* ---------- 桌面便签：一张纸，不是一块 UI ---------- */
+  #memo {
+    position: relative;
+    width: calc(100% - 24px); max-width: 304px;
+    padding: 10px 10px 9px;
+    border-radius: 12px;
+    background:
+      repeating-linear-gradient(180deg, rgba(120,96,50,.055) 0 1px, transparent 1px 22px),
+      linear-gradient(180deg, rgba(247,238,214,.97), rgba(236,223,190,.97));
+    color: #2b2417;
+    box-shadow: 0 0 0 1px rgba(107,83,38,.35), 0 14px 28px -16px #000;
+    font-size: 11px;
+    transform: rotate(-0.35deg);
+  }
+  #memo[hidden] { display: none; }
+  /* 一条贴在纸上的胶带 —— 让它看起来像桌上的便签，而不是又一个面板。 */
+  #memo::before {
+    content: ''; position: absolute; top: -7px; left: 50%; width: 58px; height: 14px;
+    transform: translateX(-50%) rotate(-2deg);
+    background: rgba(196,176,124,.55); border-radius: 2px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.18);
+  }
+  #memo header { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
+  #memo .memo-title { font-weight: 700; font-size: 10.5px; letter-spacing: .08em; color: #6b5326; }
+  #memo .memo-count { font-size: 10px; color: #8a713f; }
+  #memo #memo-close {
+    margin-left: auto; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%;
+    background: transparent; color: #8a713f; cursor: pointer; font: inherit; font-size: 11px;
+  }
+  #memo #memo-close:hover { background: rgba(107,83,38,.14); color: #4a3a1c; }
+  #memo #memo-snooze {
+    margin-left: auto; padding: 1px 6px; border: 1px solid rgba(107,83,38,.32);
+    border-radius: 999px; background: transparent; color: #6b5326;
+    font: inherit; font-size: 9.5px; cursor: pointer;
+  }
+  #memo #memo-snooze:hover { background: rgba(107,83,38,.12); }
+  #memo #memo-snooze[hidden] { display: none; }
+  /* 再往后挤：snooze 用了 auto margin，close 不能再抢 auto。 */
+  #memo #memo-snooze + #memo-close { margin-left: 0; }
+  #memo form { display: flex; gap: 5px; }
+  #memo input {
+    flex: 1; min-width: 0; height: 23px; padding: 0 7px;
+    border: 1px solid rgba(107,83,38,.28); border-radius: 6px;
+    background: rgba(255,255,255,.68); color: #2b2417; font: inherit; font-size: 10.5px;
+  }
+  #memo input:focus { outline: 2px solid rgba(107,83,38,.35); outline-offset: 0; }
+  #memo #memo-add {
+    flex: none; height: 23px; padding: 0 9px; border: 0; border-radius: 6px;
+    background: #6b5326; color: #f8f2e2; font: inherit; font-size: 10.5px; cursor: pointer;
+  }
+  #memo #memo-add:hover { background: #57431d; }
+  #memo-list {
+    display: flex; flex-direction: column; gap: 1px; margin-top: 7px;
+    /* 一张便签不该把桌面撑到屏幕外；条数多时它自己滚，而不是截断 ——
+       第 13 条之后的待办被藏掉，等于替用户决定哪件事可以忘。 */
+    max-height: 168px; overflow-y: auto; overflow-x: hidden;
+  }
+  /* Windows/Chromium 的滚动条默认是「滚动时才出现」的覆盖层：一张写满的便签
+     看起来就像只有 7 条，后面全丢了。给它一条始终可见的细滚动条。 */
+  #memo-list::-webkit-scrollbar { width: 5px; }
+  #memo-list::-webkit-scrollbar-track { background: transparent; }
+  #memo-list::-webkit-scrollbar-thumb {
+    background: rgba(107,83,38,.35); border-radius: 999px;
+  }
+  #memo-list::-webkit-scrollbar-thumb:hover { background: rgba(107,83,38,.55); }
+  #memo-more {
+    padding-top: 4px; text-align: center; font-size: 9.5px; color: #8a713f;
+  }
+  #memo-more[hidden] { display: none; }
+  .memo-item { display: flex; align-items: flex-start; gap: 6px; padding: 3px 1px; border-bottom: 1px dashed rgba(107,83,38,.20); }
+  .memo-item:last-child { border-bottom: 0; }
+  /* 分组标题：置顶 / 今天 / 更早 / 已完成。长便签里它是唯一的方向标。 */
+  .memo-group {
+    padding: 4px 2px 2px; font-size: 9px; letter-spacing: .08em;
+    color: #94794a; text-transform: none;
+  }
+  .memo-group:first-child { padding-top: 0; }
+  .memo-pin {
+    flex: none; width: 14px; height: 14px; margin-top: 1px; padding: 0;
+    border: 0; border-radius: 4px; background: transparent;
+    color: #94794a; opacity: .35; cursor: pointer; font: inherit; font-size: 10px;
+  }
+  .memo-pin:hover { opacity: 1; background: rgba(107,83,38,.10); }
+  .memo-pin[aria-pressed="true"] { opacity: 1; color: #b07c1e; }
+  .memo-pin:disabled { visibility: hidden; }
+  .memo-check {
+    flex: none; width: 14px; height: 14px; margin-top: 1px; padding: 0;
+    border: 1px solid rgba(107,83,38,.55); border-radius: 4px;
+    background: transparent; color: #f8f2e2; font-size: 9px; line-height: 12px; cursor: pointer;
+  }
+  .memo-item.done .memo-check { background: #6b5326; border-color: #6b5326; }
+  .memo-text { flex: 1; line-height: 1.4; word-break: break-word; cursor: text; }
+  .memo-edit {
+    flex: 1; min-width: 0; height: 19px; padding: 0 4px;
+    border: 1px solid rgba(107,83,38,.45); border-radius: 4px;
+    background: rgba(255,255,255,.8); color: #2b2417; font: inherit; font-size: 11px;
+  }
+  .memo-edit:focus { outline: 2px solid rgba(107,83,38,.35); outline-offset: 0; }
+  .memo-item.done .memo-text { text-decoration: line-through; opacity: .55; }
+  .memo-day { font-size: 9px; color: #94794a; margin-left: 4px; white-space: nowrap; }
+  .memo-del {
+    flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px;
+    background: transparent; color: #7a6233; opacity: .55; cursor: pointer; font: inherit; font-size: 12px;
+  }
+  .memo-del:hover { opacity: 1; color: #7a2f1c; background: rgba(122,47,28,.08); }
+  .memo-empty { padding: 5px 2px; color: #8a713f; font-size: 10px; line-height: 1.5; }
+  #memo-undo {
+    display: flex; align-items: center; gap: 6px; margin-top: 5px;
+    padding: 3px 7px; border-radius: 6px;
+    background: rgba(122,47,28,.10); color: #6d3a24; font-size: 10px;
+  }
+  #memo-undo[hidden] { display: none; }
+  #memo-undo button {
+    margin-left: auto; padding: 1px 7px; border: 1px solid rgba(122,47,28,.35);
+    border-radius: 999px; background: transparent; color: #6d3a24;
+    font: inherit; font-size: 9.5px; cursor: pointer;
+  }
+  #memo-undo button:hover { background: rgba(122,47,28,.12); }
+  #memo footer { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 10px; color: #7a6233; }
+  #memo footer[hidden] { display: none; }
+  #memo footer button {
+    padding: 1px 6px; border: 1px solid rgba(107,83,38,.3);
+    border-radius: 999px; background: transparent; color: #6b5326;
+    font: inherit; font-size: 9.5px; cursor: pointer;
+  }
+  #memo footer button:hover { background: rgba(107,83,38,.12); }
+  #memo footer button[hidden] { display: none; }
+  #memo #memo-export { margin-left: auto; }
+  #memo #memo-clear { margin-left: 0; }
+  /* 脚边的小纸片：便签关着、又有未完成的事时才出现。它是一片纸，不是第四个
+     状态灯 —— 颜色刻意和红黄绿分开，数量用深棕写在自己身上。 */
+  #memo-peek {
+    position: absolute; right: 1%; bottom: 7%;
+    width: 26px; height: 30px; padding: 0; border: 0; border-radius: 3px;
+    background: linear-gradient(180deg, #f7eed6, #e8d9b4);
+    color: #6b5326; font: inherit; cursor: pointer; z-index: 3;
+    display: grid; place-items: center;
+    transform: rotate(4deg);
+    box-shadow: 0 1px 3px rgba(0,0,0,.4), 0 0 0 1px rgba(107,83,38,.4);
+    transition: transform .16s ease, box-shadow .16s ease;
+  }
+  #memo-peek[hidden] { display: none; }
+  #memo-peek b { font-size: 11px; font-weight: 700; line-height: 1; }
+  /* 一小截胶带，和便签本体是同一套语言。 */
+  #memo-peek::before {
+    content: ''; position: absolute; top: -3px; left: 50%; width: 16px; height: 6px;
+    transform: translateX(-50%) rotate(-4deg);
+    background: rgba(196,176,124,.7); border-radius: 1px;
+  }
+  #memo-peek:hover { transform: rotate(0deg) scale(1.08); box-shadow: 0 3px 8px rgba(0,0,0,.45), 0 0 0 1px rgba(107,83,38,.5); }
+  #memo-peek:focus-visible { outline: 2px solid #7fb8ff; outline-offset: 2px; }
+
+  /* ---------- 快速记一条：比便签更小的一张纸条 ---------- */
+  #quick-add {
+    width: calc(100% - 24px); max-width: 304px;
+    padding: 8px 9px 6px; border-radius: 10px;
+    background: linear-gradient(180deg, rgba(247,238,214,.98), rgba(236,223,190,.98));
+    color: #2b2417;
+    box-shadow: 0 0 0 1px rgba(107,83,38,.35), 0 10px 22px -14px #000;
+    transform: rotate(0.3deg);
+  }
+  #quick-add[hidden] { display: none; }
+  #quick-add form { display: flex; gap: 5px; }
+  #quick-add input {
+    flex: 1; min-width: 0; height: 23px; padding: 0 7px;
+    border: 1px solid rgba(107,83,38,.28); border-radius: 6px;
+    background: rgba(255,255,255,.7); color: #2b2417; font: inherit; font-size: 10.5px;
+  }
+  #quick-add input:focus { outline: 2px solid rgba(107,83,38,.35); outline-offset: 0; }
+  #quick-add button {
+    flex: none; height: 23px; padding: 0 9px; border: 0; border-radius: 6px;
+    background: #6b5326; color: #f8f2e2; font: inherit; font-size: 10.5px; cursor: pointer;
+  }
+  #quick-add button:hover { background: #57431d; }
+  #quick-add .quick-hint { margin-top: 4px; text-align: center; font-size: 9px; color: #8a713f; }
 
   /* ---------- size / settings menu ---------- */
   /* 菜单浮在机器人右侧的空白区，而不是压在它身上：打开时窗口向右变宽，
@@ -398,7 +646,7 @@
   /* 今日战绩条形：行背景按「本软件时长/今日最长」铺一条淡蓝进度条，数据可视化。 */
   #m-score .score-row {
     padding: 3px 5px; margin: 0 -5px; border-radius: 6px;
-    background-image: linear-gradient(90deg, rgba(120,190,255,.20) var(--pct, 0%), rgba(120,190,255,0) var(--pct, 0%));
+    background-image: linear-gradient(90deg, var(--agent-color, rgba(120,190,255,.20)) var(--pct, 0%), var(--agent-fade, rgba(120,190,255,0)) var(--pct, 0%));
   }
   #m-score .score-head { font-size: 10px; opacity: .5; letter-spacing: .02em; margin-bottom: 2px; }
   /* 今日时长堆叠条：段宽 = 真实占比，颜色与状态色分开。 */
@@ -431,6 +679,21 @@
     color: #e9edf2; border: 0; border-radius: 6px; font: inherit; font-size: 10.5px; }
   /* 设置搜索：菜单里控件过五十个，记得住名字、记不住在哪一组。 */
   #m-find { width: 100%; margin: 0 0 6px; }
+  /* 当前外观摘要：打开菜单第一眼就知道「现在是什么样」，不用逐组去翻。
+     纯展示，改动任何一项都会即时更新。 */
+  #menu .look { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 8px; padding: 6px 7px;
+    border-radius: 8px; background: rgba(255,255,255,.045); font-size: 10px; color: #cfd6dd; }
+  #menu .look span { padding: 1px 7px; border-radius: 999px; background: rgba(255,255,255,.07);
+    white-space: nowrap; }
+  #menu .look span b { font-weight: 600; color: #fff; }
+  #menu.searching .look { display: none; }
+  /* 分组图标：放在标题右端，不进入文本（搜索和「按组名命中」都靠纯文本）。
+     图标用 data-icon 由 CSS 画出来，读屏软件不会多念一个符号。 */
+  #menu details.group > summary::after {
+    content: attr(data-icon); float: right; font-size: 10px; opacity: .32;
+    transition: opacity .15s ease, color .15s ease;
+  }
+  #menu details.group[open] > summary::after { opacity: .9; color: var(--accent, #4ad5ff); }
   /* 搜索时分组标题、说明和底部战绩让位，只留命中的设置行。 */
   #menu.searching .title, #menu.searching .hint,
   #menu.searching #panel-score, #menu.searching #panel-recent { display: none; }
@@ -449,9 +712,10 @@
   #menu #m-preset-save, #menu #m-preset-apply, #menu #m-preset-del {
     flex: none; width: auto; min-width: 42px; height: 20px; margin-top: 0; padding: 0 8px; }
   #menu #m-preset-save { font-size: 10.5px; }
-  #m-export, #m-import { flex: 1; height: 22px; padding: 0; background: rgba(255,255,255,.1);
+  #m-export, #m-import, #m-report-md, #m-report-csv {
+    flex: 1; height: 22px; padding: 0; background: rgba(255,255,255,.1);
     color: #e9edf2; border: 0; border-radius: 6px; font: inherit; font-size: 11px; cursor: pointer; }
-  #m-export:hover, #m-import:hover { background: rgba(255,255,255,.22); }
+  #m-export:hover, #m-import:hover, #m-report-md:hover, #m-report-csv:hover { background: rgba(255,255,255,.22); }
   #menu label.row { cursor: pointer; }
   #menu input[type="checkbox"] { accent-color: var(--state); cursor: pointer; }
   #menu .hint { opacity: .45; font-size: 10px; line-height: 1.35; margin: 2px 0 4px; }
@@ -459,9 +723,33 @@
   /* `.row` 是 display:flex，会覆盖 UA 的 [hidden]：取色器行（自定义配色）与
      搜索过滤（.no-find）都靠这条真的藏起来。 */
   #menu .row[hidden], #menu .row.no-find { display: none; }
-  /* 软件名称行：右侧是「是否为它弹系统通知」的勾选框；关掉时名字变淡。 */
+  /* 软件名称行：右侧依次是「展示色 / 恢复默认色 / 是否为它弹通知」；关掉通知时名字变淡。 */
   #m-alias input[type="checkbox"] { flex: none; margin: 0; }
   #m-alias .row.muted input[type="text"] { opacity: .45; }
+  /* 色块只影响「今日战绩」，不参与灯色。18px 是能点中又不挤占名字输入框的尺寸。 */
+  #m-alias input.agent-color {
+    flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px;
+    background: transparent; cursor: pointer;
+  }
+  #m-alias input.agent-color::-webkit-color-swatch-wrapper { padding: 0; }
+  #m-alias input.agent-color::-webkit-color-swatch { border: 1px solid rgba(255,255,255,.28); border-radius: 4px; }
+  #m-alias .agent-color-reset {
+    flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px;
+    background: rgba(255,255,255,.08); color: #cfd5dc; font-size: 11px; line-height: 1; cursor: pointer;
+  }
+  #m-alias .agent-color-reset:hover { background: rgba(255,255,255,.2); }
+  /* 提示音开关：18px 的文字按钮，开=声、关=静，不抢通知勾选框的语义。 */
+  #m-alias .agent-sound {
+    flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px;
+    background: rgba(255,255,255,.08); color: #cfd5dc; font: inherit; font-size: 9px;
+    line-height: 1; cursor: pointer;
+  }
+  #m-alias .agent-sound:hover { background: rgba(255,255,255,.2); }
+  #m-alias .agent-sound.off { color: #7d858f; background: rgba(255,255,255,.03); }
+  /* 日志目录：软件名放一行、路径输入框下一行，长名字不会被 56px 的标签列裁掉。 */
+  #m-agentdirs .agent-dir { display: grid; grid-template-columns: 1fr; gap: 2px; margin: 3px 0; }
+  #m-agentdirs .agent-dir > span { font-size: 10px; opacity: .62; }
+  #m-agentdirs .agent-dir > input { width: 100%; }
   /* 每日目标进度条：一条细进度 + 数字。用战绩条同一支蓝，不借红黄绿紫 ——
      那几色在这个产品里是状态。 */
   #m-score .goal { display: flex; flex-direction: column; gap: 3px; margin: 2px 0 3px; }
@@ -525,13 +813,33 @@
   #sys .srow { display: flex; align-items: center; gap: 7px; }
   #sys .srow > span:first-child { flex: none; width: 30px; opacity: .8; }
   #sys .sbar { flex: 1; min-width: 0; height: 4px; border-radius: 999px; background: #33383f; overflow: hidden; }
-  #sys .sbar u { display: block; height: 100%; width: 0; background: #93a7bb; transition: width .45s ease; }
+  /* 跑马灯按设置生效：常驻 / 仅高负载（.hot）/ 关闭。只用中性石板灰的明暗
+     变化，不借用红/黄/绿 —— 那三种颜色只说明代理状态，面板说的是电脑忙不忙。 */
+  #sys .sbar u {
+    display: block;
+    height: 100%;
+    width: 0;
+    background-color: #93a7bb;
+    transition: width .45s ease;
+  }
+  #sys[data-motion="always"] .sbar u,
+  #sys[data-motion="load"] .sbar u.hot {
+    background-image: linear-gradient(100deg, #7f8fa1 0%, #cfdae7 38%, #a9b8c8 62%, #7f8fa1 100%);
+    background-size: 240% 100%;
+    animation: sys-sweep 2.4s linear infinite;
+  }
+  @keyframes sys-sweep {
+    from { background-position: 120% 0; }
+    to { background-position: -120% 0; }
+  }
   #sys b { flex: none; width: 62px; text-align: right; font-weight: 600; color: #dfe5ec; font-variant-numeric: tabular-nums; }
 
   @media (prefers-reduced-motion: reduce) {
     #bot, #bot * { animation: none !important; }
     /* 低电量的持续闪烁也算动效：关掉它，靠颜色本身说明问题。 */
     #fuel[data-level="low"] b { animation: none !important; }
+    /* 系统面板的跑马灯同理：关掉动画，保留中性填充色。 */
+    #sys .sbar u { animation: none !important; background-image: none; }
   }
 </style>
 </head>
@@ -540,6 +848,7 @@
 <div id="stage">
   <div id="bar">
     <button id="btn-menu" title="尺寸与设置">&#9881;</button>
+    <button id="btn-memo" title="今日待办 (Ctrl+Shift+M)" aria-label="今日待办">&#9998;<b id="memo-badge" hidden></b></button>
     <button id="btn-theme" title="切换尺寸">&#9704;</button>
     <button id="btn-collapse" title="收起机器人（隐藏列表）">&#8211;</button>
     <button id="btn-quit" class="danger" title="退出">&#10005;</button>
@@ -549,8 +858,9 @@
     <div class="title">机器人</div>
     <input id="m-find" type="search" placeholder="搜索设置…" aria-label="搜索设置" autocomplete="off" spellcheck="false" />
     <div class="hint" id="m-find-empty" hidden>没有匹配的设置</div>
+    <div id="m-look" class="look" aria-live="polite"></div>
     <details class="group" open>
-      <summary>基础</summary>
+      <summary data-icon="◆">基础</summary>
       <div class="row">
         <label for="m-body">体型</label>
         <select id="m-body"></select>
@@ -585,7 +895,7 @@
       <div class="hint">目标只影响「今日战绩」里的进度，不参与状态判断，灯也不会因为达成而变色。</div>
     </details>
     <details class="group">
-      <summary>灯光</summary>
+      <summary data-icon="◍">灯光</summary>
       <div class="row">
         <label for="m-effect">底座灯效</label>
         <select id="m-effect"></select>
@@ -596,7 +906,7 @@
       </div>
     </details>
     <details class="group">
-      <summary>外观</summary>
+      <summary data-icon="◑">外观</summary>
       <div class="row">
         <label for="m-theme">配色主题</label>
         <select id="m-theme"></select>
@@ -665,7 +975,7 @@
       <button id="m-random-look">随机换装</button>
     </details>
     <details class="group">
-      <summary>材质</summary>
+      <summary data-icon="◒">材质</summary>
       <div class="row">
         <label for="m-wear">做旧程度</label>
         <input id="m-wear" type="range" min="0" max="150" step="5" value="100" />
@@ -678,7 +988,7 @@
       <div class="hint">做旧改贴图、质感改反光，两者都不碰颜色 —— 红黄绿在这台机器上只能表示状态。</div>
     </details>
     <details class="group">
-      <summary>动作</summary>
+      <summary data-icon="◓">动作</summary>
       <div class="title">状态手势</div>
       <div class="row"><label for="m-pose-error">出错</label><select id="m-pose-error"></select></div>
       <div class="row"><label for="m-pose-waiting">等待</label><select id="m-pose-waiting"></select></div>
@@ -694,6 +1004,11 @@
         <label for="m-motion">动效强度</label>
         <select id="m-motion"></select>
       </div>
+      <div class="row">
+        <label for="m-personality">人格</label>
+        <select id="m-personality"></select>
+      </div>
+      <div class="hint">人格决定待机动作的频率与语气，不影响任何状态判断。</div>
       <div class="row">
         <label for="m-clickaction">点击反应</label>
         <select id="m-clickaction">
@@ -711,7 +1026,7 @@
       </div>
     </details>
     <details class="group">
-      <summary>台词</summary>
+      <summary data-icon="◔">台词</summary>
       <div class="row"><label for="m-phrase-waiting">等待</label><input id="m-phrase-waiting" type="text" maxlength="10" placeholder="需要你处理" /></div>
       <div class="row"><label for="m-phrase-error">出错</label><input id="m-phrase-error" type="text" maxlength="10" placeholder="出错了" /></div>
       <div class="row"><label for="m-phrase-done">完成</label><input id="m-phrase-done" type="text" maxlength="10" placeholder="完成了" /></div>
@@ -722,7 +1037,23 @@
       <div class="hint">留空显示内置台词；气泡与语音共用同一句。</div>
     </details>
     <details class="group">
-      <summary>场景</summary>
+      <summary data-icon="✎">日记</summary>
+      <div class="row">
+        <label for="m-notes-remind">提醒间隔</label>
+        <select id="m-notes-remind">
+          <option value="0">关闭</option>
+          <option value="15">15 分钟</option>
+          <option value="30">30 分钟</option>
+          <option value="60">1 小时</option>
+          <option value="120">2 小时</option>
+        </select>
+      </div>
+      <label class="row"><input id="m-notes-notify" type="checkbox" checked /> 同时弹系统通知</label>
+      <label class="row"><input id="m-notes-open" type="checkbox" /> 启动时展开便签</label>
+      <div class="hint">只提醒「今日待办」里还没勾掉的事，不影响灯的颜色；静音或勿扰期间不提醒。</div>
+    </details>
+    <details class="group">
+      <summary data-icon="◕">场景</summary>
       <div class="row">
         <label for="m-scene">场景</label>
         <select id="m-scene"></select>
@@ -748,7 +1079,7 @@
       </div>
     </details>
     <details class="group">
-      <summary>系统</summary>
+      <summary data-icon="⊞">系统</summary>
       <label class="row"><input id="m-sound" type="checkbox" /> 提示音</label>
       <div class="row">
         <label for="m-soundstyle">提示音风格</label>
@@ -781,12 +1112,31 @@
       <div class="hint warn" id="m-dnd-note" hidden>起止时间相同 = 这段勿扰不会生效。跨午夜可以让结束时间早于开始时间（22:00 → 08:00）。</div>
       <label class="row"><input id="m-click" type="checkbox" checked /> 点击穿透</label>
       <label class="row"><input id="m-autostart" type="checkbox" /> 开机自启</label>
-      <label class="row"><input id="m-hotkey" type="checkbox" checked /> 全局快捷键 Ctrl/⌘+Alt+B</label>
+      <label class="row"><input id="m-hotkey" type="checkbox" checked /> 全局快捷键</label>
+      <div class="row">
+        <label for="m-hotkey-key">组合键</label>
+        <select id="m-hotkey-key"></select>
+      </div>
+      <div class="hint">如果组合键被别的软件占用，托盘菜单仍可显示/隐藏机器人。</div>
       <div class="hint" id="m-update" hidden></div>
       <label class="row"><input id="m-labels" type="checkbox" checked /> 软件列表</label>
+      <label class="row"><input id="m-expand-sessions" type="checkbox" /> 默认展开多会话</label>
       <label class="row"><input id="m-offline" type="checkbox" checked /> 显示未运行软件</label>
       <label class="row"><input id="m-model" type="checkbox" checked /> 显示模型/供应商</label>
-      <label class="row"><input id="m-sys" type="checkbox" checked /> 系统占用（CPU/内存）</label>
+      <label class="row"><input id="m-sys" type="checkbox" checked /> 系统占用（CPU / 内存 / GPU）</label>
+      <div class="row">
+        <label for="m-sys-motion">系统面板动效</label>
+        <select id="m-sys-motion"></select>
+      </div>
+      <div class="row">
+        <label for="m-stuck-busy">忙碌多久算卡住</label>
+        <input id="m-stuck-busy" type="number" min="1" max="240" step="1" value="15" />
+      </div>
+      <div class="row">
+        <label for="m-stuck-wait">等待多久提醒</label>
+        <input id="m-stuck-wait" type="number" min="1" max="240" step="1" value="10" />
+      </div>
+      <div class="hint">GPU 行仅在检测到 NVIDIA 显卡时出现（通过 nvidia-smi 读取）；条件不满足时不显示，也不猜数字。</div>
       <label class="row"><input id="m-score-panel" type="checkbox" checked /> 今日战绩面板</label>
       <label class="row"><input id="m-recent-panel" type="checkbox" checked /> 最近动态面板</label>
       <div class="row">
@@ -795,7 +1145,7 @@
       </div>
     </details>
     <details class="group">
-      <summary>广告牌</summary>
+      <summary data-icon="▤">广告牌</summary>
       <div class="row">
         <label for="m-sign">显示内容</label>
         <select id="m-sign"></select>
@@ -804,6 +1154,11 @@
         <label for="m-sign-pos">位置</label>
         <select id="m-sign-pos"></select>
       </div>
+      <div class="row">
+        <button id="m-sign-reset" type="button">恢复默认位置</button>
+        <span id="m-sign-custom" class="hint" hidden>已自定义</span>
+      </div>
+      <div class="hint">按住广告牌可以直接拖动它；「位置」只决定默认靠哪一侧，拖动是在它上面的微调。</div>
       <div class="row">
         <label for="m-sign-color">颜色</label>
         <select id="m-sign-color"></select>
@@ -823,21 +1178,30 @@
       <div class="hint">铭牌留空时显示主灯代表的那个软件名。</div>
     </details>
     <details class="group">
-      <summary>软件</summary>
+      <summary data-icon="▦">软件</summary>
       <div class="title">顺序</div>
       <div id="m-order"></div>
       <div class="hint">点 ↑/↓ 调整软件在灯环与列表里的前后顺序。</div>
-      <div class="title">名称</div>
+      <div class="title">名称与颜色</div>
       <div id="m-alias"></div>
-      <div class="hint">留空显示默认名称；右侧勾选框控制是否为它弹系统通知（灯照常亮）。</div>
+      <div class="hint">留空显示默认名称；色块是它在「今日战绩」里的颜色，↺ 恢复默认；勾选框控制系统通知，「声/静」只控制提示音（灯照常亮）。</div>
+      <div class="title">日志目录</div>
+      <div id="m-agentdirs"></div>
+      <div class="hint">留空自动查找。填了自定义路径后，重启 <b>bao watch all</b> 才会生效。</div>
     </details>
     <details class="group">
-      <summary>配置</summary>
+      <summary data-icon="≡">配置</summary>
       <div class="row">
         <button id="m-export">导出配置</button>
         <button id="m-import">导入配置</button>
       </div>
       <input id="m-import-file" type="file" accept=".json" hidden />
+      <div class="title">工作记录</div>
+      <div class="row">
+        <button id="m-report-md">导出日报（Markdown）</button>
+        <button id="m-report-csv">导出近 30 天（CSV）</button>
+      </div>
+      <div class="hint">数据来自本机统计；日报含今天与近 7/30 天汇总，CSV 按「日期 + 软件」逐行导出。</div>
       <div class="title">外观方案</div>
       <div class="row">
         <input id="m-preset-name" type="text" maxlength="12" placeholder="方案名" />
@@ -848,7 +1212,8 @@
         <button id="m-preset-apply">应用</button>
         <button id="m-preset-del">删除</button>
       </div>
-      <div class="hint">尺寸快捷键（先点一下机器人让它获得焦点）：Ctrl/⌘+Shift+= 放大，- 缩小，0 重置。全局显示/隐藏是 Ctrl/⌘+Alt+B。</div>
+      <div class="hint">方案会保存机器人外观、场景自动切换和广告牌设置；尺寸、声音与系统开关不在其中。</div>
+      <div class="hint">尺寸快捷键（先点一下机器人让它获得焦点）：Ctrl+Shift+= 放大，- 缩小，0 重置。全局显示/隐藏是 Ctrl+Alt+B。</div>
       <button id="m-quit" class="danger">退出</button>
     </details>
     <div id="panel-score">
@@ -905,10 +1270,58 @@
 
       <!-- No GL context: a lit lens in the state colour, never a blank box. -->
       <div id="fallback"><b></b></div>
+
+      <!-- 便签的小纸片：面板关着、又有未完成的事时贴在脚边。放进 #bot 里，
+           它会跟机器人一起缩放（收起 / mini 都不会飘到空处）。它不是第四个
+           状态灯，所以不借红黄绿 —— 一张纸的颜色。 -->
+      <button id="memo-peek" type="button" title="打开今日待办" aria-label="打开今日待办" hidden>
+        <b>0</b>
+      </button>
     </div>
 
     <div id="fuel" title=""><b></b></div>
   </div>
+
+  <!-- 桌面便签：和代理状态完全分开的一张纸。它在布局流里（不是浮层），
+       打开时窗口会随之变高；关掉就完全不占空间、也不吃点击。
+       放在机器人正下方而不是列表末尾：待办是「现在要做的事」，不该被越长
+       越长的软件列表推到屏幕外面去。 -->
+  <section id="memo" hidden aria-label="今日待办">
+    <header>
+      <span class="memo-title">今日待办</span>
+      <span id="memo-count" class="memo-count"></span>
+      <button id="memo-snooze" type="button" hidden>稍后 10 分钟</button>
+      <button id="memo-close" type="button" title="收起" aria-label="收起待办">✕</button>
+    </header>
+    <form id="memo-form">
+      <input id="memo-input" type="text" maxlength="140" placeholder="记一件事，回车保存…"
+        autocomplete="off" aria-label="新的待办" />
+      <button id="memo-add" type="submit">记下</button>
+    </form>
+    <div id="memo-list" role="list"></div>
+    <!-- 覆盖式滚动条在 Windows 上只有滚动时才出现：一张写满的便签看起来就像
+         只有 7 条。用一行明确的提示代替不可见的滚动条。 -->
+    <div id="memo-more" hidden>还有更多 · 滚动查看</div>
+    <div id="memo-undo" hidden>
+      <span>已删除</span>
+      <button id="memo-undo-btn" type="button">撤销</button>
+    </div>
+    <footer id="memo-foot">
+      <span id="memo-done-note"></span>
+      <button id="memo-export" type="button">导出</button>
+      <button id="memo-clear" type="button">清空已完成</button>
+    </footer>
+  </section>
+
+  <!-- 快速记一条：只开一条输入，不把整张便签摊开。Ctrl+Shift+N。 -->
+  <section id="quick-add" hidden aria-label="快速记一条">
+    <form id="quick-add-form">
+      <input id="quick-add-input" type="text" maxlength="140" placeholder="快速记一条，回车保存…"
+        autocomplete="off" aria-label="快速记一条" />
+      <button type="submit">记下</button>
+    </form>
+    <div class="quick-hint">Enter 保存 · Esc 关闭</div>
+  </section>
 
   <!-- 本机资源：和代理状态分开表达，颜色也分开（见上方 #sys 注释）。 -->
   <div id="sys" hidden>
@@ -918,9 +1331,14 @@
     <div class="srow" title="内存占用">
       <span>内存</span><span class="sbar"><u id="sys-mem-bar"></u></span><b id="sys-mem">—</b>
     </div>
+    <!-- 只有检测到 NVIDIA 显卡读数时才显示；AMD/Intel 不猜数字。 -->
+    <div class="srow" id="sys-gpu-row" title="GPU 使用率" hidden>
+      <span>GPU</span><span class="sbar"><u id="sys-gpu-bar"></u></span><b id="sys-gpu">—</b>
+    </div>
   </div>
 
   <div id="labels"></div>
+
   <!-- 只靠 opacity:0 藏起来的话，它在无障碍树里一直都在：连接正常时读屏
        用户也会被告知「已断开」。所以默认带 hidden，由 JS 跟着连接状态切换。 -->
   <div id="disconnected" role="status" aria-live="polite" hidden>连接已断开 &mdash; 状态未知</div>

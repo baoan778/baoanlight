@@ -9,7 +9,6 @@
 // (Claude Code, Codex) should use `bao connect` instead — it is exact, this is
 // a very good guess.
 
-const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
@@ -33,14 +32,12 @@ function loadPty() {
   }
 }
 
-// A pty spawns through CreateProcess/execvp, which — unlike a shell — will not
-// search PATH for a bare name, and on Windows cannot execute a .cmd shim at all.
-// Most agent CLIs are installed as exactly such a shim.
+// A pty spawns through CreateProcess, which — unlike a shell — will not search
+// PATH for a bare name, and cannot execute a .cmd shim at all. Most agent CLIs
+// are installed as exactly such a shim.
 function which(cmd) {
   if (cmd.includes('/') || cmd.includes('\\')) return path.resolve(cmd);
-  const exts = process.platform === 'win32'
-    ? ['', ...(process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)]
-    : [''];
+  const exts = ['', ...(process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)];
   for (const dir of (process.env.PATH || '').split(path.delimiter)) {
     if (!dir) continue;
     for (const ext of exts) {
@@ -53,7 +50,7 @@ function which(cmd) {
 
 function resolveSpawn(command, args) {
   const file = which(command);
-  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(file)) {
+  if (/\.(cmd|bat)$/i.test(file)) {
     // cmd.exe /c 会把 & | < > ^ ( ) 当命令分隔/重定向解析：参数里带这些字符
     // （模型名、带 & 的提示词）会被截断，甚至执行不该执行的片段。用 ^ 转义成
     // 字面量；file 路径也一样处理（路径里可能有括号）。
@@ -141,7 +138,7 @@ function run(argv, opts = {}) {
     rows: process.stdout.rows || 30,
     cwd,
     env: { ...process.env, BAOANLIGHT_SESSION: session, BAOANLIGHT_AGENT: agent },
-    useConpty: os.platform() === 'win32' ? undefined : false,
+    useConpty: undefined,
   });
 
   push('busy', 'starting');
@@ -189,7 +186,7 @@ function run(argv, opts = {}) {
   // 它的孙进程。只 kill cmd.exe 会把 agent 留成孤儿：终端关了，代理还在跑，
   // 灯却已经下线。/T 才会连整棵树一起收掉。
   const killTree = () => {
-    if (process.platform === 'win32' && child.pid) {
+    if (child.pid) {
       try {
         require('child_process').execFileSync(
           'taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });

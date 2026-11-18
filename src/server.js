@@ -10,6 +10,7 @@ const selfcheck = require('./selfcheck');
 const sysinfo = require('./sysinfo');
 const auth = require('./auth');
 const updateCheck = require('./update-check');
+const notes = require('./notes');
 // 开机自启只能在 **node** 进程里装：autostart.js 用 process.execPath 写启动项，
 // 在 Electron 主进程里会写成 Electron 可执行文件，登录时根本起不来。
 const autostart = require('./autostart');
@@ -76,11 +77,14 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
     statsTimer = null;
     try {
       config.ensureDir();
+      // 用「已累计 + 此刻正在忙」的副本：退出/重启时正在跑的那一段也必须留下，
+      // 否则今日时长会像被清零了一样（见 Store.statsForPersistence）。
+      const stats = store.statsForPersistence();
       // 原子写：先写临时文件再 rename。进程在 writeFileSync 中途被杀（kill -9 /
       // 断电）会留下半截 JSON，下次启动 parse 失败、统计清零。rename 是同目录内
       // 的原子替换，磁盘上要么是完整旧文件、要么是完整新文件。
       const tmp = statsFile + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(store.stats));
+      fs.writeFileSync(tmp, JSON.stringify(stats));
       fs.renameSync(tmp, statsFile);
     } catch { /* 写不进也不影响运行 */ }
   };
@@ -159,8 +163,16 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
       if (!verdict.ok) {
         // 带上查询串：被拒的写请求里往往带着 agent/session，不记下来就永远
         // 不知道「是谁没带 token」，只能看到一堆没头没尾的 refused。
-        const qs = url.search ? `?${url.search}` : '';
-        logEvent(`refused ${req.method} ${p}${qs} (${verdict.error})`);
+        // 但查询串里也可能带着 token（CLI 支持 `?token=`），而 `/log` 是免
+        // token 的读接口 —— 秘密绝不能抄进一个任何人都能读的地方。
+        const redacted = (() => {
+          if (!url.search) return '';
+          const q = new URLSearchParams(url.search);
+          if (q.has('token')) q.set('token', '***');
+          const s = q.toString();
+          return s ? `?${s}` : '';
+        })();
+        logEvent(`refused ${req.method} ${p}${redacted} (${verdict.error})`);
         return send(res, verdict.code, { error: verdict.error });
       }
 
@@ -190,7 +202,9 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
           let payload = {};
           try { payload = raw ? JSON.parse(raw) : {}; } catch { payload = {}; }
           try {
-            if (payload.on) autostart.install(); else autostart.uninstall();
+            // 只认真正的布尔 true：手写的 `{"on":"false"}` 是真值，按 truthy
+            // 判断会把它当成「开启」，在用户明确写了 false 的时候装启动项。
+            if (payload && payload.on === true) autostart.install(); else autostart.uninstall();
           } catch (err) {
             return send(res, 500, { error: String(err.message || err) });
           }
@@ -204,6 +218,20 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
       if (p === '/sys') return send(res, 200, sysinfo.sample());
 
       if (p === '/log') return send(res, 200, { events: eventLog });
+
+      // 桌面便签：读免 token，写走既有的写入校验。它和代理状态无关，
+      // 不参与主灯，也不会被 TTL 清掉 —— 忘了的事要一直留着。
+      if (p === '/notes') {
+        if (req.method === 'GET') return send(res, 200, notes.snapshot());
+        if (req.method === 'POST') {
+          const raw = await readBody(req, 16 * 1024);
+          let payload;
+          try { payload = raw ? JSON.parse(raw) : {}; } catch { return send(res, 400, { error: 'invalid json' }); }
+          if (!payload || typeof payload !== 'object' || Array.isArray(payload)) payload = {};
+          const result = notes.apply(payload);
+          return send(res, result && result.error ? 400 : 200, result);
+        }
+      }
 
       if (p === '/state' && req.method === 'POST') {
         const raw = await readBody(req);
@@ -239,7 +267,7 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
       }
 
       // Convenience for shell one-liners and hooks. 写入（含 GET）必须带 token：
-      //   curl -s -H "x-bao-token: $(bao token)" localhost:4747/set/busy?agent=claude
+      //   Invoke-RestMethod -Headers @{'x-bao-token'=(bao token)} localhost:4747/set/busy?agent=claude
       // 没带 token 的 GET 会被上面的 guard 拒绝（否则 <img> 就能替你点灯）。
       // 也接受 JSON 请求体（`bao mcp` 走的就是这条）：路径里的 state 永远优先，
       // 查询串与 body 都能补 agent/session/detail/cwd，缺省才回落。
@@ -304,6 +332,12 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
 
       if (p === '/quit' && req.method === 'POST') {
         send(res, 200, { ok: true });
+        // Stop accepting new connections *now*, not 150ms from now. `bao stop`
+        // returns as soon as it sees this response, and `bao stop && bao start`
+        // is a normal thing to type — if the old listener is still up, the new
+        // start sees a live server, says "already running", and leaves the
+        // desktop without a robot when the old one exits.
+        try { server.close(); } catch { /* already closing */ }
         // 告诉所有客户端「这是计划内关闭」：窗口收到就自己退出。否则它会以一个
         // 「未连接」的孤儿进程留在桌面上，继续占着单实例锁和全局快捷键。
         for (const c of clients) { try { c.write('event: quit\ndata: {}\n\n'); } catch { clients.delete(c); } }
@@ -323,7 +357,12 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
       const insideOverlay = abs === OVERLAY_DIR || abs.startsWith(OVERLAY_DIR + path.sep);
       if (insideOverlay && fs.existsSync(abs) && fs.statSync(abs).isFile()) {
         res.writeHead(200, { 'content-type': MIME[path.extname(abs)] || 'application/octet-stream' });
-        return fs.createReadStream(abs).pipe(res);
+        // stat 与 open 之间文件可能被替换/删除（升级、编辑器保存、杀软隔离）。
+        // 读流没有 error 监听器时，'error' 是未捕获异常 —— 一个落空的静态请求
+        // 就能把常驻的 server 整个带走。断开响应即可，下次请求会重新解析。
+        const stream = fs.createReadStream(abs);
+        stream.on('error', () => { try { res.end(); } catch { /* 已经关了 */ } });
+        return stream.pipe(res);
       }
 
       return send(res, 404, { error: 'not found' });
@@ -336,6 +375,10 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
   });
   // 进程被 `server.close()`（测试、`bao stop` 之外的路由）收掉时也落盘一次。
   server.once('close', flushStats);
+  // Ctrl+C（`start --foreground`）、工具栏 / 托盘退出最终都会走到 process.exit，
+  // 这条路径不经过 server.close()。'exit' 里只能做同步操作，写盘正好是同步的 ——
+  // 这是把「退出那一刻还在忙」的时长留下来的最后机会。
+  process.once('exit', flushStats);
 
   store.on('change', () => {
     const line = `data: ${JSON.stringify(frame())}\n\n`;

@@ -3,9 +3,8 @@
 //
 // The test suite proves the logic is correct. This proves *this* machine is
 // wired up: the right binaries, the right paths in the right config files, a
-// reachable server. Those are the things that differ between a Mac and a PC,
-// and they are exactly what a user cannot debug from a robot that just sits
-// there asleep.
+// reachable server. Those are the things that differ between machines, and they
+// are exactly what a user cannot debug from a robot that just sits there asleep.
 
 const fs = require('fs');
 const os = require('os');
@@ -112,7 +111,7 @@ async function run() {
   } catch { /* not installed */ }
   check('Electron (robot window)', electronPath ? 'pass' : 'warn',
     electronPath || 'not installed — the desktop robot is unavailable',
-    'npm run setup   (or use: bao start --browser)');
+    'bao setup   (or use: bao start --browser)');
 
   // ---- universal wrapper
   let pty = false;

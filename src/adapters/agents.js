@@ -20,12 +20,8 @@ const firstEnv = (...names) => {
   return null;
 };
 
-// Where desktop apps keep per-user data on this platform.
-const appData = () => {
-  if (process.platform === 'win32') return process.env.APPDATA || path.join(home(), 'AppData', 'Roaming');
-  if (process.platform === 'darwin') return path.join(home(), 'Library', 'Application Support');
-  return process.env.XDG_CONFIG_HOME || path.join(home(), '.config');
-};
+// Where desktop apps keep per-user data on Windows.
+const appData = () => process.env.APPDATA || path.join(home(), 'AppData', 'Roaming');
 
 // Directories are functions because HOME / env can differ per process (tests
 // spawn the CLI with a fake HOME; users set CODEX_HOME or DEEPSEEK_HOME).
@@ -67,10 +63,7 @@ const LOG_DIRS = {
   claude: () => {
     // Claude Code's transcripts are a bonus, not a requirement: the hook tier
     // is what we use. Kept here so `bao watch claude` can still work offline.
-    return [
-      path.join(home(), '.claude', 'projects'),
-      path.join(home(), '.config', 'claude', 'projects'),
-    ];
+    return [path.join(home(), '.claude', 'projects')];
   },
   codebuddy: () => {
     // CodeBuddy / WorkBuddy 的 CLI 与 IDE 都把每轮对话写成
@@ -79,7 +72,6 @@ const LOG_DIRS = {
     const root = firstEnv('CODEBUDDY_HOME', 'WORKBUDDY_HOME') || path.join(home(), '.workbuddy');
     return [
       path.join(root, 'projects'),
-      // 新版可能把 transcript 挪到自己的目录下（这台机器上该目录已存在，暂时是空的）。
       path.join(home(), '.codebuddy', 'projects'),
       path.join(appData(), 'WorkBuddy', 'projects'),
       path.join(appData(), 'CodeBuddy', 'projects'),

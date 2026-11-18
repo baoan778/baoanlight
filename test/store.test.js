@@ -119,6 +119,22 @@ test('an unregistered software is still shown, after the known ones', () => {
   );
 });
 
+// The panel has room for eight, but the main lamp has to speak for all of
+// them. A red ninth agent that only exists in `slotsOverflow` must not leave
+// the robot looking calm.
+test('an agent beyond the visible slots still drives the main lamp', () => {
+  const s = new Store();
+  for (const a of ['deepseek', 'claude', 'codex', 'workbuddy', 'codebuddy', 'alpha', 'bravo', 'charlie']) {
+    s.set({ session: a, agent: a, state: 'idle' });
+  }
+  s.set({ session: 'zeta', agent: 'zeta', state: 'error' });
+
+  const snap = s.snapshot();
+  assert.equal(snap.slotsOverflow, 1, 'zeta does not fit in the panel');
+  assert.equal(snap.slots.some((x) => x.agent === 'zeta'), false);
+  assert.equal(snap.overall, 'error', 'the hidden failure still wins the main lamp');
+});
+
 test('`running` is accepted as the same thing as `busy`', () => {
   const s = new Store();
   s.set({ session: 'a', state: 'running' });
@@ -180,6 +196,22 @@ test('a busy session silent past the idle window is dropped, not turned green', 
 
   assert.equal(s.snapshot().sessions.length, 0, 'the agent is gone, so the session goes');
   assert.equal(s.snapshot().overall, 'offline');
+});
+
+// 静默超时只说明「它不再汇报了」，不等于它又白干了半小时。今日时长要停在
+// 最后一帧证据上，否则日目标/里程碑会被沉默虚报提前触发。
+test('a dropped busy session is credited only up to its last report', () => {
+  const s = new Store({ idleTtlMs: 100 });
+  s.set({ session: 'gone', agent: 'claude', state: 'busy' });
+  const rec = s.sessions.get('gone');
+  const now = Date.now();
+  rec.since = now - 10_000;
+  rec.updatedAt = now - 2_000;
+
+  s.sweep();
+
+  const ms = s.snapshot().stats.byAgent.claude || 0;
+  assert.ok(ms >= 7_000 && ms <= 8_500, `expected ~8s of evidence, counted ${ms}ms`);
 });
 
 test('a waiting session never decays — red must not disappear on its own', async () => {
@@ -294,10 +326,84 @@ test('daily busy time is accumulated per agent', async () => {
   assert.ok((snap.stats.byAgent.claude || 0) >= 40, 'the busy stretch is counted');
 });
 
+// 落盘不能只写「已经结束」的那些段：退出 / 重启时正在忙的整段也要留下，
+// 但绝不能因此改写会话的 since（界面上的「已运行 N 分钟」不能归零）。
+test('persisting stats includes the stretch that is still running', async () => {
+  const s = new Store();
+  s.set({ session: 'a', agent: 'claude', state: 'busy' });
+  const since = s.sessions.get('a').since;
+  await new Promise((r) => setTimeout(r, 60));
+
+  const first = s.statsForPersistence();
+  assert.ok(first.byAgent.claude >= 50, `expected the live stretch, got ${first.byAgent.claude || 0}`);
+  assert.equal(s.sessions.get('a').since, since, 'persisting must not reset the visible duration');
+
+  await new Promise((r) => setTimeout(r, 30));
+  const second = s.statsForPersistence();
+  assert.ok(second.byAgent.claude - first.byAgent.claude < 100,
+    'a later snapshot replaces the live stretch instead of adding it again (no double count)');
+  assert.ok(s.snapshot().stats.byAgent.claude >= 50, 'the display already counted it');
+
+  s.set({ session: 'a', agent: 'claude', state: 'idle' });
+  const settled = s.statsForPersistence();
+  assert.ok(settled.byAgent.claude >= 70, 'the finished stretch is kept');
+  assert.ok(settled.byAgent.claude < 300, `and not counted twice (${settled.byAgent.claude}ms)`);
+});
+
+// 跨午夜仍在忙的会话：昨天 23:00 开始、一直没停，昨天的历史里必须有那 1 小时。
+// 以前 checkDay 只归档已经结算的 byAgent，这段会凭空消失。
+test('a busy session that crosses midnight is credited to the archived day', () => {
+  const s = new Store();
+  s.set({ session: 'night', agent: 'claude', state: 'busy' });
+
+  const now = Date.now();
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  yesterday.setHours(23, 0, 0, 0);
+  const key = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+
+  s.stats.day = key;
+  s.stats.byAgent = {};
+  s.stats.events = {};
+  s.sessions.get('night').since = yesterday.getTime();
+  s.checkDay(now);
+
+  const archived = s.stats.history[key];
+  assert.ok(archived, 'the archived day exists');
+  assert.ok(archived.byAgent.claude >= 60 * 60 * 1000 - 1000,
+    `the final hour before midnight is kept (${archived.byAgent.claude}ms)`);
+  assert.equal(s.stats.byAgent.claude, undefined, 'today starts at zero');
+});
+
 test('a stale stats file from another day is reset on merge', () => {
   const s = new Store();
   s.mergeStats({ day: '2000-01-01', byAgent: { claude: 999999 } });
   assert.deepEqual(s.snapshot().stats.byAgent, {}, 'yesterday never leaks into today');
+});
+
+// stats.json 可能被手改过，或来自字段类型不同的旧版本。字符串会被
+// `byAgent[agent] + ms` 变成拼接（"abc100"），之后今日时长整列 NaN；
+// 合并时只收有限的非负数。
+test('a stats file with non-numeric values is sanitized instead of concatenated', () => {
+  const d = new Date();
+  const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const s = new Store();
+  s.mergeStats({
+    day: today,
+    byAgent: { claude: 'abc', codex: -5, deepseek: 1000 },
+    events: { claude: { done: '2', error: 1 } },
+  });
+  const st = s.snapshot().stats;
+  assert.equal(st.byAgent.claude, 0, 'a string becomes zero, not a concatenation base');
+  assert.equal(st.byAgent.codex, 0, 'negative time is not work');
+  assert.equal(st.byAgent.deepseek, 1000);
+  assert.equal(st.events.claude.done, 2, 'numeric strings are still numbers');
+  assert.equal(st.events.claude.error, 1);
+
+  s.set({ session: 'x', agent: 'claude', state: 'busy' });
+  s.set({ session: 'x', agent: 'claude', state: 'idle' });
+  assert.equal(typeof st.byAgent.claude, 'number');
+  assert.equal(Number.isFinite(s.snapshot().stats.byAgent.claude), true, 'busy time stays numeric');
 });
 
 // 跨夜重启：存档文件是昨天的，但历史必须保留（昨天还要归档进 history）。
@@ -355,4 +461,52 @@ test('done is transient and decays back to idle', async () => {
   await new Promise((r) => setTimeout(r, 50));
   s.sweep();
   assert.equal(s.snapshot().sessions[0].state, 'idle', 'done 过了 doneTtl 就退回空闲');
+});
+
+test('a state change is recorded as one evidence event', () => {
+  const st = new Store();
+  st.set({ session: 'ev-1', agent: 'claude', state: 'busy', detail: 'running', source: 'hook', event: 'PreToolUse' });
+  const s = st.snapshot().sessions.find((x) => x.session === 'ev-1');
+  assert.equal(s.events.length, 1);
+  assert.equal(s.events[0].source, 'hook');
+  assert.equal(s.events[0].event, 'PreToolUse');
+  assert.equal(s.events[0].state, 'busy');
+  assert.ok(s.lastEventAt > 0, 'the activity clock starts with the first real event');
+});
+
+test('a repeated report does not add another event', () => {
+  const st = new Store();
+  st.set({ session: 'ev-2', agent: 'claude', state: 'busy', detail: 'running' });
+  st.set({ session: 'ev-2', agent: 'claude', state: 'busy', detail: 'running' });
+  assert.equal(st.snapshot().sessions[0].events.length, 1);
+});
+
+test('a heartbeat keeps the session alive but is not evidence', () => {
+  const st = new Store();
+  st.set({ session: 'ev-3', agent: 'codex', state: 'busy', detail: 'working' });
+  const before = st.snapshot().sessions[0].lastEventAt;
+  st.set({ session: 'ev-3', agent: 'codex', state: 'busy', detail: 'working', pulse: true });
+  const s = st.snapshot().sessions[0];
+  assert.equal(s.events.length, 1, 'heartbeats never enter the ring');
+  assert.equal(s.lastEventAt, before, 'heartbeats never move the activity clock');
+});
+
+test('the ring keeps the newest eight events', () => {
+  const st = new Store();
+  for (let i = 0; i < 10; i += 1) {
+    st.set({ session: 'ev-4', agent: 'claude', state: i % 2 ? 'busy' : 'waiting', detail: String(i) });
+  }
+  const s = st.snapshot().sessions[0];
+  assert.equal(s.events.length, 8);
+  assert.equal(s.events[7].detail, '9');
+});
+
+test('events older than two hours are dropped, and going offline clears the trail', () => {
+  const st = new Store();
+  st.set({ session: 'ev-5', agent: 'claude', state: 'busy', detail: 'old' });
+  st.trails.get('ev-5')[0].at = Date.now() - 3 * 60 * 60 * 1000;
+  st.set({ session: 'ev-5', agent: 'claude', state: 'waiting', detail: 'new' });
+  assert.equal(st.snapshot().sessions[0].events.length, 1, 'the stale event is gone');
+  st.set({ session: 'ev-5', agent: 'claude', state: 'offline' });
+  assert.equal(st.trails.has('ev-5'), false, 'an ended session leaves nothing behind');
 });

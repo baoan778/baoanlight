@@ -24,7 +24,9 @@
 //   bao:motion      { motion }                bao:pose      { state, pose }
 //   bao:wear        { wear }                  bao:finish    { finish }
 //   bao:phrase      { state, text }           bao:say       { text }
-//   bao:sign        { mode, pos, color, shape }
+//   bao:sign        { mode, pos, color, shape, offset }
+//   bao:sign-drag-start / bao:sign-drag { dx, dy } / bao:sign-drag-end
+//   bao:sign-offset { x, y }（3D 侧回发，由设置面板落盘）
 //   bao:bubble / bao:nameplate / bao:brightness / bao:scale —— { text } / { text } / { brightness } / { scale }
 //   bao:greet / bao:poke / bao:drag / bao:done / bao:crazy / bao:comfort / bao:companion / bao:milestone
 //   bao:idle        { on, freq }              bao:ccswitch  { agent, model }

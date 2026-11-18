@@ -20,6 +20,10 @@ process.env.BAOANLIGHT_HOME = testHome;
 
 const { start } = require('../src/server');
 
+// 渲染测试不该取决于开发机此刻开没开 Claude Code：presence 会把「离线」变成
+// 「未知」，让一条条与探测无关的断言随机变红。固定成「没有证据」。
+require('../src/presence').claudeRunning = async () => false;
+
 const GUTTER = 16;             // minimum clear space around the robot
 let server;
 let base;
@@ -211,6 +215,14 @@ test('every state is labelled, green included', async ({ page }) => {
   await settled(page, () => document.querySelector('.pill[data-agent="claude"]')?.textContent.trim()).toBe('Claude Coderunning Bash');
 });
 
+// 未运行与未知必须是两回事：前者是一盏灭掉的灯，后者才是灰色问号。
+test('an offline software is a dark light, not the same grey as unknown', async ({ page }) => {
+  await api('/state', { session: 'a', agent: 'claude', state: 'unknown' });
+  await expect(page.locator('.pill[data-agent="claude"] i')).toHaveAttribute('data-color', 'grey');
+  await api('/state', { session: 'a', agent: 'claude', state: 'offline' });
+  await expect(page.locator('.pill[data-agent="claude"] i')).toHaveAttribute('data-color', 'off');
+});
+
 // One software with several open sessions must still be one row, or its
 // duplicate rows push the other software off the panel — a real bug where
 // workbuddy had both an idle and an error session and claude vanished.
@@ -229,9 +241,10 @@ test('one software with several sessions still shows a single row', async ({ pag
   expect(rows, 'one row per software, fixed order')
     .toEqual(['deepseek', 'claude', 'codex', 'workbuddy', 'codebuddy']);
 
-  // 两个会话合成一行时，行上要写 ×2：否则「Claude 出错了」看不出是三个里哪个，
-  // 而 README 一直承诺标签会带 ×N。
-  await expect(page.locator('.pill[data-agent="workbuddy"] b')).toHaveText('WorkBuddy ×2');
+  // 两个会话合成一行时，行尾要有 ×2：否则「Claude 出错了」看不出是三个里哪个。
+  // 现在这个数字本身是展开按钮（点开逐条列出会话），名字保持干净。
+  await expect(page.locator('.pill[data-agent="workbuddy"] .pill-expand')).toHaveText(/×2/);
+  await expect(page.locator('.pill[data-agent="workbuddy"] b')).toHaveText('WorkBuddy');
   await expect(page.locator('.pill[data-agent="claude"] b')).toHaveText('Claude Code');
 });
 
@@ -936,6 +949,11 @@ test('the system panel shows real numbers and can be turned off', async ({ page 
   await expect(page.locator('#sys')).toBeVisible();
   await expect(page.locator('#sys-cpu')).toHaveText(/^\d+%$/);
   await expect(page.locator('#sys-mem')).toHaveText(/^\d+%$/);
+  // GPU 行只在有 NVIDIA 读数的机器上出现：出现了就必须是真数字，没出现也不能
+  // 空着一格「—」。
+  if (await page.locator('#sys-gpu-row').isVisible()) {
+    await expect(page.locator('#sys-gpu')).toHaveText(/^\d+%$/);
+  }
 
   await page.evaluate(() => {
     const el = document.getElementById('m-sys');
@@ -950,6 +968,20 @@ test('the system panel shows real numbers and can be turned off', async ({ page 
     el.dispatchEvent(new Event('change'));
   });
   await expect(page.locator('#sys')).toBeVisible();
+
+  // 动效三档必须真的落到 data-motion 上：CSS 靠它决定动不动。
+  await page.evaluate(() => {
+    const s = document.getElementById('m-sys-motion');
+    s.value = 'off';
+    s.dispatchEvent(new Event('change'));
+  });
+  await expect(page.locator('#sys')).toHaveAttribute('data-motion', 'off');
+  await page.evaluate(() => {
+    const s = document.getElementById('m-sys-motion');
+    s.value = 'always';
+    s.dispatchEvent(new Event('change'));
+  });
+  await expect(page.locator('#sys')).toHaveAttribute('data-motion', 'always');
 });
 
 // 广告牌曾经挂在会被体型缩放的机器人组上：默认体型顶边正好贴边，Q 版直接
@@ -957,6 +989,20 @@ test('the system panel shows real numbers and can be turned off', async ({ page 
 test('the scoreboard stays inside the frame in every body type', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => Number(document.getElementById('bot').dataset.signEdge)))
     .toBeLessThan(0.98);
+
+  // 用时钟模式保证牌子一定有内容，才能量它的屏幕尺寸。
+  await page.evaluate(() => {
+    const el = document.getElementById('m-sign');
+    el.value = '时钟';
+    el.dispatchEvent(new Event('change'));
+  });
+  await expect.poll(() => page.evaluate(() => document.getElementById('bot').dataset.signRect || ''))
+    .not.toBe('');
+  // 牌子出现时会有一个 0.3s 的弹出缩放；等它落定再量基准宽度。
+  await page.waitForTimeout(500);
+  const widthOf = () => page.evaluate(() =>
+    Number(document.getElementById('bot').dataset.signRect.split(',')[2]));
+  const baseWidth = await widthOf();
 
   for (const body of ['Q版', '修长', '标准']) {
     await page.evaluate((b) => {
@@ -968,7 +1014,17 @@ test('the scoreboard stays inside the frame in every body type', async ({ page }
       () => page.evaluate(() => Number(document.getElementById('bot').dataset.signEdge)),
       { timeout: 4000 }
     ).toBeLessThan(0.98);
+    // 牌子挂在场景里，不随体型缩放：换体型只该改变机器人，不该让牌面大小跳。
+    const w = await widthOf();
+    expect(Math.abs(w - baseWidth), `sign width changed with body ${body}`).toBeLessThanOrEqual(2);
   }
+
+  // 收起模式只剩一个 150px 的小助手：牌面字读不出来，就不该留一块黄条。
+  await page.evaluate(() => document.getElementById('btn-collapse').click());
+  await expect.poll(() => page.evaluate(() => document.getElementById('bot').dataset.signRect)).toBe('');
+  await page.evaluate(() => document.getElementById('btn-collapse').click());
+  await expect.poll(() => page.evaluate(() => document.getElementById('bot').dataset.signRect || ''))
+    .not.toBe('');
 });
 
 // 自定义皮肤：挑一个任意颜色当身体主色，色块与取色器即时跟随；换回固定皮肤时
@@ -1084,6 +1140,84 @@ test('the sign colour accepts a custom hex', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => window.__signs.at(-1)?.color)).toBe('#4ad5ff');
 });
 
+// 广告牌是 3D 画布里的精灵，DOM 没有它的节点。拖动它必须只动牌子、不动窗口，
+// 松手后位置写进配置；「恢复默认位置」把它放回肩侧。
+test('the billboard can be dragged with the mouse, saved, and reset', async ({ page }) => {
+  await api('/state', { session: 'sign', agent: 'claude', state: 'busy' });
+  await page.addInitScript(() => {
+    window.__saved = {};
+    window.bao = {
+      serverUrl: location.origin,
+      getConfig: () => Promise.resolve({}),
+      saveConfig: (p) => { Object.assign(window.__saved, p); return Promise.resolve({}); },
+      getAutostart: () => Promise.resolve({ enabled: false }),
+      setAutostart: () => Promise.resolve({ enabled: false }),
+      getNotes: () => Promise.resolve({ day: '', items: [], open: 0, done: 0, doneToday: 0 }),
+      saveNotes: () => Promise.resolve({}),
+      contentSize: () => {}, hotRect: () => {}, onCursor: () => {}, notify: () => {},
+      openTerminal: () => {}, trayStatus: () => {}, quit: () => {},
+      dragStart: () => { window.__windowDragged = true; }, dragEnd: () => {},
+    };
+  });
+  await page.reload();
+  await page.waitForFunction(() => document.body.dataset.state !== undefined);
+  // 时钟模式总是有内容：不必依赖今天有没有累计过忙碌时长。通过控件切换，
+  // 而不是靠启动时的配置 —— 注入的 getConfig 是微任务，可能早于 3D 场景
+  // 注册监听（真实的 IPC 是另一条任务，不会这样）。
+  await page.evaluate(() => {
+    const el = document.getElementById('m-sign');
+    el.value = '时钟';
+    el.dispatchEvent(new Event('change'));
+  });
+
+  // robot3d 每帧把牌子的屏幕矩形写在 #bot 上；有内容时才写。
+  await expect.poll(() => page.evaluate(() => document.getElementById('bot').dataset.signRect || ''))
+    .not.toBe('');
+  const centerNow = () => page.evaluate(() => {
+    const [x, y, w, h] = document.getElementById('bot').dataset.signRect.split(',').map(Number);
+    const r = document.getElementById('bot').getBoundingClientRect();
+    const k = r.width / document.getElementById('bot').clientWidth;
+    return { x: r.left + (x + w / 2) * k, y: r.top + (y + h / 2) * k };
+  });
+  const center = await centerNow();
+
+  await page.mouse.move(center.x, center.y);
+  await page.mouse.down();
+  await page.mouse.move(center.x - 70, center.y + 40, { steps: 6 });
+  await page.mouse.up();
+
+  // 牌子往左下搬：世界坐标 x 变小、y 变小；窗口没有被拖着走。
+  await expect.poll(() => page.evaluate(() => window.__saved.signOffset && window.__saved.signOffset.x))
+    .toBeLessThan(0);
+  const off = await page.evaluate(() => window.__saved.signOffset);
+  expect(off.y).toBeLessThan(0);
+  expect(await page.evaluate(() => window.__windowDragged === true)).toBe(false);
+  // 拖过之后设置里要显示「已自定义」，重置按钮才可按。
+  await openGroups(page, ['广告牌']);
+  await expect(page.locator('#m-sign-custom')).toBeVisible();
+  await expect(page.locator('#m-sign-reset')).toBeEnabled();
+
+  // 双击牌子 = 回到默认位置。
+  const moved = await centerNow();
+  await page.mouse.dblclick(moved.x, moved.y);
+  await expect.poll(() => page.evaluate(() => window.__saved.signOffset)).toEqual({ x: 0, y: 0 });
+  await expect(page.locator('#m-sign-custom')).toBeHidden();
+  await expect(page.locator('#m-sign-reset')).toBeDisabled();
+
+  // 再拖一次，用设置里的按钮复原。
+  const again = await centerNow();
+  await page.mouse.move(again.x, again.y);
+  await page.mouse.down();
+  await page.mouse.move(again.x - 60, again.y + 30, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() => window.__saved.signOffset && window.__saved.signOffset.x))
+    .toBeLessThan(0);
+  // 双击牌子可能已经把设置菜单点关（点在别处会收起菜单），重新打开。
+  await openGroups(page, ['广告牌']);
+  await page.locator('#m-sign-reset').click();
+  await expect.poll(() => page.evaluate(() => window.__saved.signOffset)).toEqual({ x: 0, y: 0 });
+});
+
 // 场景按时间自动切换：打开后由时间决定白天/夜晚场景，手动那个下拉置灰但仍然
 // 显示「此刻生效的是哪一档」。关掉后回到手动。
 test('scenes can switch automatically between day and night', async ({ page }) => {
@@ -1160,9 +1294,19 @@ test('the global hotkey can be switched off', async ({ page }) => {
     }
   });
   const box = page.locator('#m-hotkey');
+  const key = page.locator('#m-hotkey-key');
   await expect(box).toBeChecked();
+  await expect(key).toBeEnabled();
+  await expect(key).toHaveValue('CommandOrControl+Alt+B');
+  await key.selectOption('CommandOrControl+Shift+B');
+  await expect(key).toHaveValue('CommandOrControl+Shift+B');
+
   await box.uncheck();
   await expect(box).not.toBeChecked();
+  await expect(key).toBeDisabled();
+
+  await box.check();
+  await expect(key).toBeEnabled();
 });
 
 // 提示音音量过去只有配置项、没有入口。滑块要即时反映在百分比上（松手才落盘）。
@@ -1274,10 +1418,15 @@ test('renaming a software changes its label, not its state key', async ({ page }
     }
   });
 
-  const input = page.getByLabel('给「Claude Code」改名');
-  await input.fill('项目A');
-  // 改名走 input 事件 + render(lastSnap) 立即重绘；全套件串跑时这一帧偶尔来得慢，
-  // 放宽到 8 秒并等列表、顺序两处都刷新，别让这条本身成为 flaky 来源。
+  // 直接派发 input/change，不依赖 Playwright 的 fill（全套件串跑、页面繁忙时 fill
+  // 的逐键输入偶尔不落盘，导致这条本身变成 flaky）。改名走的是 input 事件 + 立即
+  // render(lastSnap)，事件一发就该生效。
+  await page.evaluate(() => {
+    const input = document.querySelector('#m-alias input[aria-label="给「Claude Code」改名"]');
+    input.value = '项目A';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
   await expect(page.locator('.pill[data-agent="claude"] b')).toHaveText('项目A', { timeout: 8000 });
   await expect(page.locator('#m-order .row[data-agent="claude"] span')).toHaveText('项目A', { timeout: 8000 });
 
@@ -1289,8 +1438,13 @@ test('renaming a software changes its label, not its state key', async ({ page }
   }).toBe('amber');
 
   // 清空 → 回到内置名。
-  await input.fill('');
-  await expect(page.locator('.pill[data-agent="claude"] b')).toHaveText('Claude Code');
+  await page.evaluate(() => {
+    const input = document.querySelector('#m-alias input[aria-label="给「Claude Code」改名"]');
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect(page.locator('.pill[data-agent="claude"] b')).toHaveText('Claude Code', { timeout: 8000 });
 });
 
 // 逐个软件的通知开关：关掉只影响通知，灯与列表照旧；列表行会说明「通知已关闭」，
@@ -1563,4 +1717,1065 @@ test('the dnd note explains a window whose ends are the same', async ({ page }) 
 
   await set('m-dnd-end', '07:30');
   await expect(page.locator('#m-dnd-note')).toBeHidden();
+});
+
+// 自动场景把下拉改成「此刻生效的那一档」时，手动选择不能被覆盖丢失。
+// 关掉自动切换后必须回到用户自己选的那一档，而不是停在自动切到的场景上。
+test('turning off automatic scenes restores the manual choice', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  const set = (id, value) => page.evaluate(([i, v]) => {
+    const el = document.getElementById(i);
+    if (el.type === 'checkbox') el.checked = v === 'on'; else el.value = v;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }, [id, value]);
+
+  await set('m-scene', '樱花');
+  await set('m-autoscene', 'on');
+  // 白天/夜晚都设成草原，测试不依赖运行时刻。
+  await set('m-dayscene', '草原');
+  await set('m-nightscene', '草原');
+  await expect(page.locator('#m-scene')).toHaveValue('草原');
+
+  await set('m-autoscene', 'off');
+  await expect(page.locator('#m-scene')).toHaveValue('樱花');
+});
+
+// 「外观方案」应该是一套完整的桌面画面：机器人、场景自动切换、广告牌一起回来。
+test('an appearance preset restores the sign and the scene schedule', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  const set = (id, value) => page.evaluate(([i, v]) => {
+    const el = document.getElementById(i);
+    if (el.type === 'checkbox') el.checked = v === 'on'; else el.value = v;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }, [id, value]);
+
+  await set('m-autoscene', 'on');
+  await set('m-dayscene', '草原');
+  await set('m-nightscene', '沙漠');
+  await set('m-sign-pos', '左侧');
+  await set('m-sign-shape', '胶囊');
+  await set('m-sign-color', '青色');
+
+  await page.evaluate(() => {
+    document.getElementById('m-preset-name').value = '整桌';
+    document.getElementById('m-preset-save').click();
+  });
+
+  // 全部改掉，再应用方案。
+  await set('m-autoscene', 'off');
+  await set('m-dayscene', '无');
+  await set('m-nightscene', '无');
+  await set('m-sign-pos', '右侧');
+  await set('m-sign-shape', '圆角');
+  await set('m-sign-color', '粉色');
+  await page.evaluate(() => document.getElementById('m-preset-apply').click());
+
+  await expect(page.locator('#m-autoscene')).toBeChecked();
+  await expect(page.locator('#m-dayscene')).toHaveValue('草原');
+  await expect(page.locator('#m-nightscene')).toHaveValue('沙漠');
+  await expect(page.locator('#m-sign-pos')).toHaveValue('左侧');
+  await expect(page.locator('#m-sign-shape')).toHaveValue('胶囊');
+  await expect(page.locator('#m-sign-color')).toHaveValue('青色');
+});
+
+// 每个软件的颜色是「今日战绩」的一部分：改完必须立刻重画，不能等下一次
+// 统计变化才生效（score 面板按数据签名去重，颜色也得进签名）。
+test('a software colour is applied to the daily score immediately', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  // busy → error 才算一次「进入出错」；直接报 error 的空会话没有前一条状态，
+  // 不会计入今日事件。
+  await api('/state', { session: 'palette', agent: 'claude', state: 'busy' });
+  await api('/state', { session: 'palette', agent: 'claude', state: 'error' });
+
+  const rowColor = () => page.evaluate(() => {
+    const row = [...document.querySelectorAll('#m-score .score-row')]
+      .find((r) => r.textContent.includes('Claude Code'));
+    return row ? getComputedStyle(row).getPropertyValue('--agent-color').trim() : '';
+  });
+  await expect.poll(rowColor, { timeout: 6000 }).toContain('rgba(');
+  const before = await rowColor();
+  expect(before).toContain('rgba(');
+
+  await page.evaluate(() => {
+    const input = document.querySelector('#m-alias input.agent-color[aria-label="「Claude Code」在今日战绩里的颜色"]');
+    input.value = '#123456';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect.poll(rowColor, { timeout: 4000 }).toContain('18, 52, 86');
+
+  await page.evaluate(() => document
+    .querySelector('#m-alias button[aria-label="恢复「Claude Code」的默认颜色"]').click());
+  await expect.poll(rowColor, { timeout: 4000 }).not.toContain('18, 52, 86');
+});
+
+// 提示音和系统通知是两条通道：关掉声音不该顺手关掉弹窗。
+test('a software can have its cue muted on its own', async ({ page }) => {
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  // “软件”分组默认收起：展开后再点，否则按钮不可见，click() 会一直等。
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '软件') s.parentElement.open = true;
+    }
+  });
+  const sound = page.locator('#m-alias button.agent-sound[aria-label="「Claude Code」的提示音"]');
+  const notify = page.locator('#m-alias input[aria-label="接收「Claude Code」的系统通知"]');
+  await expect(sound).toHaveAttribute('aria-pressed', 'true');
+  await expect(notify).toBeChecked();
+
+  await sound.click();
+  await expect(sound).toHaveAttribute('aria-pressed', 'false');
+  await expect(sound).toHaveText('静');
+  await expect(notify).toBeChecked();
+
+  await sound.click();
+  await expect(sound).toHaveAttribute('aria-pressed', 'true');
+  await expect(sound).toHaveText('声');
+});
+
+// 统计不能只留在菜单里：日报给写周报用，CSV 给表格/脚本用。
+test('the work report can be exported as Markdown and CSV', async ({ page }) => {
+  await api('/state', { session: 'report', agent: 'claude', state: 'busy' });
+  await api('/state', { session: 'report', agent: 'claude', state: 'error' });
+  await page.evaluate(() => document.getElementById('btn-menu').click());
+  await page.evaluate(() => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (s.textContent.trim() === '配置') s.parentElement.open = true;
+    }
+  });
+  // 等统计帧到达，导出的才是刚报上来的这一天。
+  await expect(page.locator('#m-score .score-row')).toContainText('Claude Code', { timeout: 6000 });
+
+  const [md] = await Promise.all([
+    page.waitForEvent('download'),
+    page.locator('#m-report-md').click(),
+  ]);
+  expect(md.suggestedFilename()).toMatch(/^baoanlight-report-.*\.md$/);
+  const mdText = fs.readFileSync(await md.path(), 'utf8');
+  expect(mdText).toContain('# baoanlight 工作记录');
+  expect(mdText).toContain('Claude Code');
+  expect(mdText).toContain('按天');
+
+  const [csv] = await Promise.all([
+    page.waitForEvent('download'),
+    page.locator('#m-report-csv').click(),
+  ]);
+  expect(csv.suggestedFilename()).toMatch(/^baoanlight-report-.*\.csv$/);
+  const csvText = fs.readFileSync(await csv.path(), 'utf8');
+  expect(csvText.startsWith('\ufeff')).toBe(true);
+  expect(csvText).toContain('date,agent,name,minutes,done,error');
+  expect(csvText).toContain('claude');
+
+  // CSV 注入：agent 名以 = 开头时，Excel / WPS 会把它当公式执行。导出必须按
+  // 字面量处理 —— 前置单引号，且文件里不能出现以 = 开头的裸单元格。
+  const formula = '=1+1';
+  await api('/state', { session: 'report-formula', agent: formula, state: 'busy' });
+  await api('/state', { session: 'report-formula', agent: formula, state: 'error' });
+  await expect(page.locator('#m-score .score-row').filter({ hasText: '=1+1' })).toBeVisible({ timeout: 6000 });
+  const [csv2] = await Promise.all([
+    page.waitForEvent('download'),
+    page.locator('#m-report-csv').click(),
+  ]);
+  const csvText2 = fs.readFileSync(await csv2.path(), 'utf8');
+  expect(csvText2).toContain("'=1+1");
+  expect(csvText2.split(/\r?\n/).some((line) => line.startsWith('=1+1'))).toBe(false);
+});
+
+// ------------------------------------------------------- 自定义系统逐项检查
+//
+// 设置面板有十一个分组、七十多个控件。「有控件」和「控件真的接上了」是两件事：
+// 下面每条测试都要求一个可观察的结果（场景事件、DOM 状态或提示文字），而不是
+// 只断言下拉框的值变了 —— 后者在 handler 完全没接的情况下也会通过。
+
+const openGroups = async (page, names) => {
+  // 只在菜单关着时才点开：这里通常是在别处点过之后调用的，无条件点一下会
+  // 把刚打开的菜单又关掉。
+  await page.evaluate(() => {
+    const menu = document.getElementById('menu');
+    if (menu.hidden) document.getElementById('btn-menu').click();
+  });
+  await page.evaluate((gs) => {
+    for (const s of document.querySelectorAll('#menu summary')) {
+      if (gs.includes(s.textContent.trim())) s.parentElement.open = true;
+    }
+  }, names);
+};
+
+// 3D 场景是另一个模块，测试里只需要它收到的事件：把窗口事件录下来，
+// 断言载荷就是控件显示的那个值。
+const watchBaoEvents = (page, names) => page.evaluate((ns) => {
+  window.__bao = [];
+  for (const n of ns) {
+    window.addEventListener(n, (e) => window.__bao.push({ name: n, detail: e.detail }));
+  }
+}, names);
+
+const baoEvent = (page, name) => page.evaluate((n) => {
+  const hits = (window.__bao || []).filter((e) => e.name === n);
+  return hits.length ? hits[hits.length - 1].detail : null;
+}, name);
+
+// 选一个「肯定不是当前值」的选项：index 1 在调色板里永远是另一种颜色，
+// 不会因为默认值恰好是第一项而什么都没改。
+const pickOption = async (page, id, index) => {
+  const values = await page.locator(`#${id} option`).evaluateAll((os) => os.map((o) => o.value));
+  expect(values.length, `#${id} 应该有足够选项`).toBeGreaterThan(index);
+  await page.selectOption(`#${id}`, values[index]);
+  return values[index];
+};
+
+test('the basic look controls all reach the scene', async ({ page }) => {
+  await openGroups(page, ['基础']);
+  await watchBaoEvents(page, ['bao:body', 'bao:scale', 'bao:brightness']);
+
+  const body = await pickOption(page, 'm-body', 1);
+  expect((await baoEvent(page, 'bao:body')).body).toBe(body);
+
+  await page.evaluate(() => {
+    const el = document.getElementById('m-size');
+    el.value = '120';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await expect(page.locator('#m-size-val')).toHaveText('120%');
+  await expect.poll(() => page.evaluate(() =>
+    document.documentElement.style.getPropertyValue('--scale'))).toBe('1.2');
+  expect((await baoEvent(page, 'bao:scale')).scale).toBeCloseTo(1.2, 5);
+
+  await page.evaluate(() => {
+    const el = document.getElementById('m-brightness');
+    el.value = '80';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await expect(page.locator('#m-brightness-val')).toHaveText('80%');
+  expect((await baoEvent(page, 'bao:brightness')).brightness).toBeCloseTo(0.8, 5);
+
+  await page.selectOption('#m-thememode', 'mini');
+  await expect(page.locator('body')).toHaveAttribute('data-theme', 'mini');
+  await page.selectOption('#m-thememode', 'full');
+  await expect(page.locator('body')).toHaveAttribute('data-theme', 'full');
+});
+
+test('every appearance dropdown is wired to the scene', async ({ page }) => {
+  await openGroups(page, ['外观', '灯光', '材质']);
+  const map = [
+    ['m-skin', 'bao:skin', 'skin'],
+    ['m-eyestyle', 'bao:eyestyle', 'eyestyle'],
+    ['m-eyeshape', 'bao:eyeshape', 'eyeshape'],
+    ['m-trackstyle', 'bao:trackstyle', 'trackstyle'],
+    ['m-tracktype', 'bao:tracktype', 'tracktype'],
+    ['m-armskin', 'bao:armskin', 'armskin'],
+    ['m-claw', 'bao:claw', 'claw'],
+    ['m-armtype', 'bao:armtype', 'armtype'],
+    ['m-headtype', 'bao:headtype', 'headtype'],
+    ['m-decoration', 'bao:decoration', 'decoration'],
+    ['m-halo', 'bao:halo', 'halo'],
+    ['m-effect', 'bao:effect', 'effect'],
+    ['m-finish', 'bao:finish', 'finish'],
+  ];
+  await watchBaoEvents(page, map.map((x) => x[1]));
+  for (const [id, evt, field] of map) {
+    const value = await pickOption(page, id, 1);
+    const detail = await baoEvent(page, evt);
+    expect(detail, `${id} 没有发出 ${evt}`).not.toBeNull();
+    expect(detail[field], `${id} 的事件载荷不对`).toBe(value);
+  }
+});
+
+test('a colour theme applies all four parts at once', async ({ page }) => {
+  await openGroups(page, ['外观']);
+  await watchBaoEvents(page, ['bao:skin', 'bao:eyestyle', 'bao:trackstyle', 'bao:armskin']);
+  const skinBefore = await page.locator('#m-skin').inputValue();
+
+  await page.selectOption('#m-theme', '赛博霓虹');
+  await expect(page.locator('#m-skin')).toHaveValue('深海蓝');
+  const names = await page.evaluate(() => (window.__bao || []).map((e) => e.name));
+  expect(names).toEqual(expect.arrayContaining(['bao:skin', 'bao:eyestyle', 'bao:trackstyle', 'bao:armskin']));
+  expect(skinBefore).not.toBe('深海蓝');
+  // 下拉要停在真正套用的那一套，而不是「自定义」。
+  await expect(page.locator('#m-theme')).toHaveValue('赛博霓虹');
+});
+
+test('poses, idle behaviour, motion and wear are all wired', async ({ page }) => {
+  await openGroups(page, ['动作', '材质']);
+  await watchBaoEvents(page, ['bao:pose', 'bao:idle', 'bao:motion', 'bao:wear']);
+
+  for (const st of ['error', 'waiting', 'busy', 'done', 'idle']) {
+    await page.selectOption(`#m-pose-${st}`, '叉腰');
+    expect(await baoEvent(page, 'bao:pose'), `#m-pose-${st} 没有发出手势事件`)
+      .toEqual({ state: st, pose: '叉腰' });
+  }
+
+  await page.evaluate(() => {
+    const el = document.getElementById('m-idle');
+    el.checked = false;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  expect((await baoEvent(page, 'bao:idle')).on).toBe(false);
+
+  await page.selectOption('#m-idlefreq', '快');
+  expect((await baoEvent(page, 'bao:idle')).freq).toBe(2);
+
+  await page.selectOption('#m-motion', '华丽');
+  expect((await baoEvent(page, 'bao:motion')).motion).toBe('华丽');
+
+  await page.evaluate(() => {
+    const el = document.getElementById('m-wear');
+    el.value = '60';
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect(page.locator('#m-wear-val')).toHaveText('60%');
+  expect((await baoEvent(page, 'bao:wear')).wear).toBeCloseTo(0.6, 5);
+});
+
+test('scene, billboard and nameplate controls are wired', async ({ page }) => {
+  await openGroups(page, ['场景', '广告牌']);
+  await watchBaoEvents(page, ['bao:scene', 'bao:sign', 'bao:nameplate']);
+
+  await page.selectOption('#m-scene', '星空');
+  expect((await baoEvent(page, 'bao:scene')).scene).toBe('星空');
+  // 色块必须跟着场景走，否则用户不知道「星空」是什么颜色。
+  await expect.poll(() => page.evaluate(() =>
+    document.getElementById('scene-swatch').style.background)).toContain('20, 22, 42');
+
+  await page.selectOption('#m-sign', '合计');
+  expect((await baoEvent(page, 'bao:sign')).mode).toBe('total');
+  await page.selectOption('#m-sign-pos', '左侧');
+  expect((await baoEvent(page, 'bao:sign')).pos).toBe('left');
+  await page.selectOption('#m-sign-shape', '胶囊');
+  expect((await baoEvent(page, 'bao:sign')).shape).toBe('胶囊');
+
+  await page.evaluate(() => {
+    const el = document.getElementById('m-nameplate');
+    el.value = '小黄';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  expect((await baoEvent(page, 'bao:nameplate')).text).toBe('小黄');
+
+  // 自动切换打开后，手动场景下拉置灰，白天/夜晚两档才出现。
+  await page.evaluate(() => {
+    const el = document.getElementById('m-autoscene');
+    el.checked = true;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect(page.locator('#m-scene')).toBeDisabled();
+  await expect(page.locator('#autoscene-opts')).toBeVisible();
+});
+
+test('sound, voice and mute controls all respond', async ({ page }) => {
+  await openGroups(page, ['系统']);
+
+  await page.evaluate(() => {
+    const el = document.getElementById('m-sound');
+    el.checked = true;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  // 打开提示音只该「试个音」，不能顺手报一次「需要你处理」。
+  expect(await page.locator('#note').textContent()).toContain('提示音已开启');
+  await expect(page.locator('#m-sound')).toBeChecked();
+
+  const style = await pickOption(page, 'm-soundstyle', 1);
+  await expect(page.locator('#m-soundstyle')).toHaveValue(style);
+
+  await page.evaluate(() => {
+    for (const [id, checked] of [['m-sounddone', false], ['m-notifydone', false], ['m-voice', true]]) {
+      const el = document.getElementById(id);
+      el.checked = checked;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  });
+  await expect(page.locator('#m-sounddone')).not.toBeChecked();
+  await expect(page.locator('#m-notifydone')).not.toBeChecked();
+  await expect(page.locator('#m-voice')).toBeChecked();
+
+  await page.evaluate(() => document.getElementById('m-mute').click());
+  await expect(page.locator('#m-mute')).toContainText('已静音');
+  await page.evaluate(() => document.getElementById('m-mute').click());
+  await expect(page.locator('#m-mute')).toContainText('静音 1 小时');
+});
+
+test('the software list can be turned off without touching the lamp', async ({ page }) => {
+  await api('/state', { session: 'labels', agent: 'claude', state: 'busy' });
+  await openGroups(page, ['系统']);
+  await settled(page, () => document.querySelectorAll('.pill').length).toBe(5);
+
+  await page.evaluate(() => {
+    const el = document.getElementById('m-labels');
+    el.checked = false;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await settled(page, () => document.querySelectorAll('.pill').length).toBe(0);
+  // 列表是显示项，灯仍然是那个软件的真实状态。
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+
+  await page.evaluate(() => {
+    const el = document.getElementById('m-labels');
+    el.checked = true;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await settled(page, () => document.querySelectorAll('.pill').length).toBe(5);
+});
+
+test('the software order can be changed and drives the list', async ({ page }) => {
+  await api('/state', { session: 'order', agent: 'claude', state: 'busy' });
+  await openGroups(page, ['软件']);
+
+  const order = () => page.locator('#m-order .row').evaluateAll((rows) => rows.map((r) => r.dataset.agent));
+  const before = await order();
+  expect(before.length).toBeGreaterThan(1);
+  await expect(page.locator('#m-order .row').first().locator('button').first()).toBeDisabled();
+
+  await page.locator('#m-order .row').first().locator('button').nth(1).click();
+  await expect.poll(order).toEqual([before[1], before[0], ...before.slice(2)]);
+
+  // 顺序不是只存在设置里：列表的第一行也要跟着换。
+  await settled(page, () => document.querySelector('.pill')?.dataset.agent).toBe(before[1]);
+});
+
+test('a log directory can be pointed somewhere else from settings', async ({ page }) => {
+  await openGroups(page, ['软件']);
+  const input = page.locator('#m-agentdirs .agent-dir input').first();
+  await expect(input).toBeVisible();
+
+  await input.fill('D:/logs/agent');
+  await input.dispatchEvent('change');
+  expect(await page.locator('#note').textContent()).toContain('重启 watch all 生效');
+  await expect(input).toHaveValue('D:/logs/agent');
+
+  await input.fill('');
+  await input.dispatchEvent('change');
+  expect(await page.locator('#note').textContent()).toContain('恢复自动查找');
+});
+
+test('appearance presets save, apply and delete', async ({ page }) => {
+  await openGroups(page, ['外观', '配置']);
+  await page.selectOption('#m-decoration', '皇冠');
+  await page.fill('#m-preset-name', '测试方案');
+  await page.locator('#m-preset-save').click();
+  expect(await page.locator('#note').textContent()).toContain('已保存方案「测试方案」');
+  await expect(page.locator('#m-preset-list option')).toHaveCount(1);
+
+  await page.selectOption('#m-decoration', '无');
+  await page.locator('#m-preset-apply').click();
+  await expect(page.locator('#m-decoration')).toHaveValue('皇冠');
+
+  await page.locator('#m-preset-del').click();
+  await expect(page.locator('#m-preset-list option')).toHaveCount(0);
+});
+
+test('the config export contains every customisation currently on screen', async ({ page }) => {
+  await openGroups(page, ['基础', '外观', '场景', '日记', '系统', '配置']);
+  await page.selectOption('#m-decoration', '围巾');
+  await page.selectOption('#m-scene', '草原');
+  await page.evaluate(() => {
+    const el = document.getElementById('m-brightness');
+    el.value = '75';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  // 日记与多会话的新开关同样属于「界面即配置」。
+  await page.evaluate(() => {
+    for (const id of ['m-notes-open', 'm-expand-sessions']) {
+      const el = document.getElementById(id);
+      el.checked = true;
+      el.dispatchEvent(new Event('change'));
+    }
+  });
+
+  const [dl] = await Promise.all([
+    page.waitForEvent('download'),
+    page.locator('#m-export').click(),
+  ]);
+  expect(dl.suggestedFilename()).toBe('bao-config.json');
+  const data = JSON.parse(fs.readFileSync(await dl.path(), 'utf8'));
+  // 这三项都是「只写界面、不回写 cfg」的控件：导出必须从界面读回来，
+  // 否则导出的是一份启动时的旧配置。
+  expect(data.decoration).toBe('围巾');
+  expect(data.scene).toBe('草原');
+  expect(data.brightness).toBeCloseTo(0.75, 5);
+  // 方案、手势、软件顺序这些结构性自定义也要在里面。
+  expect(data.poses).toBeTruthy();
+  expect(Array.isArray(data.agentOrder)).toBe(true);
+  expect(data.showLabels).toBe(true);
+  expect(data.memoOpen).toBe(true);
+  expect(data.expandSessions).toBe(true);
+  // 广告牌拖动位置也要能带走，否则换台机器就回到出厂位置。
+  expect(data.signOffset).toEqual({ x: 0, y: 0 });
+});
+
+test('reset look restores the factory appearance, random look stays valid', async ({ page }) => {
+  await openGroups(page, ['外观']);
+  await watchBaoEvents(page, ['bao:skin', 'bao:decoration', 'bao:scene']);
+
+  await page.selectOption('#m-decoration', '皇冠');
+  await page.locator('#m-reset-look').click();
+  await expect(page.locator('#m-decoration')).toHaveValue('无');
+  await expect(page.locator('#m-skin')).toHaveValue('做旧黄');
+
+  await page.evaluate(() => { window.__bao = []; });
+  await page.locator('#m-random-look').click();
+  // 随机换装必须至少改一项，而且改出来的值仍然在合法选项里。
+  expect(await page.evaluate(() => (window.__bao || []).length)).toBeGreaterThan(0);
+  const skinOk = await page.evaluate(() => {
+    const sel = document.getElementById('m-skin');
+    return [...sel.options].some((o) => o.value === sel.value);
+  });
+  expect(skinOk).toBe(true);
+});
+
+test('a broken config file is reported instead of reloading silently', async ({ page }) => {
+  await openGroups(page, ['配置']);
+  await page.setInputFiles('#m-import-file', {
+    name: 'broken.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from('{ not json'),
+  });
+  await expect(page.locator('#note')).toContainText('不是有效的配置文件');
+});
+
+test('the information board offers time, goal and companionship', async ({ page }) => {
+  await openGroups(page, ['广告牌', '基础']);
+  await watchBaoEvents(page, ['bao:sign']);
+
+  await page.selectOption('#m-sign', '时钟');
+  expect((await baoEvent(page, 'bao:sign')).mode).toBe('clock');
+
+  await page.selectOption('#m-sign', '今日目标');
+  expect((await baoEvent(page, 'bao:sign')).mode).toBe('goal');
+  // 改目标时牌面要立刻跟着改，而不是等下一次打开菜单。
+  await page.selectOption('#m-goal', '4');
+  const afterGoal = await baoEvent(page, 'bao:sign');
+  expect(afterGoal.mode).toBe('goal');
+  expect(afterGoal.goalHours).toBe(4);
+
+  await page.selectOption('#m-sign', '陪伴天数');
+  const days = await baoEvent(page, 'bao:sign');
+  expect(days.mode).toBe('days');
+  expect(typeof days.days).toBe('number');
+
+  // 三种「现在要不要管」的计数模式：不依赖今天的时长统计。
+  await page.selectOption('#m-sign', '需要你');
+  expect((await baoEvent(page, 'bao:sign')).mode).toBe('needs');
+  await page.selectOption('#m-sign', '今日完成');
+  expect((await baoEvent(page, 'bao:sign')).mode).toBe('done');
+  await page.selectOption('#m-sign', '会话数');
+  expect((await baoEvent(page, 'bao:sign')).mode).toBe('sessions');
+
+  await page.selectOption('#m-sign', '关闭');
+  expect((await baoEvent(page, 'bao:sign')).mode).toBe('off');
+});
+
+test('the extended palette reaches the robot', async ({ page }) => {
+  await openGroups(page, ['外观']);
+  await watchBaoEvents(page, ['bao:skin', 'bao:eyestyle', 'bao:trackstyle', 'bao:armskin']);
+  for (const [id, name, evt, field] of [
+    ['m-skin', '钛金白', 'bao:skin', 'skin'],
+    ['m-eyestyle', '白瞳', 'bao:eyestyle', 'eyestyle'],
+    ['m-trackstyle', '石墨', 'bao:trackstyle', 'trackstyle'],
+    ['m-armskin', '玫瑰金', 'bao:armskin', 'armskin'],
+  ]) {
+    await page.selectOption(`#${id}`, name);
+    expect((await baoEvent(page, evt))[field]).toBe(name);
+  }
+});
+
+test('the personality can be chosen and reaches the robot', async ({ page }) => {
+  await openGroups(page, ['动作']);
+  await expect(page.locator('#m-personality')).toHaveValue('活泼');
+  await page.selectOption('#m-personality', '害羞');
+  // robot3d 每帧读这个属性；改动必须立刻生效，而不是等重启。
+  await expect(page.locator('body')).toHaveAttribute('data-personality', '害羞');
+  await expect(page.locator('#m-look')).toContainText('害羞');
+});
+
+test('the settings header summarises the current look', async ({ page }) => {
+  await openGroups(page, ['外观', '场景', '基础']);
+  await expect(page.locator('#m-look')).toContainText('配色');
+  await expect(page.locator('#m-look')).toContainText('人格');
+
+  await page.selectOption('#m-theme', '赛博霓虹');
+  await expect(page.locator('#m-look')).toContainText('赛博霓虹');
+  await page.selectOption('#m-scene', '星空');
+  await expect(page.locator('#m-look')).toContainText('星空');
+  await page.selectOption('#m-body', '修长');
+  await expect(page.locator('#m-look')).toContainText('修长');
+});
+
+// 保存下来的设置重启后必须回到各自的控件上：这是「自定义」的另一半。
+// 用一份「每一项都非默认」的配置启动页面，任何一项恢复逻辑漏了都会红。
+test('every saved customisation is restored into its control on startup', async ({ page }) => {
+  const saved = {
+    theme: 'mini', scale: 1.2, brightness: 0.8, body: '修长',
+    skin: '深海蓝', eyestyle: '蓝瞳', eyeshape: '三角', trackstyle: '黑',
+    tracktype: '梯形', armskin: '银白', claw: '三指', armtype: '圆筒', headtype: '三眼',
+    decoration: '皇冠', baseEffect: '彩虹', halo: '星形', finish: '精工', wear: 0.6,
+    scene: '海洋', autoScene: true, dayScene: '草原', nightScene: '雪夜',
+    nightStart: '21:00', nightEnd: '06:30', motion: '华丽',
+    poses: { error: '环抱', waiting: '叉腰', busy: '泵动', done: '鼓掌', idle: '垂放' },
+    idleActions: false, idleFreq: '快', clickAction: 'greet', doubleClick: 'none',
+    sound: true, soundStyle: '电子脉冲', soundVolume: 0.45, soundDone: false, notifyDone: false,
+    voice: true, muteMinutes: 120, mutedUntil: 0,
+    clickThrough: false, hotkeyOn: false, hotkey: 'Alt+Shift+B',
+    showLabels: false, showOffline: false, showModel: false, showSys: false, sysMotion: 'load',
+    stuckBusyMin: 20, stuckWaitMin: 7,
+    maxRows: 3, showScore: false, showRecent: false, dailyGoalHours: 4,
+    notesRemindMinutes: 0, notesNotify: false,
+    memoOpen: true, expandSessions: true,
+    doNotDisturb: true, dndStart: '00:00', dndEnd: '23:59',
+    signMode: 'clock', signPos: 'left', signColor: '#4ad5ff', signShape: '胶囊', customSign: '#4ad5ff',
+    nameplate: '阿黄', phrases: { waiting: '等你', error: '坏了', done: '好了' },
+    personality: '害羞',
+    aliases: { claude: '小C' }, agentColors: { claude: '#123456' }, mutedAgents: ['codex'],
+    mutedSoundAgents: ['codex'], agents: { codex: { dir: 'D:/codex-logs' } },
+    presets: { 我的方案: { skin: '军绿' } },
+  };
+
+  // 注入 Electron 预加载接口：页面会走「真实启动」那条分支，把配置逐项写回控件。
+  await page.addInitScript((cfg) => {
+    window.bao = {
+      serverUrl: location.origin,
+      saveConfig: () => {},
+      getConfig: () => Promise.resolve(cfg),
+      getAutostart: () => Promise.resolve({ enabled: false }),
+      setAutostart: () => Promise.resolve({ enabled: false }),
+      contentSize: () => {}, hotRect: () => {}, onCursor: () => {}, notify: () => {},
+      openTerminal: () => {}, trayStatus: () => {}, quit: () => {},
+      dragStart: () => {}, dragEnd: () => {},
+    };
+  }, saved);
+  await page.reload();
+  await page.waitForFunction(() => document.body.dataset.state !== undefined);
+  await openGroups(page, ['基础', '灯光', '外观', '材质', '动作', '台词', '日记', '场景', '系统', '广告牌', '软件', '配置']);
+
+  // 基础 / 外观 / 材质
+  await expect(page.locator('#m-thememode')).toHaveValue('mini');
+  await expect(page.locator('#m-size')).toHaveValue('120');
+  await expect(page.locator('#m-brightness')).toHaveValue('80');
+  await expect(page.locator('#m-body')).toHaveValue('修长');
+  await expect(page.locator('#m-skin')).toHaveValue('深海蓝');
+  await expect(page.locator('#m-eyestyle')).toHaveValue('蓝瞳');
+  await expect(page.locator('#m-eyeshape')).toHaveValue('三角');
+  await expect(page.locator('#m-trackstyle')).toHaveValue('黑');
+  await expect(page.locator('#m-tracktype')).toHaveValue('梯形');
+  await expect(page.locator('#m-armskin')).toHaveValue('银白');
+  await expect(page.locator('#m-claw')).toHaveValue('三指');
+  await expect(page.locator('#m-armtype')).toHaveValue('圆筒');
+  await expect(page.locator('#m-headtype')).toHaveValue('三眼');
+  await expect(page.locator('#m-decoration')).toHaveValue('皇冠');
+  await expect(page.locator('#m-effect')).toHaveValue('彩虹');
+  await expect(page.locator('#m-halo')).toHaveValue('星形');
+  await expect(page.locator('#m-finish')).toHaveValue('精工');
+  await expect(page.locator('#m-wear')).toHaveValue('60');
+
+  // 场景：自动切换优先，手动下拉置灰；白天/夜晚两档按配置恢复。
+  await expect(page.locator('#m-autoscene')).toBeChecked();
+  await expect(page.locator('#m-scene')).toBeDisabled();
+  await expect(page.locator('#m-dayscene')).toHaveValue('草原');
+  await expect(page.locator('#m-nightscene')).toHaveValue('雪夜');
+  await expect(page.locator('#m-night-start')).toHaveValue('21:00');
+  await expect(page.locator('#m-night-end')).toHaveValue('06:30');
+  await expect(page.locator('#m-motion')).toHaveValue('华丽');
+
+  // 动作
+  await expect(page.locator('#m-pose-waiting')).toHaveValue('叉腰');
+  await expect(page.locator('#m-pose-done')).toHaveValue('鼓掌');
+  await expect(page.locator('#m-idle')).not.toBeChecked();
+  await expect(page.locator('#m-idlefreq')).toHaveValue('快');
+  await expect(page.locator('#m-clickaction')).toHaveValue('greet');
+  await expect(page.locator('#m-dblclick')).toHaveValue('none');
+
+  // 声音 / 勿扰
+  await expect(page.locator('#m-sound')).toBeChecked();
+  await expect(page.locator('#m-soundstyle')).toHaveValue('电子脉冲');
+  await expect(page.locator('#m-soundvol')).toHaveValue('45');
+  await expect(page.locator('#m-sounddone')).not.toBeChecked();
+  await expect(page.locator('#m-notifydone')).not.toBeChecked();
+  await expect(page.locator('#m-voice')).toBeChecked();
+  await expect(page.locator('#m-mutedur')).toHaveValue('120');
+  await expect(page.locator('#m-mute')).toContainText('2 小时');
+  await expect(page.locator('#m-dnd')).toBeChecked();
+  await expect(page.locator('#m-dnd-start')).toHaveValue('00:00');
+  await expect(page.locator('#m-dnd-end')).toHaveValue('23:59');
+
+  // 系统 / 列表
+  await expect(page.locator('#m-click')).not.toBeChecked();
+  await expect(page.locator('#m-hotkey')).not.toBeChecked();
+  await expect(page.locator('#m-hotkey-key')).toHaveValue('Alt+Shift+B');
+  await expect(page.locator('#m-labels')).not.toBeChecked();
+  await expect(page.locator('#m-offline')).not.toBeChecked();
+  await expect(page.locator('#m-model')).not.toBeChecked();
+  await expect(page.locator('#m-sys')).not.toBeChecked();
+  await expect(page.locator('#m-sys-motion')).toHaveValue('load');
+  await expect(page.locator('#sys')).toHaveAttribute('data-motion', 'load');
+  await expect(page.locator('#m-stuck-busy')).toHaveValue('20');
+  await expect(page.locator('#m-stuck-wait')).toHaveValue('7');
+  await expect(page.locator('#m-score-panel')).not.toBeChecked();
+  await expect(page.locator('#m-recent-panel')).not.toBeChecked();
+  await expect(page.locator('#m-maxrows')).toHaveValue('3');
+  await expect(page.locator('#m-goal')).toHaveValue('4');
+  await expect(page.locator('#m-notes-remind')).toHaveValue('0');
+  await expect(page.locator('#m-notes-notify')).not.toBeChecked();
+  await expect(page.locator('#m-notes-open')).toBeChecked();
+  await expect(page.locator('#m-expand-sessions')).toBeChecked();
+  await expect(page.locator('#memo')).toBeVisible();
+
+  // 广告牌 / 铭牌 / 台词 / 人格
+  await expect(page.locator('#m-sign')).toHaveValue('时钟');
+  await expect(page.locator('#m-sign-pos')).toHaveValue('左侧');
+  await expect(page.locator('#m-sign-color')).toHaveValue('青色');
+  await expect(page.locator('#m-sign-shape')).toHaveValue('胶囊');
+  await expect(page.locator('#m-nameplate')).toHaveValue('阿黄');
+  await expect(page.locator('#m-phrase-waiting')).toHaveValue('等你');
+  await expect(page.locator('#m-personality')).toHaveValue('害羞');
+  await expect(page.locator('#m-look')).toContainText('害羞');
+
+  // 软件：改名 / 颜色 / 通知 / 提示音 / 日志目录 / 方案
+  await expect(page.locator('#m-alias input[aria-label="给「Claude Code」改名"]')).toHaveValue('小C');
+  await expect(page.locator('#m-alias input.agent-color[aria-label="「Claude Code」在今日战绩里的颜色"]'))
+    .toHaveValue('#123456');
+  await expect(page.locator('#m-alias input[aria-label="接收「Codex」的系统通知"]')).not.toBeChecked();
+  await expect(page.locator('#m-alias button.agent-sound[aria-label="「Codex」的提示音"]'))
+    .toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('#m-agentdirs input[aria-label="Codex 的日志目录"]')).toHaveValue('D:/codex-logs');
+  await expect(page.locator('#m-preset-list option')).toHaveCount(1);
+  await expect(page.locator('#m-preset-list')).toHaveValue('我的方案');
+});
+
+test('a software with several sessions expands into one row each', async ({ page }) => {
+  await api('/state', { session: 'a', agent: 'claude', state: 'busy', detail: '读文件', cwd: 'D:/work/alpha' });
+  await api('/state', { session: 'b', agent: 'claude', state: 'waiting', detail: '等你确认', cwd: 'D:/work/beta' });
+
+  // 右键会话行要在该会话自己的目录里开终端，所以需要真实的桥。
+  await page.addInitScript(() => {
+    window.__opened = [];
+    window.bao = {
+      serverUrl: location.origin,
+      getConfig: () => Promise.resolve({}),
+      saveConfig: () => Promise.resolve({}),
+      getAutostart: () => Promise.resolve({ enabled: false }),
+      setAutostart: () => Promise.resolve({ enabled: false }),
+      getNotes: () => Promise.resolve({ day: '', items: [], open: 0, done: 0, doneToday: 0 }),
+      saveNotes: () => Promise.resolve({}),
+      contentSize: () => {}, hotRect: () => {}, onCursor: () => {}, notify: () => {},
+      openTerminal: (cwd) => window.__opened.push(cwd),
+      trayStatus: () => {}, quit: () => {},
+      dragStart: () => {}, dragEnd: () => {},
+    };
+  });
+  await page.reload();
+  await page.waitForFunction(() => document.body.dataset.state !== undefined);
+
+  const pill = page.locator('.pill[data-agent="claude"]');
+  await expect(pill.locator('.pill-expand')).toHaveText(/×2/);
+  await expect(page.locator('.subpill')).toHaveCount(0);
+
+  await pill.locator('.pill-expand').click();
+  await expect(page.locator('.subpill')).toHaveCount(2);
+  // 两个会话的状态和说明要各自可见，而不是只剩一个「最坏者」。
+  await expect(page.locator('.subpill', { hasText: '等你确认' })).toHaveCount(1);
+  await expect(page.locator('.subpill', { hasText: '读文件' })).toHaveCount(1);
+  // 行上要有人认得出的东西：目录名 + 短 id，而不是八位十六进制。
+  await expect(page.locator('.subpill', { hasText: 'alpha' })).toHaveCount(1);
+  await expect(page.locator('.subpill', { hasText: 'beta' })).toHaveCount(1);
+  await expect(pill.locator('.pill-expand')).toHaveAttribute('aria-expanded', 'true');
+  // 悬停出现的终端入口：点它也在该会话目录开终端。
+  await expect(page.locator('.subpill', { hasText: 'alpha' }).locator('.subterm')).toBeVisible();
+  await page.locator('.subpill', { hasText: 'alpha' }).locator('.subterm').click();
+  await expect.poll(() => page.evaluate(() => window.__opened)).toEqual(['D:/work/alpha']);
+
+  // 右键某条会话：开在它自己的目录里。
+  await page.locator('.subpill', { hasText: 'alpha' }).click({ button: 'right' });
+  await expect.poll(() => page.evaluate(() => window.__opened)).toEqual(['D:/work/alpha', 'D:/work/alpha']);
+
+  // 点会话行 = 聚焦这个软件，和点主行一致。
+  await page.locator('.subpill', { hasText: 'alpha' }).click();
+  await expect(pill).toHaveClass(/focused/);
+  await expect(page.locator('.subpill', { hasText: 'alpha' })).toHaveClass(/focused/);
+  await page.locator('.subpill', { hasText: 'alpha' }).click();
+  await expect(pill).not.toHaveClass(/focused/);
+
+  await pill.locator('.pill-expand').click();
+  await expect(page.locator('.subpill')).toHaveCount(0);
+});
+
+test('an expanded software explains its colour with recent events', async ({ page }) => {
+  await clear();
+  await api('/state', { session: 'why-1', agent: 'codex', state: 'busy', detail: 'running' });
+  await api('/state', { session: 'why-1', agent: 'codex', state: 'waiting', detail: 'approve?' });
+  // 第二个会话让 ×N 展开按钮出现（单会话时按钮是隐藏的）。
+  await api('/state', { session: 'why-2', agent: 'codex', state: 'busy', detail: 'building' });
+  await page.goto(base + '/');
+  await page.locator('.pill[data-agent="codex"] .pill-expand').click();
+  const why = page.locator('.why');
+  await expect(why).toBeVisible();
+  await expect(why).toContainText('为什么是这个颜色');
+  await expect(why).toContainText('·');
+  await expect(why).toContainText('已静默');
+});
+
+// 「默认展开多会话」打开后，不用每帧点一次 ×N；手动收起后不会被重新拉开。
+test('the default-expand setting opens multi-session software on its own', async ({ page }) => {
+  await api('/state', { session: 'a', agent: 'claude', state: 'busy', detail: '读文件' });
+  await api('/state', { session: 'b', agent: 'claude', state: 'waiting', detail: '等你确认' });
+
+  await page.addInitScript(() => {
+    window.bao = {
+      serverUrl: location.origin,
+      getConfig: () => Promise.resolve({ expandSessions: true }),
+      saveConfig: () => Promise.resolve({}),
+      getAutostart: () => Promise.resolve({ enabled: false }),
+      setAutostart: () => Promise.resolve({ enabled: false }),
+      getNotes: () => Promise.resolve({ day: '', items: [], open: 0, done: 0, doneToday: 0 }),
+      saveNotes: () => Promise.resolve({}),
+      contentSize: () => {}, hotRect: () => {}, onCursor: () => {}, notify: () => {},
+      openTerminal: () => {}, trayStatus: () => {}, quit: () => {},
+      dragStart: () => {}, dragEnd: () => {},
+    };
+  });
+  await page.reload();
+  await page.waitForFunction(() => document.body.dataset.state !== undefined);
+
+  const pill = page.locator('.pill[data-agent="claude"]');
+  await expect(page.locator('.subpill')).toHaveCount(2);
+  await expect(pill.locator('.pill-expand')).toHaveAttribute('aria-expanded', 'true');
+
+  // 手动收起后保持收起，等下一帧也不会被设置重新展开。
+  await pill.locator('.pill-expand').click();
+  await expect(page.locator('.subpill')).toHaveCount(0);
+  // 聚合行显示的是最坏的那个会话（waiting），所以用它的新说明确认页面确实重画过。
+  await api('/state', { session: 'b', agent: 'claude', state: 'waiting', detail: '又催了一次' });
+  await settled(page, () => document.querySelector('.pill[data-agent="claude"] span')?.textContent)
+    .toContain('又催了一次');
+  await expect(page.locator('.subpill')).toHaveCount(0);
+});
+
+// 桌面便签：真实读写测试服务器的 /notes（通过注入的预加载桥，写操作带 token）。
+test('the desk memo stores, completes and deletes tasks', async ({ page }) => {
+  // 清空上一个测试可能留下的条目。
+  const pre = await (await fetch(base + '/notes')).json();
+  for (const it of pre.items || []) {
+    await fetch(base + '/notes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-bao-token': token },
+      body: JSON.stringify({ action: 'remove', id: it.id }),
+    });
+  }
+
+  await page.addInitScript(({ b, t }) => {
+    const json = (r) => r.json();
+    window.bao = {
+      serverUrl: b,
+      getConfig: () => Promise.resolve({}),
+      saveConfig: () => Promise.resolve({}),
+      getAutostart: () => Promise.resolve({ enabled: false }),
+      setAutostart: () => Promise.resolve({ enabled: false }),
+      getNotes: () => fetch(b + '/notes').then(json),
+      saveNotes: (action) => fetch(b + '/notes', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-bao-token': t },
+        body: JSON.stringify(action),
+      }).then(json),
+      contentSize: () => {}, hotRect: () => {}, onCursor: () => {}, notify: () => {},
+      openTerminal: () => {}, trayStatus: () => {}, quit: () => {},
+      dragStart: () => {}, dragEnd: () => {},
+    };
+  }, { b: base, t: token });
+  await page.reload();
+  await page.waitForFunction(() => document.body.dataset.state !== undefined);
+
+  await page.evaluate(() => document.getElementById('btn-memo').click());
+  await expect(page.locator('#memo')).toBeVisible();
+  await page.fill('#memo-input', '写周报');
+  await page.press('#memo-input', 'Enter');
+
+  const item = page.locator('.memo-item', { hasText: '写周报' });
+  await expect(item).toHaveCount(1);
+  await expect(page.locator('#memo-badge')).toHaveText('1');
+
+  // 关掉面板后，未完成的事仍然在机器人脚边露出来；点它重新打开。
+  await page.locator('#memo-close').click();
+  await expect(page.locator('#memo')).toBeHidden();
+  const peek = page.locator('#memo-peek');
+  await expect(peek).toBeVisible();
+  await expect(peek).toHaveText('1');
+  await peek.click();
+  await expect(page.locator('#memo')).toBeVisible();
+
+  // 双击就地改字：条目本身还在，不需要删了重加。
+  await item.locator('.memo-text').dblclick();
+  const edit = page.locator('.memo-edit');
+  await expect(edit).toHaveValue('写周报');
+  await edit.fill('写月报');
+  await edit.press('Enter');
+  await expect(page.locator('.memo-item', { hasText: '写月报' })).toHaveCount(1);
+  await expect(page.locator('.memo-item', { hasText: '写周报' })).toHaveCount(0);
+
+  const renamed = page.locator('.memo-item', { hasText: '写月报' });
+  // 置顶：它会被排到最上面，并出现「置顶」分组。
+  await renamed.locator('.memo-pin').click();
+  await expect(renamed.locator('.memo-pin')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.memo-group').first()).toHaveText('置顶');
+
+  await renamed.locator('.memo-check').click();
+  await expect(renamed).toHaveClass(/done/);
+  await expect(page.locator('#memo-badge')).toBeHidden();
+  // 完成统计按完成时刻算：刚勾掉的这条就是「今天 1」。
+  await expect(page.locator('#memo-done-note')).toContainText('今天 1');
+
+  await renamed.locator('.memo-del').click();
+  await expect(page.locator('.memo-item')).toHaveCount(0);
+  // 删除后可撤销：条目原样回来（包括它已完成的状态）。
+  await expect(page.locator('#memo-undo')).toBeVisible();
+  await page.locator('#memo-undo-btn').click();
+  await expect(page.locator('.memo-item', { hasText: '写月报' })).toHaveClass(/done/);
+});
+
+// 一张写满的便签：滚动位置不能在勾选后跳回顶部，新记下的事必须自己滚进视野，
+// 否则用户会以为「没保存」或「找不到刚才那条」。
+test('a long memo list keeps its scroll position and reveals a new item', async ({ page }) => {
+  await page.addInitScript(() => {
+    const state = {
+      day: '2026-11-17',
+      items: Array.from({ length: 20 }, (_, i) => ({
+        id: 'n' + i, text: `第 ${i + 1} 件要做的事`, done: false, day: '2026-11-17',
+      })),
+      open: 20, done: 0, doneToday: 0,
+    };
+    const snap = () => ({
+      ...state,
+      items: state.items.map((i) => ({ ...i })),
+      open: state.items.filter((i) => !i.done).length,
+      done: state.items.filter((i) => i.done).length,
+    });
+    window.bao = {
+      serverUrl: location.origin,
+      getConfig: () => Promise.resolve({ memoOpen: true }),
+      saveConfig: () => Promise.resolve({}),
+      getAutostart: () => Promise.resolve({ enabled: false }),
+      setAutostart: () => Promise.resolve({ enabled: false }),
+      getNotes: () => Promise.resolve(snap()),
+      saveNotes: (a) => {
+        if (a.action === 'add') {
+          state.items.push({ id: 'x' + state.items.length, text: a.text, done: false, day: state.day });
+        } else if (a.action === 'toggle') {
+          const it = state.items.find((i) => i.id === a.id);
+          if (it) it.done = !it.done;
+        }
+        return Promise.resolve(snap());
+      },
+      contentSize: () => {}, hotRect: () => {}, onCursor: () => {}, notify: () => {},
+      openTerminal: () => {}, trayStatus: () => {}, quit: () => {},
+      dragStart: () => {}, dragEnd: () => {},
+    };
+  });
+  await page.reload();
+  await page.waitForFunction(() => document.body.dataset.state !== undefined);
+  await expect(page.locator('.memo-item')).toHaveCount(20);
+  // 覆盖式滚动条平时不可见：列表底部必须有一句「还有更多」。
+  await expect(page.locator('#memo-more')).toBeVisible();
+
+  await page.evaluate(() => { document.getElementById('memo-list').scrollTop = 9999; });
+  await expect(page.locator('#memo-more')).toBeHidden();
+  await page.evaluate(() => { document.getElementById('memo-list').scrollTop = 120; });
+  await page.locator('.memo-item').nth(9).locator('.memo-check').click();
+  await expect.poll(() => page.evaluate(() => document.getElementById('memo-list').scrollTop))
+    .toBeGreaterThan(0);
+
+  await page.fill('#memo-input', '新记下的一件事');
+  await page.press('#memo-input', 'Enter');
+  const fresh = page.locator('.memo-item', { hasText: '新记下的一件事' });
+  await expect(fresh).toHaveCount(1);
+  // 新条目在可视区域内（不必是列表最后一行：已完成的排在后面）。
+  await expect.poll(() => page.evaluate(() => {
+    const list = document.getElementById('memo-list');
+    const row = [...document.querySelectorAll('.memo-item')]
+      .find((el) => el.textContent.includes('新记下的一件事'));
+    if (!row) return false;
+    const lr = list.getBoundingClientRect();
+    const rr = row.getBoundingClientRect();
+    return rr.top >= lr.top - 1 && rr.bottom <= lr.bottom + 1;
+  })).toBe(true);
+});
+
+// 快速记一条：Ctrl+Shift+N 只开一条输入，不摊开整张便签。
+test('a quick note can be added with the keyboard without opening the memo', async ({ page }) => {
+  await page.addInitScript(() => {
+    const state = { day: '2026-11-17', items: [], open: 0, done: 0, doneToday: 0, olderOpen: 0 };
+    const snap = () => ({ ...state, items: state.items.map((i) => ({ ...i })) });
+    window.bao = {
+      serverUrl: location.origin,
+      getConfig: () => Promise.resolve({}),
+      saveConfig: () => Promise.resolve({}),
+      getAutostart: () => Promise.resolve({ enabled: false }),
+      setAutostart: () => Promise.resolve({ enabled: false }),
+      getNotes: () => Promise.resolve(snap()),
+      saveNotes: (a) => {
+        if (a.action === 'add') {
+          state.items.push({ id: 'x' + state.items.length, text: a.text, done: false, day: state.day });
+          state.open += 1;
+        }
+        return Promise.resolve(snap());
+      },
+      contentSize: () => {}, hotRect: () => {}, onCursor: () => {}, notify: () => {},
+      openTerminal: () => {}, trayStatus: () => {}, quit: () => {},
+      dragStart: () => {}, dragEnd: () => {},
+    };
+  });
+  await page.reload();
+  await page.waitForFunction(() => document.body.dataset.state !== undefined);
+  await expect(page.locator('#memo')).toBeHidden();
+
+  await page.keyboard.press('Control+Shift+N');
+  await expect(page.locator('#quick-add')).toBeVisible();
+  await page.fill('#quick-add-input', '快速记下的事');
+  await page.press('#quick-add-input', 'Enter');
+  await expect(page.locator('#quick-add')).toBeHidden();
+  await expect(page.locator('#memo-badge')).toHaveText('1');
+
+  await page.evaluate(() => document.getElementById('btn-memo').click());
+  await expect(page.locator('.memo-item', { hasText: '快速记下的事' })).toHaveCount(1);
+});
+
+// 一个软件会话很多时，展开不能把整张桌面推下去：先列 6 条，其余折起来。
+test('a software with many sessions caps the list and offers the rest', async ({ page }) => {
+  for (let i = 0; i < 8; i++) {
+    await api('/state', {
+      session: 'many' + i, agent: 'codex', state: 'busy',
+      detail: '任务 ' + i, cwd: 'D:/work/p' + i,
+    });
+  }
+  const pill = page.locator('.pill[data-agent="codex"]');
+  await expect(pill.locator('.pill-expand')).toHaveText(/×8/);
+  await pill.locator('.pill-expand').click();
+
+  await expect(page.locator('.subpill:not(.more)')).toHaveCount(6);
+  await expect(page.locator('.subpill.more')).toHaveText(/还有 2 个会话/);
+  await page.locator('.subpill.more').click();
+  await expect(page.locator('.subpill:not(.more)')).toHaveCount(8);
+  await expect(page.locator('.subpill.more')).toHaveCount(0);
+});
+
+// 放在最后：它会在测试专用的 cc-switch 目录里摆一份「已接管」的状态，
+// cc-switch 的缓存 10 秒才刷新一次，清理要等下一轮，不适合影响别的用例。
+test('the model label can be hidden without hiding the software', async ({ page }) => {
+  fs.mkdirSync(path.join(ccSwitchHome, '.cc-switch'), { recursive: true });
+  fs.mkdirSync(path.join(ccSwitchHome, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(ccSwitchHome, '.cc-switch', 'live-state.json'),
+    JSON.stringify({ apps: { claude: { attached: true, mode: 'proxy' } } }));
+  fs.writeFileSync(path.join(ccSwitchHome, '.cc-switch', 'settings.json'),
+    JSON.stringify({ currentProviderClaude: 'deepseek' }));
+  fs.writeFileSync(path.join(ccSwitchHome, '.claude', 'settings.json'),
+    JSON.stringify({ env: { ANTHROPIC_MODEL: 'deepseek-v4.1-flash' } }));
+
+  await api('/state', { session: 'model', agent: 'claude', state: 'busy' });
+  const pillText = () => page.evaluate(() =>
+    document.querySelector('.pill[data-agent="claude"]')?.textContent || '');
+  // 服务端每 10 秒才重读一次 cc-switch：等它自己刷新，不催。
+  await expect.poll(pillText, { timeout: 25000 }).toContain('deepseek-v4.1-flash');
+
+  await openGroups(page, ['系统']);
+  await page.evaluate(() => {
+    const el = document.getElementById('m-model');
+    el.checked = false;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect.poll(pillText).not.toContain('deepseek-v4.1-flash');
+  await expect(page.locator('.pill[data-agent="claude"] b')).toHaveText('Claude Code');
 });

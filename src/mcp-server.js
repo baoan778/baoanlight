@@ -106,6 +106,8 @@ server.registerTool('report_status', {
       detail: args.detail || '',
       cwd: args.cwd || '',
       session: `mcp:${agent}`,
+      source: 'mcp',
+      event: 'set_state',
     });
     return { content: [{ type: 'text', text: `Reported ${agent} as ${args.state}.` }] };
   } catch (err) {

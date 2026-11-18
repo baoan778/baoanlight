@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>baoanlight</title>
-<meta name="description" content="A little tracked robot on your desktop that shows what every AI coding agent is doing — Claude Code, Codex, DeepSeek Harness, WorkBuddy and anything else that can report. macOS, Windows and Linux." />
+<meta name="description" content="A little tracked robot on your Windows desktop that shows what every AI coding agent is doing — Claude Code, Codex, DeepSeek Harness, WorkBuddy and anything else that can report." />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='6' y='12' width='20' height='14' rx='4' fill='%23f2c11c'/><circle cx='12' cy='11' r='4' fill='%2323262b'/><circle cx='20' cy='11' r='4' fill='%2323262b'/><circle cx='12' cy='11' r='1.6' fill='%23e8eef5'/><circle cx='20' cy='11' r='1.6' fill='%23e8eef5'/></svg>" />
 
 <meta property="og:title" content="baoanlight" />
@@ -12,8 +12,13 @@
      而那正是这个工具存在的理由——完成态绝不能是绿色。 -->
 <meta property="og:description" content="A desk robot that shows what your AI coding agents are doing. Green only while one is working, amber when it needs you, red when it failed." />
 <meta property="og:type" content="website" />
-<meta property="og:url" content="https://deepak-hp.github.io/baoanlight" />
+<meta name="author" content="baoan778" />
+<meta property="og:site_name" content="baoanlight" />
+<meta property="og:url" content="https://baoan778.github.io/baoanlight/" />
+<meta property="og:image" content="https://baoan778.github.io/baoanlight/robot.png" />
+<link rel="canonical" href="https://baoan778.github.io/baoanlight/" />
 <meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:image" content="https://baoan778.github.io/baoanlight/robot.png" />
 
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -21,9 +26,8 @@
 
 <style>
   /* ---------------------------------------------------------------------
-     Tokens lifted from utilzilla.com so this page belongs to the same
-     family: indigo primary, the same neutral ramps, the same 0.75rem
-     radius, Instrument Sans over Inter.
+     The landing page's design tokens: indigo primary, neutral ramps, a
+     0.75rem radius, Instrument Sans over Inter.
 
      Light is the base. Dark is redefined twice — once for the system
      preference, once for an explicit choice — so all three viewer states
@@ -36,9 +40,9 @@
     --card-border: 220 13% 91%;
     --border: 220 13% 88%;
     --muted: 220 14% 94%;
-    /* UtilZilla's own value is 215 16% 47%, which lands at 4.49:1 on this
-       ground — a hair under the 4.5:1 WCAG AA floor for body text. Darkened
-       just enough to clear it; the muted role is unchanged. */
+    /* The stock muted value (215 16% 47%) lands at 4.49:1 on this ground — a
+       hair under the 4.5:1 WCAG AA floor for body text. Darkened just enough
+       to clear it; the muted role is unchanged. */
     --muted-foreground: 215 18% 42%;
     /* 67% 的靛蓝在这块近白底上只有约 3.9:1 —— 链接、eyebrow 和按钮上的白字
        都不达标。压到 58% 才过 WCAG AA（深色模式下另有覆盖，见下面两处）。 */
@@ -323,7 +327,7 @@
   </div>
 
   <h2>Install</h2>
-<pre><span class="c"># macOS, Windows, Linux</span>
+<pre><span class="c"># Windows 10 / 11</span>
 npm install -g baoanlight
 bao setup
 
@@ -373,7 +377,7 @@ bao connect claude</pre>
     loopback holding the current state of each session, and nothing else.</p>
 
   <footer>
-    <span>MIT licensed</span>
+    <span>© 2026 baoan778 · MIT licensed</span>
     <span><a href="https://github.com/baoan778/baoanlight">github.com/baoan778/baoanlight</a></span>
   </footer>
 </div>

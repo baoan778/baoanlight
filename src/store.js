@@ -9,7 +9,7 @@ const { EventEmitter } = require('events');
 //   waiting -> YELLOW  the agent has stopped and needs a human
 //   busy    -> GREEN   the agent is thinking or running tools ("running")
 //   unknown -> GREY    something reported, but we cannot say what it means
-//   idle    -> GREEN   same hue as busy, half the light: alive, not working
+//   idle    -> WHITE   dimmed: alive, not working; never borrows the running green
 //   offline -> DARK    session ended / nothing connected
 const STATES = ['error', 'waiting', 'busy', 'done', 'idle', 'unknown', 'offline'];
 
@@ -109,6 +109,8 @@ class Store extends EventEmitter {
     this.stats = { day: dayKey(), byAgent: {}, events: {}, history: {} };
     // 每个 agent 最近几次任务的耗时（内存学习，重启重学），用于完成预估。
     this.taskTimes = {};
+    // 每个会话最近的状态证据（只有元数据，进程内，重启即清）。
+    this.trails = new Map();
     this._sweeper = setInterval(() => this.sweep(), 5_000);
     if (this._sweeper.unref) this._sweeper.unref();
   }
@@ -117,14 +119,31 @@ class Store extends EventEmitter {
   // app was closed overnight), archive that day into history first instead of
   // throwing the history away — otherwise the weekly report loses days.
   mergeStats(stats) {
-    if (!stats || !stats.byAgent) return;
+    if (!stats || typeof stats !== 'object' || !stats.byAgent
+      || typeof stats.byAgent !== 'object' || Array.isArray(stats.byAgent)) return;
     const today = dayKey();
-    const history = { ...(stats.history || {}) };
+    const history = { ...(stats.history && typeof stats.history === 'object' ? stats.history : {}) };
+    // stats.json 可能被手改过，或来自字段类型不同的旧版本：一个字符串会被
+    // `this.stats.byAgent[agent] + ms` 变成字符串拼接（"abc100"），之后今日
+    // 时长整列 NaN。只收有限的非负数。
+    const count = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    };
+    const byAgent = {};
+    for (const [agent, ms] of Object.entries(stats.byAgent)) byAgent[agent] = count(ms);
+    const events = {};
+    const rawEvents = stats.events && typeof stats.events === 'object' ? stats.events : {};
+    for (const [agent, ev] of Object.entries(rawEvents)) {
+      if (ev && typeof ev === 'object' && !Array.isArray(ev)) {
+        events[agent] = { done: count(ev.done), error: count(ev.error) };
+      }
+    }
     if (stats.day !== today) {
-      const hasData = Object.keys(stats.byAgent).length > 0
-        || Object.keys(stats.events || {}).length > 0;
+      const hasData = Object.keys(byAgent).length > 0
+        || Object.keys(events).length > 0;
       if (stats.day && hasData) {
-        history[stats.day] = { byAgent: stats.byAgent, events: stats.events || {} };
+        history[stats.day] = { byAgent, events };
         const keys = Object.keys(history).sort();
         while (keys.length > 30) delete history[keys.shift()];
       }
@@ -133,25 +152,41 @@ class Store extends EventEmitter {
     }
     this.stats = {
       day: stats.day,
-      byAgent: { ...stats.byAgent },
-      events: { ...(stats.events || {}) },
+      byAgent,
+      events,
       history,
     };
   }
 
   // 跨天归档：把昨天的战绩存进 history（保留最近 30 天），今日清零。
   // snapshot 每次都调用，所以跨天后的第一帧就会归档，不丢数据。
-  checkDay() {
-    const today = dayKey();
+  checkDay(now = Date.now()) {
+    const today = dayKey(now);
     if (this.stats.day === today) return;
-    // 和 mergeStats 一样：只有真的干过活的那一天才进历史。否则一台整夜
-    // 开着、什么都没跑的机器，每天都会往 history 里塞一个空白天，30 天之后
-    // 真正的战绩就被这些空条目挤出去了 —— 月报不是少了一天，是少了一个月。
-    const hasData = Object.keys(this.stats.byAgent).length > 0
+    // 归档的是 `stats.day` 那一天，不一定是昨天：机器休眠/进程被挂起后，
+    // checkDay 可能隔了几小时才第一次运行。按那个日历日的 0 点裁剪，
+    // 才能把跨午夜仍在忙的会话算到正确的一天。
+    const archivedStart = (() => {
+      const [y, m, d] = String(this.stats.day || '').split('-').map(Number);
+      if (!y || !m || !d) return startOfDay(now) - 86400000;
+      return new Date(y, m - 1, d).getTime();
+    })();
+    const archivedEnd = archivedStart + 86400000;
+    const byAgent = { ...this.stats.byAgent };
+    // 会话跨午夜时，`since` 可能还在昨天。以前只归档已经结算的 byAgent，
+    // 于是 23:00 开始、一直没停过的任务在昨天历史里完全消失。这里把仍在忙的
+    // 那一小段补进归档副本；session.since 不动，今天的实时部分仍然从 0 点算。
+    for (const s of this.sessions.values()) {
+      if (s.state !== 'busy') continue;
+      const from = Math.max(s.since, archivedStart);
+      const until = Math.min(now, archivedEnd);
+      if (until > from) byAgent[s.agent] = (byAgent[s.agent] || 0) + (until - from);
+    }
+    const hasData = Object.keys(byAgent).length > 0
       || Object.keys(this.stats.events).length > 0;
     if (this.stats.day && hasData) {
       this.stats.history[this.stats.day] = {
-        byAgent: this.stats.byAgent,
+        byAgent,
         events: this.stats.events,
       };
       const keys = Object.keys(this.stats.history).sort();
@@ -185,8 +220,24 @@ class Store extends EventEmitter {
     this.emit('change', this.snapshot());
   }
 
+  recordEvent(session, prev, state, detail, now, source, event) {
+    const cut = now - 2 * 60 * 60 * 1000;
+    const list = (this.trails.get(session) || []).filter((e) => e.at >= cut);
+    list.push({
+      at: now,
+      source: String(source || 'api').slice(0, 12),
+      event: String(event || '').slice(0, 40),
+      state,
+      detail: String(detail || '').slice(0, 120),
+      tookMs: prev ? Math.max(0, now - prev.since) : 0,
+    });
+    while (list.length > 8) list.shift();
+    this.trails.set(session, list);
+  }
+
   set({
     session = 'default', agent = 'agent', state, detail = '', cwd = '', fuel, create = false,
+    source = 'api', event = '', pulse = false,
   } = {}) {
     const prev = this.sessions.get(session);
 
@@ -218,13 +269,19 @@ class Store extends EventEmitter {
       // （unused 回收 / busy 静默丢弃 / quiet 变暗），刷新它会让一个只报额度的
       // 幻影「就绪」槽位永不回收，也会让一个真在跑的 busy 会话永不判静默。
       this.sessions.set(session, { ...base, fuel: normaliseFuel(fuel) });
-      this.emit('change', this.snapshot());
-      return this.snapshot();
+      // 只算一次快照：每次上报都 snapshot 两遍（一遍广播、一遍返回）是纯重复的
+      // 排序/复制工作，而钩子和 watcher 每秒可能上报好几次。
+      const snap = this.snapshot();
+      this.emit('change', snap);
+      return snap;
     }
 
     const next = normaliseState(state === undefined ? 'idle' : state);
 
     const now = Date.now();
+    const changed = !prev || prev.state !== next || prev.detail !== detail;
+    const meaningful = !pulse && (changed || !!event);
+    if (meaningful) this.recordEvent(session, prev, next, detail, now, source, event);
     // A run leaving busy closes out its busy time. `since` is when it entered
     // busy, so the elapsed is the honest duration of that stretch of work.
     if (prev && prev.state === 'busy' && next !== 'busy') {
@@ -248,6 +305,7 @@ class Store extends EventEmitter {
     }
     if (next === 'offline') {
       this.sessions.delete(session);
+      this.trails.delete(session);
     } else {
       this.sessions.set(session, {
         session,
@@ -267,10 +325,12 @@ class Store extends EventEmitter {
           || next === 'error' || next === 'done',
         since: prev && prev.state === next ? prev.since : now,
         updatedAt: now,
+        lastEventAt: meaningful ? now : (prev?.lastEventAt ?? now),
       });
     }
-    this.emit('change', this.snapshot());
-    return this.snapshot();
+    const snap = this.snapshot();
+    this.emit('change', snap);
+    return snap;
   }
 
   sweep() {
@@ -325,8 +385,13 @@ class Store extends EventEmitter {
       // `unknown` decays the same way: it is the weakest claim on the screen,
       // and an agent that sent one unreadable event an hour ago is gone.
       if ((s.state === 'busy' || s.state === 'unknown') && now - s.updatedAt > this.idleTtlMs) {
-        // 静默超时被丢掉的忙碌会话，也算它的工作时长——它确实干过活。
-        if (s.state === 'busy') this.accumulateBusy(s.agent, now - s.since);
+        // 静默超时被丢掉的忙碌会话也算工作时长，但只算到**最后一帧证据**为止：
+        // 之后的沉默既不是「还在干」，也不该被记成工时。跨午夜时再夹到今天 0 点，
+        // 免得把昨天已归档的那一段重复记进今天。
+        if (s.state === 'busy') {
+          const until = Math.min(now, s.updatedAt);
+          this.accumulateBusy(s.agent, Math.max(0, until - Math.max(s.since, startOfDay(until))));
+        }
         this.sessions.delete(id);
         changed = true;
       }
@@ -336,7 +401,35 @@ class Store extends EventEmitter {
       // the six-hour TTL above can clear it.
     }
 
+    for (const id of this.trails.keys()) {
+      if (!this.sessions.has(id)) this.trails.delete(id);
+    }
+
     if (changed) this.emit('change', this.snapshot());
+  }
+
+  // 落盘用的统计副本：把「此刻仍在忙」的那一段也计入，但不改动会话的 `since`。
+  // 界面上的「已运行 N 分钟」是用 since 算的，一次落盘不能把它重置成 0。
+  //
+  // store.stats 本身只在会话离开 busy 时累计，因此这里加上实时段不会重复计：
+  // 会话真正结束时 accumulateBusy 记的是完整一段，之后这个会话就不在 sessions 里了。
+  // 以前只写 store.stats，退出/重启时正在忙的整段（可能几小时）会凭空消失，
+  // 今日时长看起来像被清零了。
+  statsForPersistence(now = Date.now()) {
+    this.checkDay();
+    const dayStart = startOfDay(now);
+    const stats = {
+      day: this.stats.day,
+      byAgent: { ...this.stats.byAgent },
+      events: { ...this.stats.events },
+      history: { ...this.stats.history },
+    };
+    for (const s of this.sessions.values()) {
+      if (s.state !== 'busy') continue;
+      const from = Math.max(s.since, dayStart);
+      if (now > from) stats.byAgent[s.agent] = (stats.byAgent[s.agent] || 0) + (now - from);
+    }
+    return stats;
   }
 
   // Overall light: the most attention-hungry software wins.
@@ -353,7 +446,14 @@ class Store extends EventEmitter {
     // the difference so the display can show it, rather than presenting a
     // stale claim with full confidence.
     const sessions = [...this.sessions.values()]
-      .map((s) => (now - s.updatedAt > this.quietAfterMs ? { ...s, quiet: true, quietFor: now - s.updatedAt } : s))
+      .map((s) => {
+        const out = now - s.updatedAt > this.quietAfterMs
+          ? { ...s, quiet: true, quietFor: now - s.updatedAt }
+          : { ...s };
+        const trail = this.trails.get(s.session);
+        if (trail && trail.length) out.events = trail.filter((e) => now - e.at <= 2 * 60 * 60 * 1000);
+        return out;
+      })
       .sort((a, b) => b.updatedAt - a.updatedAt);
 
     // One slot per software. Several sessions of the same agent (four Claude
@@ -384,8 +484,11 @@ class Store extends EventEmitter {
       (agent) => byAgent.get(agent) || { agent, state: 'offline', detail: '', count: 0, quiet: false }
     );
 
+    // The main lamp summarises every session, not just the ones that fit in the
+    // panel: with more than MAX_SLOTS agents, a failure in the overflow must
+    // still be visible on the robot.
     let overall = 'offline';
-    for (const s of slots) if (PRIORITY[s.state] > PRIORITY[overall]) overall = s.state;
+    for (const s of byAgent.values()) if (PRIORITY[s.state] > PRIORITY[overall]) overall = s.state;
 
     let fuel = null;
     for (const s of sessions) {

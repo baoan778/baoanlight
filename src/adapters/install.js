@@ -225,7 +225,8 @@ function genericSnippet(agent = 'my-agent') {
     `bao set waiting --agent ${agent} --detail "needs you"`,
     '',
     '# or straight over HTTP, from anything at all (writes need the local token):',
-    `curl -s -H "x-bao-token: $(bao token)" "http://127.0.0.1:4747/set/busy?agent=${agent}&session=$$"`,
+    "$h = @{ 'x-bao-token' = (bao token) }",
+    `Invoke-RestMethod -Headers $h "http://127.0.0.1:4747/set/busy?agent=${agent}&session=manual"`,
   ].join('\n');
 }
 
