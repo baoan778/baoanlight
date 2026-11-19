@@ -98,7 +98,7 @@ node src/cli.js start
 npm 上暂时还没有这个包时，可以直接从 GitHub Release 安装：
 
 ```bash
-npm install -g https://github.com/baoan778/baoanlight/releases/download/v2.0.0/baoanlight-2.0.0.tgz
+npm install -g https://github.com/baoan778/baoanlight/releases/download/v2.0.1/baoanlight-2.0.1.tgz
 bao setup
 ```
 
@@ -411,7 +411,7 @@ WorkBuddy 任务板的 failed/error 状态。DeepSeek 投影和 CodeBuddy/WorkBu
 
 ```bash
 npm test         # 246 个逻辑测试：状态机、适配器、钩子、安装器、电量、鉴权、资源采样、证据链、调色板、事件契约、HTTP 请求体、配置落盘与导出覆盖、启动自检、整机守护、桌面待办、退出时统计落盘、终端安全
-npm run test:ui  # 136 个渲染测试：机器人、系统面板、标签、多会话展开与折叠、证据链、桌面便签、电量条、CSP、XSS、朗读文本、键盘路径、帧率/降级预算、多软件并发/竞态、报错与完成提示、通知抑制与卡住阈值、每一项自定义控件的接线与重启恢复，以及落地页对比度
+npm run test:ui  # 137 个渲染测试：机器人、系统面板、标签、多会话展开与折叠、证据链、桌面便签、电量条、CSP、XSS、朗读文本、键盘路径、帧率/降级预算、多软件并发/竞态、报错与完成提示、通知抑制与卡住阈值、每一项自定义控件的接线与重启恢复，以及落地页对比度
 npm run test:electron  # Electron 主进程烟测：preload 桥、真实窗口、SSE 状态、五软件并发与置顶（需要 Electron）
 npm run check:pack     # 发布前检查 npm 包内容：运行文件齐全、测试/密钥不会被打包
 npm run lint     # 未定义的变量、声明了没用的变量、重复键、走不到的代码

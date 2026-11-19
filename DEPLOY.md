@@ -121,7 +121,7 @@ node src/cli.js xxx
 不需要 npm 账号，直接安装官方构建好的发布包：
 
 ```powershell
-$ver = "2.0.0"
+$ver = "2.0.1"
 $base = "https://github.com/baoan778/baoanlight/releases/download/v$ver"
 $tgz = "$env:TEMP\baoanlight-$ver.tgz"
 Invoke-WebRequest "$base/baoanlight-$ver.tgz" -OutFile $tgz

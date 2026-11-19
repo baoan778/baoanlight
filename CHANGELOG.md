@@ -3,6 +3,15 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本号格式为
 `MAJOR.MINOR.PATCH`。每个版本的「用户可见变化」和「升级注意」都记在这里。
 
+## [2.0.1] - 2026-11-19
+
+### 修复
+
+- 没有 NVIDIA 显卡的机器不再显示一行空的「GPU —」：GPU 行的 `hidden`
+  被 `#sys .srow { display:flex }` 覆盖，导致它在无显卡时仍然占位。
+  已补上显式的 `[hidden]` 规则，并新增一条伪造无 GPU `/sys` 的渲染测试，
+  让结果不再取决于跑测试的机器是否有显卡。
+
 ## [2.0.0] - 2026-11-19
 
 首个以 **baoanlight** 名义发布的版本，由项目早期的 signalhead 版本演进而来。
