@@ -56,10 +56,10 @@ npm view baoanlight version
 ```
 
 - **能正常输出版本号**：优先用「全局安装」，后续命令里的 `bao` 可以直接用。
-- **报 404 / 网络失败 / 没有这个包**：用「源码安装」，后续把 `bao` 换成
-  `node src/cli.js`。
+- **报 404 / 网络失败 / 没有这个包**：用「GitHub Release 安装」或「源码安装」，
+  后续把 `bao` 换成对应的入口。
 
-两种方式任选一种，不要同时装两套。
+三种方式任选一种，不要同时装两套。
 
 ---
 
@@ -115,6 +115,27 @@ node src/cli.js xxx
 
 如果希望源码目录也有全局 `bao` 命令，可以额外执行 `npm link`；
 不执行也不影响使用。
+
+### 4.3 GitHub Release 安装（npm 上还没有包时）
+
+不需要 npm 账号，直接安装官方构建好的发布包：
+
+```powershell
+$ver = "2.0.0"
+$base = "https://github.com/baoan778/baoanlight/releases/download/v$ver"
+$tgz = "$env:TEMP\baoanlight-$ver.tgz"
+Invoke-WebRequest "$base/baoanlight-$ver.tgz" -OutFile $tgz
+Invoke-WebRequest "$base/baoanlight-$ver.tgz.sha256" -OutFile "$tgz.sha256"
+
+# 校验（输出的哈希必须与 .sha256 文件里的一致）
+(Get-FileHash $tgz -Algorithm SHA256).Hash.ToLower()
+Get-Content "$tgz.sha256"
+
+npm install -g $tgz
+bao setup
+```
+
+源码安装与 Release 安装安装的都是同一个包，后续命令完全一样。
 
 ---
 

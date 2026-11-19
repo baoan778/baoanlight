@@ -95,6 +95,13 @@ npm run setup
 node src/cli.js start
 ```
 
+npm 上暂时还没有这个包时，可以直接从 GitHub Release 安装：
+
+```bash
+npm install -g https://github.com/baoan778/baoanlight/releases/download/v2.0.0/baoanlight-2.0.0.tgz
+bao setup
+```
+
 不需要桌面窗口也可以：
 
 ```bash
