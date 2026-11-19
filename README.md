@@ -57,8 +57,8 @@ Gemini CLI、Aider、Cursor、opencode、Copilot、Cline、Windsurf、Qwen Code�
 - **整机自愈**：`bao start` 的脱离进程是守护者 —— 机器人整体崩溃会按 5s → 10s → 30s → 60s 自动重开；你主动退出或 `bao stop` 则不会被“复活”
 - **可选语音/提示音**（默认关闭）
 
-本项目是 [signalhead](https://github.com/deepak-hp/signalhead)（MIT）的二次开发版本：
-核心状态机与「安静不等于完成」等设计沿用并继续演进，界面与代理接入层已重写。
+本项目原名 [signalhead](https://github.com/deepak-hp/signalhead)，后更名为
+baoanlight：核心状态机与「安静不等于完成」等设计延续至今，界面与代理接入层已重写。
 由 [baoan778](https://github.com/baoan778) 维护并开源发布。
 
 ---
@@ -556,5 +556,12 @@ npm run build:pages   # 如果改了 src/overlay/ 下的渲染代码
 
 ## 授权
 
-MIT。项目版权归 [baoan778](https://github.com/baoan778/baoanlight) 所有，完整许可见 [LICENSE](LICENSE)。
-渲染器内置 three.js（MIT），许可证头保留在 `src/overlay/vendor/` 的构建文件中。
+MIT。项目版权归 [baoan778](https://github.com/baoan778/baoanlight) 所有，完整许可见
+[LICENSE](LICENSE)。
+
+渲染器内置 three.js（MIT），许可证头保留在 `src/overlay/vendor/` 的构建文件中；
+完整的第三方版权与许可文本见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+Claude、Claude Code、Codex、DeepSeek、WorkBuddy、CodeBuddy、Cursor、GitHub Copilot、
+Gemini、Aider、Qwen、Kimi 等名称与商标归其各自所有者。本项目仅用于描述兼容性，
+与上述公司或产品没有隶属、赞助或背书关系。

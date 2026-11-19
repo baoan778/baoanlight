@@ -36,6 +36,7 @@ const REQUIRED = [
   'CODE_OF_CONDUCT.md',
   'SECURITY.md',
   'LICENSE',
+  'THIRD_PARTY_NOTICES.md',
   'package.json',
 ];
 

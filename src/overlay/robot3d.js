@@ -941,7 +941,7 @@ if (host && renderer) {
     track.add(space);
 
     // 履带轮廓：读全局 trackType（圆角矩形 / 三角形 / 梯形）。
-    // 三角形 = WALL-E 风格「上窄下宽」的圆角三角（顶部一个小轮、底部两个大轮）；
+    // 三角形 = 「上窄下宽」的圆角三角轮廓（顶部一个小轮、底部两个大轮）；
     // 梯形 = 上边窄、下边宽的圆角梯形。顶点顺序保证轮廓闭合、圆角平滑。
     function outline() {
       const w = TRACK.w, h = TRACK.h;
