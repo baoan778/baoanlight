@@ -159,3 +159,39 @@ test('a window is only expected when neither --no-overlay nor --browser is given
   assert.equal(needsWindow({ browser: true }), false);
   assert.equal(needsWindow({ 'no-overlay': true, browser: true }), false);
 });
+
+// 首次运行最常见的卡点：运行时不在，旧的实现把这个 ~140 MB 的下载留给脱离终端
+// 后的子进程（stdio 被 ignore），父进程 180 秒后 taskkill —— 慢网络必然「失败」。
+// 现在必须先在本进程里装好，且只装一次；--no-overlay / --browser 绝不能触发下载。
+test('a missing window runtime is installed once, before detaching, and never without a window', () => {
+  const { ensureWindowRuntime } = require('../src/cli');
+  const logs = [];
+  let present = false;
+  let installs = 0;
+  const harness = {
+    probe: () => present,
+    install: () => { installs += 1; present = true; return true; },
+    log: (m) => logs.push(m),
+  };
+
+  assert.equal(ensureWindowRuntime({}, harness), true);
+  assert.equal(installs, 1, 'it installs exactly once');
+  assert.equal(logs.length, 1, 'and says why the command is waiting');
+
+  assert.equal(ensureWindowRuntime({}, harness), true);
+  assert.equal(installs, 1, 'an installed runtime is not downloaded again');
+
+  present = false;
+  installs = 0;
+  assert.equal(ensureWindowRuntime({ 'no-overlay': true }, harness), true);
+  assert.equal(ensureWindowRuntime({ browser: true }, harness), true);
+  assert.equal(installs, 0, 'server/browser mode never downloads the window runtime');
+});
+
+test('a failed runtime install is reported as a failure, not silently accepted', () => {
+  const { ensureWindowRuntime } = require('../src/cli');
+  assert.equal(
+    ensureWindowRuntime({}, { probe: () => false, install: () => false, log: () => {} }),
+    false
+  );
+});

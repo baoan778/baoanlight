@@ -168,13 +168,33 @@ async function cmdServer(flags, { detached = false } = {}) {
   return bound;
 }
 
-function spawnOverlay(port) {
-  let electron;
+// `require('electron')` 只读 path.txt，**不检查 exe 是否还在**：杀毒软件隔离、
+// 升级中途失败都会留下一个指向空气的路径。只 require 就当成「运行时可用」，
+// 结果是窗口根本不出现，而命令仍然打印「robot up」。
+function electronBinary() {
   try {
-    electron = require('electron');
+    const p = require('electron');
+    return typeof p === 'string' && fs.existsSync(p) ? p : null;
   } catch {
     return null;
   }
+}
+
+// 同步安装窗口运行时，并把输出留给用户看（stdio: 'inherit'）。只在脱离终端之前
+// 调用：`bao start` 不应该先宣布成功、再在后台悄悄下载几分钟。
+function runSetup() {
+  try {
+    const r = require('child_process').spawnSync(
+      process.execPath, [path.join(ROOT, 'scripts', 'setup.js')], { stdio: 'inherit' });
+    return r.status === 0 && !!electronBinary();
+  } catch {
+    return false;
+  }
+}
+
+function spawnOverlay(port) {
+  const electron = electronBinary();
+  if (!electron) return null;
   // Deliberately NOT the install directory. A process's working directory is an
   // open handle to that folder, and on Windows that makes it unrenameable and
   // undeletable for as long as the robot runs — which surfaces to the user as
@@ -254,6 +274,19 @@ function needsWindow(flags = {}) {
   return !flags['no-overlay'] && !flags.browser;
 }
 
+// 首次运行：窗口运行时不在时，先在这个进程里同步装好，再脱离终端。
+// 以前把下载留给脱离后的子进程 —— 它的 stdio 是 ignore，用户看不到任何进度，
+// 而父进程 180 秒后就 taskkill 整棵树：慢网络上必然得到一次「启动失败」。
+function ensureWindowRuntime(flags, {
+  probe = electronBinary,
+  install = runSetup,
+  log = (m) => console.log(c.dim(m)),
+} = {}) {
+  if (!needsWindow(flags) || probe()) return true;
+  log('  fetching the window runtime, once — this can take a few minutes…');
+  return !!install() && !!probe();
+}
+
 // `bao start` detaches by default: a desk robot should not hold a shell
 // hostage, and closing that terminal should not take the robot down.
 async function cmdStartDetached(flags) {
@@ -288,6 +321,18 @@ async function cmdStartDetached(flags) {
     return cmdOverlay(flags);
   }
 
+  // 窗口运行时在这里、带着用户的终端装好，**然后**才脱离终端。需要的下载
+  // （~140 MB）如果留给脱离后的子进程，用户看不到任何进度，而本进程的等待
+  // 窗口会先到点；同一份 node_modules 被两个进程同时解包也不是好事。
+  const hasRuntime = ensureWindowRuntime(flags);
+  if (needsWindow(flags) && !hasRuntime) {
+    console.error(`${c.red('●')} the robot window runtime could not be installed.`);
+    console.error(c.dim('  see the messages above, fix the download, then:  bao setup'));
+    console.error(c.dim('  or run without the window:  bao start --browser'));
+    process.exitCode = 1;
+    return;
+  }
+
   // 脱离出去的是守护进程，不是机器人本体：本体崩溃时由它按退避重开。
   // 一条 `bao start` 就够 —— server、窗口、观察器都在被守护的这一层里面。
   const args = [path.join(ROOT, 'src', 'cli.js'), 'supervise', '--port', String(port)];
@@ -304,18 +349,8 @@ async function cmdStartDetached(flags) {
   child.unref();
 
   // Do not claim success before it is listening — a premature "it's up" would
-  // be a lie. How long to allow depends on whether the window runtime has to be
-  // fetched first, which is minutes on a cold cache and seconds otherwise.
-  // 只有真的要开桌面窗口时才需要 Electron。`--no-overlay` / `--browser` 下还去
-  // 探测并打印「正在拉取窗口运行时」，是在描述一件不会发生的事——而这条命令恰恰
-  // 是没有 Electron 的人最先会用的那条。
-  let hasRuntime = true;
-  if (needsWindow(flags)) {
-    try { require('electron'); } catch { hasRuntime = false; }
-    if (!hasRuntime) console.log(c.dim('  fetching the window runtime, once — this can take a minute…'));
-  }
-
-  const budgetMs = hasRuntime ? 20_000 : 180_000;
+  // be a lie.
+  const budgetMs = 20_000;
   const deadline = Date.now() + budgetMs;
   let up = null;
   while (Date.now() < deadline) {
@@ -565,7 +600,7 @@ async function cmdOverlay(flags) {
   const port = Number(running.port) || Number(flags.port) || config.runningPort();
   const child = spawnOverlay(port);
   if (!child) {
-    console.error('Electron is not installed. Run `npm install` here, or `bao start --browser`.');
+    console.error('Electron is not installed or its binary is missing. Run `bao setup`, or `bao start --browser`.');
     process.exit(1);
   }
   child.on('exit', (code) => process.exit(code || 0));
@@ -1369,4 +1404,4 @@ if (require.main === module) {
   main().catch((err) => { console.error(err.message || err); process.exit(1); });
 }
 
-module.exports = { parse, startChildArgs, needsWindow };
+module.exports = { parse, startChildArgs, needsWindow, ensureWindowRuntime };
