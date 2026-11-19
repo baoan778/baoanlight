@@ -5,7 +5,7 @@ const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 
 const { profileFor, stripAnsi, PROFILES } = require('../src/adapters/patterns');
-const { classify } = require('../src/adapters/codex-watch');
+const { classify } = require('../src/adapters/log-watch');
 
 // ---------------------------------------------------------------- patterns
 

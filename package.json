@@ -18,6 +18,7 @@
     "server": "node src/cli.js server",
     "setup": "node scripts/setup.js",
     "build:pages": "node scripts/build-pages.mjs",
+    "shot:hero": "node scripts/hero-shot.js",
     "vendor:three": "node scripts/vendor-three.js",
     "status": "node src/cli.js status",
     "agents": "node src/cli.js agents",

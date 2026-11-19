@@ -27,10 +27,14 @@ npx playwright install chromium   # 首次运行渲染测试前安装浏览器
 npx playwright test    # 渲染测试
 npm run check:pack     # 改了 package.json 的 files 后
 npm run build:pages    # 改了 src/overlay/ 下的渲染代码时必须跑
+npm run shot:hero      # 机器人外观/光照有可见变化时，重新生成 README 展示图
 ```
 
 `docs/demo/` 是 `src/overlay/` 的构建产物。`test/contracts.test.js` 会逐字节比对，
 忘记重新生成会让测试失败。
+
+`docs/robot.png` 是 3D 渲染器的截图，**不会被测试自动比对**（二进制没有“正确值”）。
+改了默认外观、体型、材质或状态光照后，跑一次 `npm run shot:hero`。
 
 ## 设计约束
 

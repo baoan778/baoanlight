@@ -762,6 +762,16 @@ import {
   setInterval(renderRecent, 30000);
   // 「已运行 X 分钟」也要会走：busy 且长时间无上报时，靠这个定时器推进分钟数。
   setInterval(() => { if (lastSnap) render(lastSnap); }, 30000);
+  // 这一轮最后一条事件叫什么。`idle` 有两种含义：真的干完了一轮（Claude Code
+  // 的 Stop），或者用户自己取消（日志里的 aborted / cancelled）。前者要提醒，
+  // 后者不能 —— 灯的颜色分不出这两种，只能看事件名。
+  function lastEventName(s) {
+    const list = Array.isArray(s && s.events) ? s.events : [];
+    const last = list.length ? list[list.length - 1] : null;
+    return String((last && last.event) || '');
+  }
+  const cancelled = (s) => /abort|cancel/i.test(lastEventName(s));
+
   function announceDone(sessions) {
     // 会话被 /clear、`bao set offline` 或 TTL 清掉后，这里不能留着它的旧状态：
     // 否则同一个软件下次以 idle 出现时会被判成「刚完成」，为一个没发生的事转圈
@@ -785,49 +795,86 @@ import {
       if (prev && prev !== 'idle' && prev !== 'done' && prev !== 'offline' && prev !== 'unknown'
         && (s.state === 'idle' || s.state === 'done')) {
         window.dispatchEvent(new CustomEvent('bao:done', { detail: { agent: s.agent } }));
+        // 「完成也响一声」必须对两种收尾都生效：显式 done，以及只报 Stop 的代理
+        // （Claude Code）用 idle 表示的这一轮结束。否则这个开关对最常用的软件
+        // 完全失效。用户主动取消（aborted/cancelled）不是完成，不报喜。
+        if ((s.state === 'done' || prev === 'busy') && !cancelled(s)) cue('done');
       }
     }
   }
 
-  // 卡住检测（分级）：busy 会话 5 分钟无上报 → 提醒；15 分钟仍无上报 → 升级提醒。
-  // 按「软件」去重（不是按会话）：一个软件开三个窗口都卡了，只提醒一次，不刷屏。
-  // 该软件不再有卡住的会话就重置，下次再卡仍会提醒。
+  // 卡住 / 久等提醒：阈值来自设置（1–240 分钟，默认忙碌 15、等待 10），
+  // 这样「忙碌多久算卡住 / 等待多久提醒」不只是诊断文案，也真的决定什么时候提醒。
+  // 按「软件」去重（不是按会话）：一个软件开三个窗口都卡了，只提醒一次。
+  // 该软件不再处于该状态就重置，下一次还会提醒。
   const stuckNotified = new Set();   // keyed by agent
   const stuckEscalated = new Set();
+  const waitReminded = new Map();    // agent -> 本轮等待的 since
+  const minutesSetting = (v, fallback) => {
+    const n = Math.round(Number(v));
+    return n >= 1 && n <= 240 ? n : fallback;
+  };
   function checkStuck(sessions) {
+    const busyMin = minutesSetting(cfg.stuckBusyMin, 15);
+    const waitMin = minutesSetting(cfg.stuckWaitMin, 10);
+    const busyMs = busyMin * 60_000;
+    const waitMs = waitMin * 60_000;
     const stuckAgents = new Set();
     // 「静音 1 小时」与「定时勿扰」必须对所有出口生效。这里原来直接调 bridge.notify，
     // 是唯一漏掉 isMuted()/isDnd() 的一条 —— 深夜勿扰时段里最不该弹的恰好是它（卡住提醒）。
     const canNotify = inElectron && bridge.notify && !isMuted() && !isDnd();
     // 一个软件开了多个会话时，「某个会话安静了」不等于「这个软件卡住了」：
-    // 它在另一个窗口里还在正常干活。只有这个软件最近 5 分钟完全没有任何上报，
+    // 它在另一个窗口里还在正常干活。只有这个软件在阈值内完全没有任何上报，
     // 才值得说「好像卡住了」—— 否则提醒本身就是误报。
     const freshAgents = new Set();
     for (const s of sessions) {
-      if (!s.quiet || s.quietFor <= 5 * 60 * 1000) freshAgents.add(s.agent);
+      if (!s.quiet || s.quietFor <= busyMs) freshAgents.add(s.agent);
     }
     for (const s of sessions) {
       // 关掉通知的软件，卡住提醒也不弹（否则「静音」只是少了一类噪音）。
       if (isAgentMuted(s.agent)) continue;
       if (freshAgents.has(s.agent)) continue;
-      if (s.state === 'busy' && s.quiet && s.quietFor > 5 * 60 * 1000) {
+      if (s.state === 'busy' && s.quiet && s.quietFor > busyMs) {
         stuckAgents.add(s.agent);
         if (!stuckNotified.has(s.agent)) {
           stuckNotified.add(s.agent);
           if (canNotify) {
-            bridge.notify(`${displayName(s.agent)} 好像卡住了`, '已经 5 分钟没有任何动静了，去看看');
+            bridge.notify(`${displayName(s.agent)} 好像卡住了`, `已经 ${busyMin} 分钟没有任何动静了，去看看`);
           }
         }
-        if (s.quietFor > 15 * 60 * 1000 && !stuckEscalated.has(s.agent)) {
+        if (s.quietFor > busyMs * 2 && !stuckEscalated.has(s.agent)) {
           stuckEscalated.add(s.agent);
           if (canNotify) {
-            bridge.notify(`${displayName(s.agent)} 大概率卡死了`, '15 分钟完全没动静，建议去终端看看');
+            bridge.notify(`${displayName(s.agent)} 大概率卡死了`,
+              `${Math.round(s.quietFor / 60000)} 分钟完全没动静，建议去终端看看`);
           }
         }
       }
     }
     for (const a of [...stuckNotified]) if (!stuckAgents.has(a)) stuckNotified.delete(a);
     for (const a of [...stuckEscalated]) if (!stuckAgents.has(a)) stuckEscalated.delete(a);
+
+    // 久等提醒：一个软件进入等待后超过「等待多久提醒」仍没变化，说一次。
+    // 同一轮等待（since 相同）只提醒一次；批准/拒绝后重新等待会重新计时。
+    const waiting = new Map();   // agent -> 本轮等待开始时间（多个会话取最早）
+    for (const s of sessions) {
+      if (s.state !== 'waiting') continue;
+      const since = Number(s.since) || Date.now();
+      const cur = waiting.get(s.agent);
+      if (cur == null || since < cur) waiting.set(s.agent, since);
+    }
+    for (const [agent, since] of waiting) {
+      const waited = Date.now() - since;
+      if (waited < waitMs) continue;
+      if (waitReminded.get(agent) === since) continue;
+      if (!canNotify || isAgentMuted(agent)) continue;
+      waitReminded.set(agent, since);
+      bridge.notify(`${displayName(agent)} 还在等你`,
+        `已经 ${Math.max(waitMin, Math.round(waited / 60000))} 分钟了，它停在确认这一步`);
+    }
+    for (const agent of [...waitReminded.keys()]) {
+      if (!waiting.has(agent)) waitReminded.delete(agent);
+    }
   }
 
   // 点击聚焦：点某软件通道 = 聚焦它（主灯切到它）；再点同一个 = 取消聚焦回聚合。
@@ -938,16 +985,26 @@ import {
   // 另一条独立通道：只关提示音/语音，系统通知照旧。
   const isSoundMuted = (agent) => (cfg.mutedSoundAgents || []).includes(agent);
 
+  // 启动后的头几秒只「播种」状态、不弹通知：服务端刚起来时，观察器会把几条
+  // 早已在等待的会话一起重报，一次弹四条「需要你」是纯噪音。过了这个窗口，
+  // 新出现的软件必须照常提醒 —— 否则一个刚开就请求权限的会话会被整条吞掉。
+  const NOTIFY_ARM_MS = 8000;
+  const notifyArmedAt = Date.now() + NOTIFY_ARM_MS;
+  let notifySeeded = false;
+
   function notifySlots(slots) {
     if (!inElectron || !bridge.notify) return;
     if (isDnd()) return;
+    const list = slots || [];
+    const seeding = !notifySeeded && Date.now() < notifyArmedAt;
+    if (list.some((s) => s && s.count)) notifySeeded = true;
     // 这一帧里消失的软件（关掉/退出/被清空）也要把记录清掉，理由同下面的离线槽位。
     // 调用方现在传的是「全部在跑的软件」而不是面板前 8 行，所以这里负责兜底。
-    const liveAgents = new Set((slots || []).filter((s) => s && s.count).map((s) => s.agent));
+    const liveAgents = new Set(list.filter((s) => s && s.count).map((s) => s.agent));
     for (const agent of [...slotSeen.keys()]) {
       if (!liveAgents.has(agent)) { slotSeen.delete(agent); slotNotifiedAt.delete(agent); }
     }
-    for (const s of slots || []) {
+    for (const s of list) {
       // 离线槽位 = 这个软件的状态归零。必须把它记的状态清掉：否则软件关掉再
       // 打开、第一个事件又是同一种 waiting/error 时，会被当成「没变化」而永远
       // 吞掉通知 —— 灯是红的，通知却一次都不弹。
@@ -957,13 +1014,20 @@ import {
       }
       const prev = slotSeen.get(s.agent);
       slotSeen.set(s.agent, s.state);
-      if (prev === undefined || prev === s.state) continue;
+      if (prev === undefined) {
+        if (seeding) continue;
+      } else if (prev === s.state) {
+        continue;
+      }
       // 状态照常记账（上面那行），只是不弹：解除静音后下一次变化能正常提醒。
       if (isAgentMuted(s.agent)) continue;
-      const text = NOTIFY_TEXT[s.state];
+      // busy → idle 也是一轮结束（只报 Stop 的代理），按「完成」提醒。
+      // 用户主动取消不算完成，不报喜。
+      const finished = s.state === 'idle' && prev === 'busy' && !cancelled(s);
+      const text = NOTIFY_TEXT[finished ? 'done' : s.state];
       if (!text) continue;
       // 「完成」可以单独关通知：和「完成也响一声」是同一件事的两条通道。
-      if (s.state === 'done' && cfg.notifyDone === false) continue;
+      if ((finished || s.state === 'done') && cfg.notifyDone === false) continue;
       const now = Date.now();
       if (now - (slotNotifiedAt.get(s.agent) || 0) < 6000) continue;
       // 静音期间不弹，也不记时间戳：解除静音后如果状态还在，下一次变化自然会提醒。
@@ -1434,6 +1498,8 @@ import {
     // 「需要你」时如果被槽位截断吞掉，用户会看到红灯却收不到任何提醒。
     const notifyRows = [...seen.values()].map((s) => ({
       agent: s.agent, state: s.state, count: counts.get(s.agent) || 1,
+      // 未经加工的事件环：通知那一层要区分「这一轮真的结束了」和「被取消」。
+      events: s.events,
     }));
     // 每个注册软件始终各占一行：offline 也是暗行，位置固定 —— 和胸口槽位、灯环一致。
     // 顺序直接取服务端的固定槽位表（它已经把离线软件排在固定位置），再按用户在
@@ -3622,8 +3688,9 @@ import {
     if (inElectron) saveConfig({ sysMotion: cfg.sysMotion });
     applySysMotion();
   });
-  // 卡住诊断的两个阈值（分钟）：只用于展开区的诊断文案，不参与状态推导。
-  // 范围外的手改值当场收回默认，避免输入框显示一个文案永远不会用到的数字。
+  // 卡住/久等提醒的两个阈值（分钟）：既决定通知时机，也用于展开区的诊断文案，
+  // 但绝不参与状态推导。范围外的手改值当场收回默认，避免输入框显示一个文案
+  // 永远不会用到的数字。
   const saveThreshold = (key, input, fallback) => {
     const n = Math.round(Number(input.value));
     cfg[key] = n >= 1 && n <= 240 ? n : fallback;

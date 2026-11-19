@@ -26,6 +26,7 @@ require('../src/presence').claudeRunning = async () => false;
 
 const GUTTER = 16;             // minimum clear space around the robot
 let server;
+let store;                     // 测试服务端的内存 Storage：用来把会话「变老」，不必真的等
 let base;
 let token;                     // writes need it; reads do not (see src/auth.js)
 let ccSwitchHome;
@@ -38,6 +39,7 @@ test.beforeAll(async () => {
   process.env.BAOANLIGHT_CCSWITCH_HOME = ccSwitchHome;
   const r = await start({ port: 0, idleTtlMs: 600_000 });
   server = r.server;
+  store = r.store;
   token = r.token;
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -63,7 +65,9 @@ const clear = async () => {
 };
 
 // Wait for the page's own SSE-driven render, rather than a fixed sleep.
-const settled = (page, fn) => expect.poll(() => page.evaluate(fn), { timeout: 4000 });
+// 可选的 arg 会原样交给 page.evaluate：这样断言可以带一份「哪几个软件」的清单，
+// 而不必为每个组合再写一个内联闭包。
+const settled = (page, fn, arg) => expect.poll(() => page.evaluate(fn, arg), { timeout: 4000 });
 
 test.beforeEach(async ({ page }) => {
   await clear();
@@ -1470,6 +1474,294 @@ test('a software can have its notifications turned off', async ({ page }) => {
   await expect(page.locator('.pill[data-agent="claude"]')).not.toHaveAttribute('aria-label', /系统通知已关闭/);
 });
 
+// --------------------------------------------------------- 主动提示（通知）
+
+// 系统通知走 preload 的 bridge.notify，浏览器里没有它。注入一个可观测的桥：
+// 页面照常走「有 Electron」分支，通知只被记下来。顺便把 AudioContext 包一层，
+// 让「完成也响一声」也能被断言（音色/音量不在这里测）。
+const withNotifySpy = async (page, cfg = {}) => {
+  await page.addInitScript((saved) => {
+    // 通知文案跟随浏览器语言；固定成中文，断言才不会随 CI 的 locale 漂。
+    try { Object.defineProperty(navigator, 'language', { get: () => 'zh-CN' }); } catch { /* 老浏览器 */ }
+    window.__notified = [];
+    window.__tones = 0;
+    const RealAC = window.AudioContext || window.webkitAudioContext;
+    if (RealAC) {
+      window.AudioContext = class extends RealAC {
+        createOscillator() { window.__tones += 1; return super.createOscillator(); }
+      };
+    }
+    window.bao = {
+      serverUrl: location.origin,
+      getConfig: () => Promise.resolve(saved),
+      saveConfig: () => Promise.resolve(saved),
+      getAutostart: () => Promise.resolve({ enabled: false }),
+      setAutostart: () => Promise.resolve({ enabled: false }),
+      getNotes: () => Promise.resolve({ day: '', items: [], open: 0, done: 0, doneToday: 0 }),
+      saveNotes: () => Promise.resolve({}),
+      contentSize: () => {}, hotRect: () => {}, onCursor: () => {},
+      notify: (title, body) => window.__notified.push({ title, body }),
+      openTerminal: () => {}, trayStatus: () => {}, quit: () => {},
+      dragStart: () => {}, dragEnd: () => {},
+    };
+  }, cfg);
+  await page.reload();
+  await page.waitForFunction(() => document.body.dataset.state !== undefined);
+};
+const notified = (page) => page.evaluate(() => (window.__notified || []).map((n) => n.title));
+// 直接改测试服务端里的内存会话，把「已经静默/已经等待 N 分钟」模拟出来，
+// 不必真的等 15 分钟。只改时间戳，不绕开任何判定逻辑。
+const ageSession = (id, patch) => {
+  const s = store.sessions.get(id);
+  if (!s) throw new Error(`no session ${id}`);
+  Object.assign(s, patch);
+  store.emit('change', store.snapshot());
+};
+// 在页面里执行：这几个软件是否都已经有会话（不再是「未运行」的暗行）。
+const LIVE_ROWS = (list) => list.every((a) => {
+  const el = document.querySelector(`.pill[data-agent="${a}"]`);
+  return !!el && !el.classList.contains('offline');
+});
+
+// 五个软件同时跑：每一行/每一段灯都要显示自己的状态，主灯取最坏的（红），
+// 并且每一条「需要你 / 出错 / 完成」都要单独提醒 —— 聚合状态没变时尤其容易漏。
+test('five software at once stay accurate and every change is announced', async ({ page }) => {
+  await withNotifySpy(page);
+  const all = ['deepseek', 'claude', 'codex', 'workbuddy', 'codebuddy'];
+  for (const agent of all) await api('/state', { session: `m-${agent}`, agent, state: 'busy' });
+  await settled(page, LIVE_ROWS, all).toBe(true);
+
+  await api('/state', { session: 'm-claude', agent: 'claude', state: 'waiting', detail: 'approve?' });
+  await api('/state', { session: 'm-codex', agent: 'codex', state: 'error', detail: 'Bash failed' });
+  await api('/state', { session: 'm-deepseek', agent: 'deepseek', state: 'idle', event: 'projection' });
+  await api('/state', { session: 'm-workbuddy', agent: 'workbuddy', state: 'done' });
+  await api('/state', { session: 'm-codebuddy', agent: 'codebuddy', state: 'waiting' });
+
+  await settled(page, () => document.body.dataset.state).toBe('error');
+  await expect.poll(() => page.evaluate(() => {
+    const out = {};
+    for (const el of document.querySelectorAll('.pill[data-agent]')) {
+      if (el.dataset.agent in out) continue;
+      out[el.dataset.agent] = el.querySelector('i').dataset.color;
+    }
+    return out;
+  })).toEqual({
+    deepseek: 'white', claude: 'amber', codex: 'red', workbuddy: 'done', codebuddy: 'amber',
+  });
+
+  await expect.poll(() => notified(page)).toEqual(expect.arrayContaining([
+    'Claude Code 需要你处理',
+    'Codex 出错了',
+    // 「完成」有两套来源：显式 done（WorkBuddy），以及只报 Stop/回合结束的 idle
+    // （DeepSeek、Claude Code）。它们都该被提醒，否则设置里的开关只对一半软件生效。
+    'DeepSeek Harness 完成了',
+    'WorkBuddy 完成了',
+    'CodeBuddy 需要你处理',
+  ]));
+});
+
+// 并发/竞态：几条软件在同一秒里反复切换状态。SSE 必须按顺序落地，最终每一行
+// 都是该软件最后一次上报的状态，不能串台，也不能让主灯停在中途的旧值上。
+test('rapid interleaved updates settle on the right state per software', async ({ page }) => {
+  await withNotifySpy(page);
+  const seq = [
+    ['claude', 'busy'], ['codex', 'busy'], ['deepseek', 'busy'],
+    ['claude', 'waiting'], ['codex', 'waiting'], ['deepseek', 'waiting'],
+    ['claude', 'busy'], ['codex', 'error'], ['deepseek', 'busy'],
+    ['claude', 'idle'], ['codex', 'busy'], ['deepseek', 'error'],
+    ['claude', 'waiting'], ['codex', 'idle'], ['deepseek', 'waiting'],
+  ];
+  for (const [agent, state] of seq) await api('/state', { session: `race-${agent}`, agent, state });
+
+  // 最后：claude waiting、deepseek waiting、codex idle → 主灯黄。
+  await settled(page, () => document.body.dataset.state).toBe('waiting');
+  await expect.poll(() => page.evaluate(() => {
+    const out = {};
+    for (const a of ['claude', 'codex', 'deepseek']) {
+      out[a] = document.querySelector(`.pill[data-agent="${a}"]`).dataset.state;
+    }
+    return out;
+  })).toEqual({ claude: 'waiting', codex: 'idle', deepseek: 'waiting' });
+});
+
+// 重复上报同一种状态（心跳、详情变化）不能重复弹通知：一条事件只该有一次提示。
+test('repeating the same state does not repeat the notification', async ({ page }) => {
+  await withNotifySpy(page);
+  await api('/state', { session: 'dup', agent: 'claude', state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+  await api('/state', { session: 'dup', agent: 'claude', state: 'waiting' });
+  await settled(page, () => document.body.dataset.state).toBe('waiting');
+  for (let i = 0; i < 4; i++) {
+    await api('/state', { session: 'dup', agent: 'claude', state: 'waiting', detail: `again ${i}` });
+  }
+  await page.waitForTimeout(700);
+  expect(await notified(page)).toEqual(['Claude Code 需要你处理']);
+});
+
+// 聚合灯已经是红的时，第二个软件的失败也必须提醒 —— 去重键是「软件 + 状态」，
+// 不能是聚合状态，否则最该知道的那一条会被当成重复吞掉。
+test('a second failure is announced while the lamp is already red', async ({ page }) => {
+  await withNotifySpy(page);
+  await api('/state', { session: 'f1', agent: 'claude', state: 'busy' });
+  await api('/state', { session: 'f2', agent: 'codex', state: 'busy' });
+  await settled(page, LIVE_ROWS, ['claude', 'codex']).toBe(true);
+
+  await api('/state', { session: 'f1', agent: 'claude', state: 'error' });
+  await settled(page, () => document.body.dataset.state).toBe('error');
+  await api('/state', { session: 'f2', agent: 'codex', state: 'error' });
+
+  await expect.poll(() => notified(page)).toEqual(['Claude Code 出错了', 'Codex 出错了']);
+});
+
+// 只报 Stop 的代理（Claude Code）用 idle 表示「这一轮结束」：设置里的
+// 「完成也弹通知 / 响一声」必须对它生效，否则最常用的软件永远不会提醒。
+test('a turn that ends as idle still gets a completion notification and cue', async ({ page }) => {
+  await withNotifySpy(page, { sound: true, soundDone: true, soundVolume: 0.2, soundStyle: '清脆叮咚' });
+  await expect(page.locator('#m-sound')).toBeChecked();
+  await api('/state', { session: 'c1', agent: 'claude', state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+  // 进入 busy 本身就有一声（两声上扬音），而且它占着 2.5 秒的告警限流窗口；
+  // 等这个窗口过去，才能确定随后那一声确实是「完成」而不是残留。
+  await page.waitForTimeout(2600);
+  const before = await page.evaluate(() => window.__tones);
+
+  await api('/state', { session: 'c1', agent: 'claude', state: 'idle', event: 'Stop' });
+
+  await expect.poll(() => notified(page)).toContain('Claude Code 完成了');
+  await expect.poll(() => page.evaluate(() => window.__tones)).toBeGreaterThan(before);
+});
+
+// 取消不是完成：日志里的 turn_aborted / cancelled 也会把状态带回 idle，
+// 但「报喜」在这里就是撒谎。
+test('a cancelled turn is not announced as a completion', async ({ page }) => {
+  await withNotifySpy(page);
+  await api('/state', { session: 'x1', agent: 'codex', state: 'busy', event: 'turn_started' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+  await api('/state', { session: 'x1', agent: 'codex', state: 'idle', event: 'turn_aborted' });
+  await settled(page, () => document.body.dataset.state).toBe('idle');
+  await page.waitForTimeout(600);
+  expect(await notified(page)).toEqual([]);
+});
+
+// 完成通知可以单独关掉，但失败通知不受影响。
+test('turning off completion notifications keeps failures', async ({ page }) => {
+  await withNotifySpy(page, { notifyDone: false });
+  await api('/state', { session: 'd1', agent: 'claude', state: 'busy' });
+  await api('/state', { session: 'd2', agent: 'codex', state: 'busy' });
+  await settled(page, LIVE_ROWS, ['claude', 'codex']).toBe(true);
+
+  await api('/state', { session: 'd1', agent: 'claude', state: 'idle', event: 'Stop' });
+  await api('/state', { session: 'd2', agent: 'codex', state: 'error' });
+
+  await expect.poll(() => notified(page)).toEqual(['Codex 出错了']);
+});
+
+// 逐个软件的通知开关只关它自己；全局静音/勿扰才是「全部安静」。
+test('muting one software does not silence another', async ({ page }) => {
+  await withNotifySpy(page, { mutedAgents: ['claude'] });
+  await api('/state', { session: 'q1', agent: 'claude', state: 'busy' });
+  await api('/state', { session: 'q2', agent: 'codex', state: 'busy' });
+  await settled(page, LIVE_ROWS, ['claude', 'codex']).toBe(true);
+
+  await api('/state', { session: 'q1', agent: 'claude', state: 'waiting' });
+  await api('/state', { session: 'q2', agent: 'codex', state: 'waiting' });
+
+  await expect.poll(() => notified(page)).toEqual(['Codex 需要你处理']);
+});
+
+// 全局静音与定时勿扰：状态照常变化，但一条通知都不弹。
+for (const [name, cfg] of [
+  ['a global mute', { mutedUntil: Date.now() + 3600_000 }],
+  ['do-not-disturb', { doNotDisturb: true, dndStart: '00:00', dndEnd: '23:59' }],
+]) {
+  test(`${name} silences notifications without hiding the state`, async ({ page }) => {
+    await withNotifySpy(page, cfg);
+    await api('/state', { session: 'z1', agent: 'claude', state: 'busy' });
+    await settled(page, () => document.body.dataset.state).toBe('busy');
+    await api('/state', { session: 'z1', agent: 'claude', state: 'error' });
+    await settled(page, () => document.body.dataset.state).toBe('error');
+    await page.waitForTimeout(600);
+    expect(await notified(page)).toEqual([]);
+    // 灯仍然是红的：静音关的是声音，不是事实。
+    await expect(page.locator('#status-led')).toHaveAttribute('data-color', 'red');
+  });
+}
+
+// 启动瞬间不刷屏（重报的等待会话只播种），但过了那段窗口，一个新出现就
+// 在等待的软件必须提醒 —— 否则「一打开就请求权限」的会话会被整条吞掉。
+test('a software that appears already waiting after startup is announced', async ({ page }) => {
+  await withNotifySpy(page);
+  // 播种窗口是 8 秒（NOTIFY_ARM_MS）。
+  await page.waitForTimeout(8300);
+  await api('/state', { session: 'late1', agent: 'claude', state: 'waiting' });
+  await expect.poll(() => notified(page)).toEqual(['Claude Code 需要你处理']);
+});
+
+// 设置里的卡住阈值必须真的决定提醒时机，而不只是诊断文案。
+test('the busy stuck alarm follows the configured threshold', async ({ page }) => {
+  // 阈值 30 分钟：静默 5 分钟不该报（旧行为固定 5 分钟就会报）。
+  await withNotifySpy(page, { stuckBusyMin: 30 });
+  await expect(page.locator('#m-stuck-busy')).toHaveValue('30');
+  await api('/state', { session: 'stuck-a', agent: 'claude', state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+
+  ageSession('stuck-a', { updatedAt: Date.now() - 5 * 60_000 });
+  await page.waitForTimeout(600);
+  expect(await notified(page)).toEqual([]);
+
+  // 真超过阈值再提醒（31 分钟仍在测试服务端 10 分钟会话 TTL 之外，所以先
+  // 放大这个会话的 updatedAt 之后立刻断言，不依赖它一直留在 store 里）。
+  ageSession('stuck-a', { updatedAt: Date.now() - 31 * 60_000 });
+  await expect.poll(() => notified(page)).toContain('Claude Code 好像卡住了');
+});
+
+test('a stuck software is alerted once and escalated at twice the threshold', async ({ page }) => {
+  await withNotifySpy(page, { stuckBusyMin: 1 });
+  await expect(page.locator('#m-stuck-busy')).toHaveValue('1');
+  await api('/state', { session: 'stuck-b', agent: 'codex', state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+
+  // quiet 标记本身在 90 秒后才成立（quietAfterMs），所以这里用 100 秒：
+  // 已过 1 分钟阈值，但还没到 2 分钟的升级阈值。
+  ageSession('stuck-b', { updatedAt: Date.now() - 100_000 });
+  await expect.poll(() => notified(page)).toContain('Codex 好像卡住了');
+
+  // 同一段静默不重复第一次提醒。
+  ageSession('stuck-b', { updatedAt: Date.now() - 110_000 });
+  await page.waitForTimeout(400);
+  expect((await notified(page)).filter((t) => t === 'Codex 好像卡住了')).toHaveLength(1);
+
+  // 两倍阈值（2 分钟）再升级一次。
+  ageSession('stuck-b', { updatedAt: Date.now() - 130_000 });
+  await expect.poll(() => notified(page)).toContain('Codex 大概率卡死了');
+});
+
+// 「等待多久提醒」：同一轮等待只提醒一次；离开等待再回来重新计时。
+test('a long wait is reminded once per waiting episode', async ({ page }) => {
+  await withNotifySpy(page, { stuckWaitMin: 1 });
+  await expect(page.locator('#m-stuck-wait')).toHaveValue('1');
+  await api('/state', { session: 'wait-a', agent: 'claude', state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+  await api('/state', { session: 'wait-a', agent: 'claude', state: 'waiting' });
+  await settled(page, () => document.body.dataset.state).toBe('waiting');
+
+  ageSession('wait-a', { since: Date.now() - 70_000 });
+  await expect.poll(() => notified(page)).toContain('Claude Code 还在等你');
+
+  ageSession('wait-a', { updatedAt: Date.now() - 5000 });
+  await page.waitForTimeout(400);
+  expect((await notified(page)).filter((t) => t === 'Claude Code 还在等你')).toHaveLength(1);
+
+  // 离开等待再回来 = 新的一轮等待，重新计时、重新提醒。
+  await api('/state', { session: 'wait-a', agent: 'claude', state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+  await api('/state', { session: 'wait-a', agent: 'claude', state: 'waiting' });
+  await settled(page, () => document.body.dataset.state).toBe('waiting');
+  ageSession('wait-a', { since: Date.now() - 70_000 });
+  await expect.poll(() => page.evaluate(() => (window.__notified || [])
+    .filter((n) => n.title === 'Claude Code 还在等你').length)).toBe(2);
+});
+
 // 设置搜索：控件已经过五十个、分组十个，记得住名字但记不住位置。过滤只改
 // 可见性，清空后必须回到完整菜单（包括用户原本展开的分组）。
 test('the settings search filters rows and restores them', async ({ page }) => {
@@ -1842,8 +2134,10 @@ test('the work report can be exported as Markdown and CSV', async ({ page }) => 
       if (s.textContent.trim() === '配置') s.parentElement.open = true;
     }
   });
-  // 等统计帧到达，导出的才是刚报上来的这一天。
-  await expect(page.locator('#m-score .score-row')).toContainText('Claude Code', { timeout: 6000 });
+  // 等统计帧到达，导出的才是刚报上来的这一天。统计是服务端进程累计的，
+  // 前面的用例可能已经给别的软件记过完成/出错，所以这里只找 Claude 这一行。
+  await expect(page.locator('#m-score .score-row').filter({ hasText: 'Claude Code' }))
+    .toBeVisible({ timeout: 6000 });
 
   const [md] = await Promise.all([
     page.waitForEvent('download'),

@@ -14,7 +14,8 @@
 ● 黄色   代理停下来了，在等你（权限、提问、选择题）
 ● 红色   这一轮出错了，或者被卡住
 ● 紫色   这一轮刚刚成功完成（瞬态，30 秒后回到白色）
-● 白色暗  代理还开着，但没在干活
+● 白色   代理还开着，但没在干活
+● 灰色   有代理在运行，但我们没有拿到可读的状态
 ● 熄灭   没有代理在运行 / 未安装
 ```
 
@@ -59,6 +60,17 @@ Gemini CLI、Aider、Cursor、opencode、Copilot、Cline、Windsurf、Qwen Code�
 本项目是 [signalhead](https://github.com/deepak-hp/signalhead)（MIT）的二次开发版本：
 核心状态机与「安静不等于完成」等设计沿用并继续演进，界面与代理接入层已重写。
 由 [baoan778](https://github.com/baoan778) 维护并开源发布。
+
+---
+
+## 目录
+
+- [安装](#安装) · [快速上手](#快速上手) · [接入代理](#接入代理)
+- [电量表](#电量表) · [同时观察多个代理](#同时观察多个代理) · [自定义系统](#自定义系统)
+- [常见问题](#常见问题) · [平台支持](#平台支持) · [本机接线对不对](#本机接线对不对)
+- [配置与本地文件](#配置与本地文件) · [本地安全](#本地安全) · [已知限制](#已知限制)
+- [开发](#开发) · [相关文档](#相关文档) · [参与贡献](#参与贡献) · [授权](#授权)
+- 部署到别人的电脑：[DEPLOY.md](DEPLOY.md)
 
 ---
 
@@ -130,16 +142,24 @@ bao stop               # 全部关闭
 
 三层，越靠前越准。
 
+| 软件 | 推荐接入 | 能显示 | 说明 |
+|---|---|---|---|
+| Claude Code | `bao connect claude` | 忙碌 / 等待 / 出错 / 空闲（按会话） | 八个生命周期钩子，立即生效 |
+| Codex | `bao watch codex` 或 `bao connect codex` | 忙碌 / 等待 / 完成；日志还能给套餐额度 | notify 只报回合结束与等审批 |
+| DeepSeek Harness | `bao watch deepseek` | 忙碌 / 等待 / 空闲；上下文电量 | 投影本身没有错误信号 |
+| WorkBuddy | `bao connect workbuddy` 或 `bao watch workbuddy` | 忙碌 / 等待 / 完成 / 出错（看任务状态） | 任务板是粗粒度信息 |
+| CodeBuddy / WorkBuddy CLI | `bao connect codebuddy` 或 `bao watch codebuddy` | 忙碌 / 等待 / 完成 | transcript 没有错误信号 |
+| Gemini / Aider / Cursor / opencode / Copilot / Cline / Windsurf / Qwen / Kimi | `bao wrap -- <命令>` | 三态猜测 | 读终端屏幕 |
+| 任何工具 | `bao hook --agent X`、HTTP `/state`、`bao mcp` | 由上报方决定 | 通用入口 |
+
+> 数据源没有错误信号时，机器人不会亮红灯——这是刻意设计，不是漏报。要精确的失败状态，
+> 用对应软件的 hook（`bao connect claude` / `bao connect codebuddy` 等）。
+
 ### 1. 代理自己的钩子 —— 精确
 
 ```bash
 bao connect claude     # 写 ~/.claude/settings.json（--scope project 只写当前仓库）
 ```
-
-| 代理 | 状态 | 方式 |
-|---|---|---|
-| Claude Code | 全部三种，按会话 | 八个生命周期钩子 |
-| Codex | 全部三种 | `bao watch codex` 读取会话日志 |
 
 Claude Code 的钩子不需要重启即可生效。钩子脚本 1.5 秒硬超时、任何异常都静默退出 0——
 **永远不会因为指示灯坏了而卡住你的代理**。
@@ -318,6 +338,7 @@ bao fuel 12 --used --agent ci --label "build minutes"   # --used 表示「已用
 | 瞳色 / 镜筒 | 10 种瞳色（含白瞳 / 玫红瞳）；圆·方·六边形·三角镜筒 |
 | 履带 / 配件 | 9 种履带配色（含石墨 / 沙色）+ 3 种履带形状；10 种配件配色（含钛银 / 玫瑰金） |
 | 手爪 / 胳膊 / 头型 | 5 种手爪、3 种胳膊、双筒·单眼·三眼 |
+| 头部装饰 | 12 种：无 / 天线 / 安全帽 / 皇冠 / 眼镜 / 墨镜 / 围巾 / 背包 / 礼帽 / 领结 / 勋章 / 贝雷帽 |
 | 场景 | 14 种：无 / 雪地 / 草原 / 沙漠 / 星空 / 岩浆 / 樱花 / 海洋 / 森林 / 雨夜 / 工厂 / 雪夜 / 黄昏 / 极光；可按时间自动在白天/夜晚场景间切换（夜晚时段支持跨午夜） |
 | 灯光 | 36 种底座灯效、光环样式、灯光亮度 |
 | 动作 | 5 个状态各配一种手势、待机频率、动效强度（省电/标准/华丽）、人格（活泼/沉稳/话痨/害羞，决定待机节奏与语气） |
@@ -330,6 +351,40 @@ bao fuel 12 --used --agent ci --label "build minutes"   # --used 表示「已用
 | 工作记录 | 一键导出日报（Markdown，含今日/近 7 天/近 30 天）与逐行明细（CSV，按日期 + 软件） |
 
 导入/导出：设置里的「导出配置」把以上全部打包成 JSON，「导入配置」一键恢复（`bao onboard` 负责首次接入引导）。
+
+---
+
+## 常见问题
+
+**灯一直是熄灭的？**
+先跑 `bao doctor`。Claude Code 需要 `bao connect claude`，并且在接入后**新开一轮对话**；
+其他软件需要 `bao watch all` 能找到它们的日志目录。`bao agents` 会列出每种的接入命令。
+
+**为什么它出错了，灯却没有变红？**
+红灯只来自可验证的失败信号：Claude 的工具结果 `is_error`、日志里的 error 事件、
+WorkBuddy 任务板的 failed/error 状态。DeepSeek 投影和 CodeBuddy/WorkBuddy transcript
+本身不提供错误信号——这种情况下机器人宁可不知道，也不会猜一个红色。
+
+**完成时为什么没有通知/提示音？**
+检查设置里的「完成也弹通知 / 完成也响一声」。Claude Code 的 Stop 和 DeepSeek 的回合结束
+都会按完成处理；用户主动取消（aborted / cancelled）不会报喜。提示音默认关闭，需要手动打开。
+
+**同时跑好几个软件，状态会互相覆盖吗？**
+不会。每个软件有固定槽位和固定列表行；同一软件多开只折叠成一行（显示最坏状态 + ×N），
+主灯按固定优先级取所有软件里最要紧的那个。
+
+**窗口不见了？**
+点托盘图标，或按全局快捷键（默认 `Ctrl+Alt+B`）。拖到屏幕外时，显示/隐藏会自动把它搬回来。
+
+**端口 4747 被占用？**
+`bao start --port 4788`，或用 `bao status` 确认旧实例后 `bao stop`。
+
+**数据存在哪里？怎么彻底卸载？**
+全部在 `~/.baoanlight/`（配置、便签、统计、token）。`bao autostart off && bao stop` 后卸载包；
+是否删除数据由你决定，详见 [DEPLOY.md](DEPLOY.md#8-升级与卸载)。
+
+**会上传数据吗？**
+不会。状态、日志、便签、统计都在本机；只有启动时向 npm 查一次版本号。
 
 ---
 
@@ -348,9 +403,9 @@ bao fuel 12 --used --agent ci --label "build minutes"   # --used 表示「已用
 ## 本机接线对不对
 
 ```bash
-npm test         # 234 个逻辑测试：状态机、适配器、钩子、安装器、电量、鉴权、资源采样、证据链、调色板、事件契约、HTTP 请求体与配置落盘、启动自检、整机守护、桌面待办、退出时统计落盘、终端安全
-npm run test:ui  # 122 个渲染测试：机器人、系统面板、标签、多会话展开与折叠、证据链、桌面便签、电量条、CSP、XSS、朗读文本、键盘路径、帧率/降级预算、每一项自定义控件的接线与重启恢复，以及落地页对比度
-npm run test:electron  # Electron 主进程烟测：preload 桥、真实窗口、SSE 状态与置顶（需要 Electron）
+npm test         # 235 个逻辑测试：状态机、适配器、钩子、安装器、电量、鉴权、资源采样、证据链、调色板、事件契约、HTTP 请求体、配置落盘与导出覆盖、启动自检、整机守护、桌面待办、退出时统计落盘、终端安全
+npm run test:ui  # 136 个渲染测试：机器人、系统面板、标签、多会话展开与折叠、证据链、桌面便签、电量条、CSP、XSS、朗读文本、键盘路径、帧率/降级预算、多软件并发/竞态、报错与完成提示、通知抑制与卡住阈值、每一项自定义控件的接线与重启恢复，以及落地页对比度
+npm run test:electron  # Electron 主进程烟测：preload 桥、真实窗口、SSE 状态、五软件并发与置顶（需要 Electron）
 npm run check:pack     # 发布前检查 npm 包内容：运行文件齐全、测试/密钥不会被打包
 npm run lint     # 未定义的变量、声明了没用的变量、重复键、走不到的代码
 bao doctor       # 本机：二进制、配置路径、日志目录、服务器
@@ -501,5 +556,5 @@ npm run build:pages   # 如果改了 src/overlay/ 下的渲染代码
 
 ## 授权
 
-MIT。项目版权归 [baoan778](https://github.com/baoan778/baoanlight) 所有；衍生自 signalhead 的原始部分保留其 MIT 版权声明（见 [LICENSE](LICENSE)）。
+MIT。项目版权归 [baoan778](https://github.com/baoan778/baoanlight) 所有，完整许可见 [LICENSE](LICENSE)。
 渲染器内置 three.js（MIT），许可证头保留在 `src/overlay/vendor/` 的构建文件中。

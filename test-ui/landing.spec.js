@@ -42,6 +42,18 @@ test.beforeAll(async () => {
 
 test.afterAll(() => server && server.close());
 
+// 落地页引用 Google Fonts。在离线/受限网络里这个请求常常被黑洞（一直挂着而
+// 不是快速失败），`page.goto` 默认等 `load`，于是测试陪着它一起超时 —— 字体
+// 不是被测对象，任何断言也不依赖它。这里用一份空样式表回掉它：既不走网络，
+// 也不会在控制台留下一条「加载失败」，字号自动回落到系统字体（离线用户的
+// 真实场景：页面必须照常可读）。
+test.beforeEach(async ({ page }) => {
+  await page.route('https://fonts.googleapis.com/**', (r) =>
+    r.fulfill({ status: 200, contentType: 'text/css', body: '' }));
+  await page.route('https://fonts.gstatic.com/**', (r) =>
+    r.fulfill({ status: 200, contentType: 'font/woff2', body: '' }));
+});
+
 // Relative luminance, so contrast can be asserted rather than eyeballed.
 const rgb = (s) => s.match(/\d+/g).slice(0, 3).map(Number);
 const lum = ([r, g, b]) => {

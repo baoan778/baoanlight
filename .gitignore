@@ -6,6 +6,7 @@ node_modules/
 # 本地截图 / 临时分享产物，不属于项目源码
 .screenshots/
 .trae-html-share-packages/
+.archify/
 
 # playwright
 test-results/

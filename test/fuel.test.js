@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { Store, normaliseFuel } = require('../src/store');
-const { readFuel } = require('../src/adapters/codex-watch');
+const { readFuel } = require('../src/adapters/log-watch');
 
 // --------------------------------------------------------------- normalising
 

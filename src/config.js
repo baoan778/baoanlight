@@ -39,7 +39,9 @@ const DEFAULTS = {
   showSys: true,
   // 系统面板（CPU / 内存 / GPU）的跑马灯：always 常驻 / load 仅高负载 / off 关闭。
   sysMotion: 'always',
-  // 证据链里的「卡住」阈值（分钟）。只在界面计算文案，不影响状态推导。
+  // 卡住 / 久等提醒阈值（分钟，1–240）。忙碌静默超过它提醒一次、到两倍时升级；
+  // 等待超过它提醒一次（同一轮等待不重复）。也用于展开区的诊断文案，但绝不参与
+  // 颜色或状态推导。
   stuckBusyMin: 15,
   stuckWaitMin: 10,
   // Named look presets: { "name": { skin, eyestyle, scene, ... } }.
@@ -66,7 +68,8 @@ const DEFAULTS = {
   // 广告牌颜色（描边/图标/辉光）与形状（圆角/胶囊/方正）。
   signColor: '#ffd54a',
   signShape: '圆角',
-  // 头部装饰：无 / 天线 / 安全帽 / 皇冠 / 眼镜 / 墨镜 / 围巾 / 背包 / 礼帽 / 领结。
+  // 头部装饰：无 / 天线 / 安全帽 / 皇冠 / 眼镜 / 墨镜 / 围巾 / 背包 / 礼帽 /
+  // 领结 / 勋章 / 贝雷帽。
   decoration: '无',
   // 人格种子：首次启动随机固定一个（活泼/沉稳/话痨/害羞），决定动作频率与语气。
   personality: null,

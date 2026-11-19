@@ -78,6 +78,31 @@ async function main() {
     check('SSE state reaches the real window', stateNow === 'waiting', stateNow);
     check('the lamp follows the state', led === 'amber', led);
 
+    // 多软件同时上报：五个软件各占一行/一段灯，主灯取最坏的那个。这一条
+    // 走的是完整链路（server → SSE → preload → 渲染器），不只是页面逻辑。
+    const post = (body) => fetch(`http://127.0.0.1:${port}/state`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-bao-token': token },
+      body: JSON.stringify(body),
+    });
+    for (const agent of ['deepseek', 'claude', 'codex', 'workbuddy', 'codebuddy']) {
+      await post({ session: `electron:${agent}`, agent, state: 'busy' });
+    }
+    await page.waitForFunction(() => [...document.querySelectorAll('.pill[data-agent]')]
+      .filter((el) => !el.classList.contains('offline')).length >= 5, { timeout: 10_000 });
+    await post({ session: 'electron:codex', agent: 'codex', state: 'error', detail: 'smoke failure' });
+    await page.waitForFunction(() => document.body.dataset.state === 'error', { timeout: 10_000 });
+    const multi = await page.evaluate(() => ({
+      live: [...document.querySelectorAll('.pill[data-agent]')]
+        .filter((el) => !el.classList.contains('offline')).map((el) => el.dataset.agent).sort(),
+      codex: document.querySelector('.pill[data-agent="codex"] i')?.dataset.color,
+      deepseek: document.querySelector('.pill[data-agent="deepseek"] i')?.dataset.color,
+    }));
+    check('all five software are visible at once', multi.live.length === 5, multi.live.join(','));
+    check('their states stay attributed correctly',
+      multi.codex === 'red' && multi.deepseek === 'green',
+      `codex=${multi.codex} deepseek=${multi.deepseek}`);
+
     const visible = await app.evaluate(({ BrowserWindow }) => {
       const win = BrowserWindow.getAllWindows()[0];
       return !!win && win.isVisible() && win.isAlwaysOnTop();
@@ -88,13 +113,25 @@ async function main() {
     const cfg = await page.evaluate(() => window.bao.getConfig());
     check('config round-trips through the preload bridge', cfg.nameplate === 'electron-smoke', cfg.nameplate);
 
+    // 窗口尺寸最终由页面自己的 fit() 决定：系统面板里的 GPU 行是异步探测的，
+    // 可能在启动后 2 秒才出现并触发一次自动改高。读一个瞬时值会随机失败（"340x646"），
+    // 所以这里盯住主进程的 resize 事件，断言 IPC 确实把窗口改到过目标尺寸。
+    await app.evaluate(({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      globalThis.__baoSizes = [win.getSize()];
+      win.on('resize', () => globalThis.__baoSizes.push(win.getSize()));
+    });
     await page.evaluate(() => window.bao.contentSize({ w: 360, h: 560, scale: 1, anchor: 'bottom' }));
-    await page.waitForTimeout(300);
-    const size = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize());
+    let applied = null;
+    for (let i = 0; i < 40 && !applied; i++) {
+      const sizes = await app.evaluate(() => globalThis.__baoSizes || []);
+      applied = sizes.find(([w, h]) => Math.abs(w - 360) <= 1 && Math.abs(h - 560) <= 1) || null;
+      if (!applied) await page.waitForTimeout(50);
+    }
     // fit() 用 Math.ceil 把亚像素高度收进整数窗口，Windows 上因此可能多出 1px；
     // 这里验证的是 IPC 真的改了窗口尺寸，不是像素级取整。
-    check('the size IPC reaches the real window',
-      Math.abs(size[0] - 360) <= 1 && Math.abs(size[1] - 560) <= 1, size.join('x'));
+    check('the size IPC reaches the real window', !!applied,
+      applied ? applied.join('x') : 'the requested 360x560 never appeared');
 
     check('page has no console errors', consoleErrors.length === 0, consoleErrors.join(' | '));
   } finally {

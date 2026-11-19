@@ -215,6 +215,37 @@ test('installing hooks keeps every key it does not own', () => {
   });
 });
 
+// ------------------------------------------------------------ config export
+
+// 设置里每多一个自定义项，就必须同时出现在「导出配置」里 —— 否则换台机器
+// 导入回来会静默少一项，而界面上一切正常，用户直到发现「我的外观/通知设置
+// 又变回默认」才知道。这一条把「新增配置项」和「导出清单」钉在一起。
+test('every user-facing config key is in the export list', () => {
+  const js = fs.readFileSync(path.join(ROOT, 'src', 'overlay', 'ui.js'), 'utf8');
+  const m = js.match(/const EXPORT_KEYS = \[([\s\S]*?)\];/);
+  assert.ok(m, 'ui.js still declares the export list in one place');
+  const exported = new Set((m[1].match(/'[^']+'/g) || []).map((s) => s.slice(1, -1)));
+
+  // 这几项属于「这台机器此刻的状态」，不是用户想带走的自定义：
+  //   port/window   本机端口与窗口坐标，换台机器没有意义；
+  //   collapsed     窗口是不是收起了，属于瞬时界面状态；
+  //   mutedUntil    「静音到几点」，是一次性计时器；
+  //   firstRun      首次安装日期，属于这台机器上的陪伴天数；
+  //   *TtlMs        服务端的会话老化参数，不是外观/行为设置。
+  const MACHINE_STATE = new Set([
+    'port', 'window', 'collapsed', 'mutedUntil', 'firstRun',
+    'sessionTtlMs', 'idleTtlMs', 'quietAfterMs', 'unusedTtlMs',
+  ]);
+
+  const { DEFAULTS } = require('../src/config');
+  const missing = Object.keys(DEFAULTS).filter((k) => !MACHINE_STATE.has(k) && !exported.has(k));
+  assert.deepEqual(missing, [], `these settings are not exported: ${missing.join(', ')}`);
+
+  // 反过来：清单里写错一个键（拼写/改名残留），导入时会被静默丢掉。
+  const unknown = [...exported].filter((k) => !(k in DEFAULTS));
+  assert.deepEqual(unknown, [], `the export list names keys that do not exist: ${unknown.join(', ')}`);
+});
+
 // ------------------------------------------------------------ stylesheet traps
 
 // `#menu button { width: 100% }` 是给整宽按钮（导出/退出）用的，但它的特异性
