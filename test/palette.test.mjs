@@ -24,7 +24,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const overlayDir = path.join(ROOT, 'src', 'overlay');
 
 const TABLES = [
-  { name: 'skins', list: SKIN_TONES, fields: ['hex', 'dark'], defaultName: '做旧黄' },
+  { name: 'skins', list: SKIN_TONES, fields: ['hex', 'dark'], defaultName: '钛金白' },
   { name: 'eyes', list: EYE_TONES, fields: ['lens', 'iris'], defaultName: '默认黑' },
   { name: 'tracks', list: TRACK_TONES, fields: ['rubber', 'hi'], defaultName: '黑' },
   { name: 'arms', list: ARM_TONES, fields: ['arm', 'steel', 'dark', 'eye'], defaultName: '枪灰' },

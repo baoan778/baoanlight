@@ -1111,7 +1111,7 @@ test('custom colours are per part and reset with the look', async ({ page }) => 
     await expect(page.locator(row)).toBeHidden();
   }
   await expect(page.locator('#eye-swatch')).toHaveCSS('background-color', 'rgb(27, 36, 44)');
-  await expect(page.locator('#m-theme')).toHaveValue('经典战损黄');
+  await expect(page.locator('#m-theme')).toHaveValue('钛金原色');
 });
 
 // 广告牌颜色也能自定义：任意十六进制直接下发给场景（牌子是 canvas 画的，
@@ -2501,7 +2501,7 @@ test('reset look restores the factory appearance, random look stays valid', asyn
   await page.selectOption('#m-decoration', '皇冠');
   await page.locator('#m-reset-look').click();
   await expect(page.locator('#m-decoration')).toHaveValue('无');
-  await expect(page.locator('#m-skin')).toHaveValue('做旧黄');
+  await expect(page.locator('#m-skin')).toHaveValue('钛金白');
 
   await page.evaluate(() => { window.__bao = []; });
   await page.locator('#m-random-look').click();

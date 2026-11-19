@@ -246,6 +246,24 @@ test('every user-facing config key is in the export list', () => {
   assert.deepEqual(unknown, [], `the export list names keys that do not exist: ${unknown.join(', ')}`);
 });
 
+// 出厂外观有两处真源：config.js 的 DEFAULTS 和 palette/界面选项。任何一边改了
+// 默认值而另一边没跟，表现都是「新装用户看到的下拉值与机器人身上的颜色/形状
+// 对不上」—— 没有报错，也没有截图会失败。
+test('the factory appearance in config matches what the renderer starts with', async () => {
+  const { DEFAULTS } = require('../src/config');
+  const palette = await import('../src/overlay/shared/palette.mjs');
+
+  assert.equal(DEFAULTS.skin, palette.SKIN_TONES[0].name, 'palette index 0 is the factory skin');
+  assert.equal(DEFAULTS.eyestyle, palette.EYE_TONES[0].name);
+  assert.equal(DEFAULTS.trackstyle, palette.TRACK_TONES[0].name);
+  assert.equal(DEFAULTS.armskin, palette.ARM_TONES[0].name);
+
+  // 这三项没有调色板顺序，但必须是界面真的提供的选项（ui.js 的列表）。
+  assert.ok(['双筒', '单眼', '三眼'].includes(DEFAULTS.headtype), `bad headtype: ${DEFAULTS.headtype}`);
+  assert.ok(['铲形', '三指', '钳形', '四指', '五指'].includes(DEFAULTS.claw), `bad claw: ${DEFAULTS.claw}`);
+  assert.ok(['圆角矩形', '三角形', '梯形'].includes(DEFAULTS.tracktype), `bad tracktype: ${DEFAULTS.tracktype}`);
+});
+
 // ------------------------------------------------------------ stylesheet traps
 
 // `#menu button { width: 100% }` 是给整宽按钮（导出/退出）用的，但它的特异性

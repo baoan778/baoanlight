@@ -8,6 +8,9 @@
 // 值一律是 CSS 颜色字符串，three.js 的 Color.set() 直接接受。
 
 export const SKIN_TONES = [
+  // 第一项就是新安装看到的颜色（robot3d 的初始材质取 index 0）。出厂默认从
+  // 黄色改成钛金白：黄车身 + 外露履带 + 双筒眼的组合过于接近知名影视角色。
+  { name: '钛金白', hex: '#cfd6dd', dark: '#9aa3ad' },
   { name: '做旧黄', hex: '#c9a238', dark: '#9a7923' },
   { name: '军绿', hex: '#7d8a4a', dark: '#5a6635' },
   { name: '铁锈橙', hex: '#c2773e', dark: '#8f5628' },
@@ -19,9 +22,7 @@ export const SKIN_TONES = [
   { name: '森林绿', hex: '#4a6a3a', dark: '#334a28' },
   { name: '日落橙', hex: '#d8823a', dark: '#a85a20' },
   { name: '樱花粉', hex: '#d98aa8', dark: '#a85e7a' },
-  // 后加的两档：一冷一暗，给「金属/夜间」两套搭配多一个落点。追加在末尾，
-  // 不重排既有顺序 —— 随机换装和已存的配置都按名字取值，顺序只是界面顺序。
-  { name: '钛金白', hex: '#cfd6dd', dark: '#9aa3ad' },
+  // 后加的一档：给「金属/夜间」搭配多一个落点。追加在末尾，不重排既有顺序。
   { name: '午夜紫', hex: '#4a3a5a', dark: '#332742' },
 ];
 

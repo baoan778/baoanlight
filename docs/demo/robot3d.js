@@ -45,10 +45,10 @@ function datasetJson(key) {
 
 // ------------------------------------------------------------------ materials
 
-// The palette is the character: dusty ochre paint over gunmetal, rust where the
+// The palette is the character: titanium paint over gunmetal, rust where the
 // paint has worn through, and not one mirror-bright surface anywhere. Chrome
-// reads as "new toy"; WALL·E is a machine that has been outside for 700 years.
-// 初始材质取 palette 的第一项（做旧黄 / 默认黑瞳 / 黑履带 / 枪灰配件），
+// reads as "new toy"; this robot reads as a machine that has been outside for years.
+// 初始材质取 palette 的第一项（钛金白 / 默认黑瞳 / 黑履带 / 枪灰配件），
 // 也就是 config 的出厂默认值 —— 免得同一组颜色在这里被抄第三遍。
 const DEFAULT_SKIN = SKIN_TONES[0];
 const DEFAULT_EYE = EYE_TONES[0];
@@ -152,7 +152,7 @@ function applySkin(name, hex) {
     main = toHex(base);
     dark = darkenHex(main);
   } else {
-    const s = SKINS[name] || SKINS['做旧黄'];
+    const s = SKINS[name] || SKINS[DEFAULT_SKIN.name];
     main = s.main;
     dark = s.dark;
   }
@@ -226,7 +226,7 @@ const CLAW_TYPES = {
   '四指': { fingers: [[-0.072, -1], [-0.024, 1], [0.024, -1], [0.072, 1]], w: 0.032 },
   '五指': { fingers: [[-0.080, -1], [-0.040, 1], [0, -1], [0.040, 1], [0.080, -1]], w: 0.026 },
 };
-let clawType = '铲形';
+let clawType = '三指';
 
 // ---- 胳膊形状：上臂造型可切换，切换时重建手臂 ------------------------------
 const ARM_TYPES = { '双板': 'plate', '圆筒': 'cylinder', '桁架': 'truss' };
@@ -234,7 +234,7 @@ let armType = '双板';
 
 // ---- 履带形状：轮廓可切换（圆角矩形 / 三角形 / 梯形），切换时重建履带 ------
 const TRACK_TYPES = { '圆角矩形': 'rect', '三角形': 'tri', '梯形': 'trap' };
-let trackType = '圆角矩形';
+let trackType = '梯形';
 
 // ---- 场景：机器人脚下的「立足之地」与氛围粒子 ------------------------------
 const SCENES = {
@@ -256,7 +256,7 @@ const SCENES = {
 let sceneType = '无';
 let particleOpacity = 0;   // 当前场景粒子「不降动效时」的目标透明度（applyScene 记录）
 
-// ---- 头形状：双筒（默认）/ 单眼（中央大眼）/ 三眼（双目 + 额前传感器）------
+// ---- 头形状：单眼（默认）/ 双筒 / 三眼（双目 + 额前传感器）------
 // 每只眼：side 镜像方向（转动/眉形）、x/y 位置、scale 大小。
 const HEAD_TYPES = {
   '双筒': { eyes: [{ side: -1, x: -0.285, y: 0.13, scale: 1 }, { side: 1, x: 0.285, y: 0.13, scale: 1 }] },
@@ -270,7 +270,7 @@ const HEAD_TYPES = {
     ],
   },
 };
-let headType = '双筒';
+let headType = '单眼';
 
 // ---- 眼睛形状：镜筒截面（圆 / 方 / 六边形 / 三角），切换时重建眼睛 ----------
 const EYE_SHAPES = { '圆': 'round', '方': 'square', '六边形': 'hex', '三角': 'tri' };
@@ -1644,7 +1644,7 @@ if (host && renderer) {
 
   // 眼睛构建：读全局 headType（双筒/单眼/三眼），返回新眼睛与泪滴数组。
   function buildEyes() {
-    const cfg = HEAD_TYPES[headType] || HEAD_TYPES['双筒'];
+    const cfg = HEAD_TYPES[headType] || HEAD_TYPES['单眼'];
     const newEyes = [];
     const newTears = [];
     for (const eyeCfg of cfg.eyes) {
@@ -1942,7 +1942,7 @@ if (host && renderer) {
     // an articulated shovel, not a pair of slabs. The middle knuckle is the
     // joint that makes a pinch look like a pinch instead of a clamp. The claw
     // type (铲形 2 指 / 三指 3 指 / 钳形粗指) changes the count and width.
-    const claw = CLAW_TYPES[clawType] || CLAW_TYPES['铲形'];
+    const claw = CLAW_TYPES[clawType] || CLAW_TYPES['三指'];
     const fingerGeo = slab(claw.w, 0.11, 0.062, { r: 0.016, bevel: 0.005 });
     const knuckleGeo = slab(claw.w - 0.004, 0.09, 0.060, { r: 0.015, bevel: 0.004 });
     const tipGeo = slab(claw.w - 0.008, 0.065, 0.058, { r: 0.014, bevel: 0.004 });

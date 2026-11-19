@@ -2775,6 +2775,7 @@ import {
 
   // 配色主题：一键套用整套协调配色（皮肤/眼睛/履带/配件），仍可单独微调。
   const THEMES = {
+    '钛金原色': { skin: '钛金白', eye: '默认黑', track: '黑', arm: '枪灰' },
     '经典战损黄': { skin: '做旧黄', eye: '默认黑', track: '黑', arm: '枪灰' },
     '纯白机甲': { skin: '岩灰', eye: '蓝瞳', track: '岩灰', arm: '银白' },
     '赛博霓虹': { skin: '深海蓝', eye: '蓝瞳', track: '黑', arm: '暗黑' },
@@ -3737,8 +3738,8 @@ import {
 
   // 一键重置外观：只恢复外观与动作，不碰尺寸、位置、声音和系统开关。
   const LOOK_DEFAULTS = {
-    skin: '做旧黄', eyestyle: '默认黑', eyeshape: '圆', trackstyle: '黑', tracktype: '圆角矩形',
-    armskin: '枪灰', claw: '铲形', armtype: '双板', headtype: '双筒', scene: '无',
+    skin: '钛金白', eyestyle: '默认黑', eyeshape: '圆', trackstyle: '黑', tracktype: '梯形',
+    armskin: '枪灰', claw: '三指', armtype: '双板', headtype: '单眼', scene: '无',
     motion: '标准', halo: '环形', body: '标准', baseEffect: '状态色', brightness: 1,
     decoration: '无', wear: 1, finish: '标准',
     poses: { error: '环抱', waiting: '举手', busy: '泵动', done: '摊开', idle: '垂放' },
@@ -4731,19 +4732,19 @@ import {
         p.apply();
       }
       // 主题下拉由 syncThemeLabel 在所有配色就位后自动判定（匹配主题或「自定义」）。
-      const tt = TRACKTYPE_NAMES.includes(cfg.tracktype) ? cfg.tracktype : '圆角矩形';
+      const tt = TRACKTYPE_NAMES.includes(cfg.tracktype) ? cfg.tracktype : '梯形';
       tracktypeSel.value = tt;
       window.dispatchEvent(new CustomEvent('bao:tracktype', { detail: { tracktype: tt } }));
-      // 四项配色都已就位，现在才能判定主题；否则下拉停在第一项「经典战损黄」，
+      // 四项配色都已就位，现在才能判定主题；否则下拉停在第一项「钛金原色」，
       // 与机器人实际配色不符，用户也没法靠「再选一次」纠正。
       syncThemeLabel();
-      const cw = CLAW_NAMES.includes(cfg.claw) ? cfg.claw : '铲形';
+      const cw = CLAW_NAMES.includes(cfg.claw) ? cfg.claw : '三指';
       clawSel.value = cw;
       window.dispatchEvent(new CustomEvent('bao:claw', { detail: { claw: cw } }));
       const at = ARMTYPE_NAMES.includes(cfg.armtype) ? cfg.armtype : '双板';
       armtypeSel.value = at;
       window.dispatchEvent(new CustomEvent('bao:armtype', { detail: { armtype: at } }));
-      const ht = HEADTYPE_NAMES.includes(cfg.headtype) ? cfg.headtype : '双筒';
+      const ht = HEADTYPE_NAMES.includes(cfg.headtype) ? cfg.headtype : '单眼';
       headtypeSel.value = ht;
       window.dispatchEvent(new CustomEvent('bao:headtype', { detail: { headtype: ht } }));
       const dc = DECORATION_NAMES.includes(cfg.decoration) ? cfg.decoration : '无';
