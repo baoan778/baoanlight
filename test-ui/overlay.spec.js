@@ -947,6 +947,17 @@ test('the two advisory lines are announced, not only drawn', async ({ page }) =>
 
 // ------------------------------------------------------------ system panel
 
+// 没有 NVIDIA 读数的机器上，GPU 行必须整行消失，而不是留一格「—」。
+// 这条用例显式伪造一份无 GPU 的 /sys，避免结果取决于跑测试的机器有没有显卡。
+test('the GPU row disappears when the machine has no NVIDIA reading', async ({ page }) => {
+  await page.route('**/sys', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ cpu: 12, mem: { percent: 30, used: 2, total: 8 }, gpu: null }),
+  }));
+  await expect.poll(() => page.locator('#sys-gpu-row').isVisible(), { timeout: 8000 }).toBe(false);
+});
+
 // CPU / 内存面板：数字来自 /sys，开关要真的生效，而且它是中性色 ——
 // 红黄绿已经被代理状态占满。
 test('the system panel shows real numbers and can be turned off', async ({ page }) => {

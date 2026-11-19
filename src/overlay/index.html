@@ -811,6 +811,9 @@
   }
   #sys[hidden] { display: none; }
   #sys .srow { display: flex; align-items: center; gap: 7px; }
+  /* `.srow` 是 display:flex，会覆盖 UA 的 [hidden]：没有 NVIDIA 读数时脚本
+     把 GPU 行设为 hidden，它却仍然占一行并显示「—」。 */
+  #sys .srow[hidden] { display: none; }
   #sys .srow > span:first-child { flex: none; width: 30px; opacity: .8; }
   #sys .sbar { flex: 1; min-width: 0; height: 4px; border-radius: 999px; background: #33383f; overflow: hidden; }
   /* 跑马灯按设置生效：常驻 / 仅高负载（.hot）/ 关闭。只用中性石板灰的明暗
