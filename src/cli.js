@@ -248,6 +248,12 @@ function cmdSupervise(flags = {}) {
   return new Promise(() => {});
 }
 
+// `bao start` 是否要开桌面窗口。`--no-overlay`（只跑 server）和 `--browser`
+// （在浏览器标签里看同一个机器人）都不需要 Electron。
+function needsWindow(flags = {}) {
+  return !flags['no-overlay'] && !flags.browser;
+}
+
 // `bao start` detaches by default: a desk robot should not hold a shell
 // hostage, and closing that terminal should not take the robot down.
 async function cmdStartDetached(flags) {
@@ -300,9 +306,14 @@ async function cmdStartDetached(flags) {
   // Do not claim success before it is listening — a premature "it's up" would
   // be a lie. How long to allow depends on whether the window runtime has to be
   // fetched first, which is minutes on a cold cache and seconds otherwise.
+  // 只有真的要开桌面窗口时才需要 Electron。`--no-overlay` / `--browser` 下还去
+  // 探测并打印「正在拉取窗口运行时」，是在描述一件不会发生的事——而这条命令恰恰
+  // 是没有 Electron 的人最先会用的那条。
   let hasRuntime = true;
-  try { require('electron'); } catch { hasRuntime = false; }
-  if (!hasRuntime) console.log(c.dim('  fetching the window runtime, once — this can take a minute…'));
+  if (needsWindow(flags)) {
+    try { require('electron'); } catch { hasRuntime = false; }
+    if (!hasRuntime) console.log(c.dim('  fetching the window runtime, once — this can take a minute…'));
+  }
 
   const budgetMs = hasRuntime ? 20_000 : 180_000;
   const deadline = Date.now() + budgetMs;
@@ -330,7 +341,13 @@ async function cmdStartDetached(flags) {
   }
 
   console.log(`${c.grn('●')} baoanlight is running in the background.`);
-  console.log(c.dim('  drag the robot anywhere; hover it for controls'));
+  if (!needsWindow(flags)) {
+    console.log(c.dim(flags.browser
+      ? `  robot in the browser: http://127.0.0.1:${port}`
+      : '  server only — no robot window (--no-overlay)'));
+  } else {
+    console.log(c.dim('  drag the robot anywhere; hover it for controls'));
+  }
   console.log('');
   await printSelfCheck(port);
   printNextStep();
@@ -1352,4 +1369,4 @@ if (require.main === module) {
   main().catch((err) => { console.error(err.message || err); process.exit(1); });
 }
 
-module.exports = { parse, startChildArgs };
+module.exports = { parse, startChildArgs, needsWindow };

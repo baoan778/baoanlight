@@ -79,11 +79,47 @@ function extract(zip, dest) {
   fs.writeFileSync(path.join(ELECTRON_DIR, 'path.txt'), exe);
 }
 
+// Electron 的二进制托管在 GitHub Releases。国内网络经常拉不动，而 npm 安装
+// optionalDependency 失败是静默跳过的，用户最后只会看到「窗口打不开」。所以
+// 官方源失败后自动换 npmmirror 再试一次；用户自己设了 ELECTRON_MIRROR 就只尊重
+// 用户的选择，不擅自覆盖。
+const CN_MIRROR = 'https://npmmirror.com/mirrors/electron/';
+
+function mirrorCandidates(env = process.env) {
+  return env.ELECTRON_MIRROR ? [null] : [null, CN_MIRROR];
+}
+
+// 下载器是 electron 包自带的 install.js：它读 ELECTRON_MIRROR。注入 run/log
+// 只是为了让「第一次失败、第二次换镜像」这条路径可以被测试钉住。
+function runDownloader(mirror, {
+  electronDir = ELECTRON_DIR,
+  run = (script, opts) => execFileSync(process.execPath, [script], opts),
+  log = console.log,
+} = {}) {
+  const env = mirror ? { ...process.env, ELECTRON_MIRROR: mirror } : process.env;
+  if (mirror) log(`The official download failed; retrying from ${mirror}`);
+  try {
+    run('install.js', { cwd: electronDir, stdio: 'inherit', env });
+  } catch { /* 是否真的成功由 electronBinary() 决定，不信任退出码 */ }
+}
+
+// 包本身不在 node_modules 里时，`bao setup` 没法「再拉一次」——它下载的是包内的
+// install.js，而不是包本身。原来这里让用户「run bao setup」，等于让用户对着同一条
+// 命令无限循环；而 `bao start` 又会先打印「正在拉取运行时」，把问题指得更错。
+// 所以按当前是源码 checkout 还是全局安装，给出真正能修好的那条命令。
+function installHint({ checkout = false } = {}) {
+  return checkout
+    ? 'npm install && npm run setup'
+    : 'npm install -g baoanlight   (reinstalls its optional Electron dependency), then: bao setup';
+}
+
 function main() {
   if (!fs.existsSync(ELECTRON_DIR)) {
-    // 全局安装时 cwd 是任意目录，`npm install` 只会装当前目录的包 —— 提示必须给
-    // 能真正修好它的命令（和 README 里的 `bao setup` 一致）。
-    console.error('Electron is not installed — run `bao setup` (in a checkout: `npm install && npm run setup`).');
+    console.error([
+      'Electron is not installed — the robot window cannot open.',
+      `  fix: ${installHint({ checkout: fs.existsSync(path.join(ROOT, '.git')) })}`,
+      '  or run without the window:  bao start --browser',
+    ].join('\n'));
     process.exit(1);
   }
 
@@ -93,15 +129,15 @@ function main() {
   }
 
   console.log('Downloading the Electron runtime (~140 MB, once)…');
-  try {
-    execFileSync(process.execPath, ['install.js'], { cwd: ELECTRON_DIR, stdio: 'inherit' });
-  } catch {
-    console.log('The downloader failed; trying the cached archive.');
+  for (const mirror of mirrorCandidates()) {
+    if (electronBinary()) break;
+    runDownloader(mirror);
   }
 
   if (!electronBinary()) {
     const zip = cachedZip();
     if (zip) {
+      console.log('The download failed; trying the cached archive.');
       console.log(`Unpacking ${path.basename(zip)}…`);
       try { extract(zip, path.join(ELECTRON_DIR, 'dist')); } catch (e) { console.error(e.message); }
     }
@@ -119,7 +155,10 @@ function main() {
       '',
       'Could not install Electron.',
       '',
-      'Try clearing its download cache and running `bao setup` again (in a checkout: `npm run setup`):',
+      'The network may block the official source. Retry with a mirror (PowerShell):',
+      `  $env:ELECTRON_MIRROR = "${CN_MIRROR}"; bao setup`,
+      '',
+      'Or clear the download cache and run `bao setup` again:',
       '  PowerShell:  Remove-Item -Recurse -Force "$env:LOCALAPPDATA\\electron\\Cache"',
       '  cmd:         rmdir /s /q "%LOCALAPPDATA%\\electron\\Cache"',
       '',
@@ -132,4 +171,7 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { pickCachedZip, cachedZip, electronBinary };
+module.exports = {
+  pickCachedZip, cachedZip, electronBinary, installHint,
+  mirrorCandidates, runDownloader, CN_MIRROR,
+};

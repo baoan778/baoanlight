@@ -2,12 +2,21 @@
 // 入口脚本的冒烟测试：doctor / wrap / autostart 这些「CLI 入口」零覆盖，至少
 // 保证它们 require 不炸、导出的形状对。mcp-server.js 是 stdio 服务、require 就
 // 自启，只能用文本契约钉住它的两个工具名和 agent 校验规则。
-const { test } = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
+
+// 隔离测试用的状态目录和「启动」文件夹：autostart 的真实安装会改用户的登录项，
+// 测试里不能碰它。必须在第一次 require src/config 之前设置。
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-entrypoints-'));
+process.env.BAOANLIGHT_HOME = path.join(TMP, 'home');
+process.env.APPDATA = path.join(TMP, 'appdata');
+after(() => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 清理是礼貌 */ } });
 
 test('autostart.targetPath points inside the per-user Windows startup directory', () => {
   const autostart = require('../src/autostart');
@@ -87,4 +96,66 @@ test('the generic hook exposes classify and event vocabularies stay consistent',
   const logWatch = require('../src/adapters/log-watch');
   assert.equal(typeof logWatch.classify, 'function');
   assert.equal(typeof logWatch.readFuel, 'function');
+});
+
+// 中文用户名 / 中文安装路径是最现实的一台机器：`C:\Users\张三\...`。WSH 和
+// Windows PowerShell 5.1 都会把没有 BOM 的脚本按 GBK 解码，路径变乱码，登录时
+// 机器人永远不出现——而界面上一切显示「已开启」。这两个用例直接让真正的解释器
+// 去读文件，确认写进去的编码在它们那里不会变形。
+test('the autostart VBS decodes a non-ASCII path correctly in WSH', () => {
+  const autostart = require('../src/autostart');
+  const dir = fs.mkdtempSync(path.join(TMP, 'vbs-'));
+  const out = path.join(dir, 'out.txt');
+  const chinese = 'C:\\Users\\张三\\AppData\\Roaming\\npm\\baoanlight\\src\\cli.js';
+  const vbs = path.join(dir, 'echo.vbs');
+  autostart.writeScript(vbs, [
+    'Set fso = CreateObject("Scripting.FileSystemObject")',
+    `Set f = fso.CreateTextFile("${out.replace(/\\/g, '\\\\')}", True, True)`,
+    `f.Write "${chinese}"`,
+    'f.Close',
+  ].join('\r\n'), 'utf16');
+
+  execFileSync('cscript', ['//nologo', vbs], { stdio: 'ignore' });
+  assert.equal(fs.readFileSync(out, 'utf16le').replace(/^\uFEFF/, ''), chinese);
+});
+
+test('the autostart PowerShell script decodes a non-ASCII path correctly', () => {
+  const autostart = require('../src/autostart');
+  const dir = fs.mkdtempSync(path.join(TMP, 'ps-'));
+  const out = path.join(dir, 'out.txt');
+  const chinese = 'C:\\Users\\张三\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\baoanlight.lnk';
+  const ps1 = path.join(dir, 'echo.ps1');
+  autostart.writeScript(ps1,
+    `Set-Content -LiteralPath '${out.replace(/\\/g, '\\\\')}' -Value '${chinese}' -Encoding Unicode`,
+    'utf8');
+
+  execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1], { stdio: 'ignore' });
+  assert.equal(fs.readFileSync(out, 'utf16le').replace(/^\uFEFF/, '').trim(), chinese);
+});
+
+test('autostart installs and removes a working startup entry inside the temp profile', () => {
+  const autostart = require('../src/autostart');
+  const lnk = autostart.install();
+  assert.ok(fs.existsSync(lnk), 'the shortcut lands in the startup folder');
+
+  const raw = fs.readFileSync(autostart.launcherPath());
+  assert.deepEqual([...raw.subarray(0, 2)], [0xff, 0xfe], 'the VBS is UTF-16 with a BOM');
+  const text = raw.subarray(2).toString('utf16le');
+  assert.ok(text.includes(process.execPath), 'the interpreter path is baked in');
+  assert.match(text, /sh\.Run/, 'it still launches something');
+  assert.equal(autostart.status().enabled, true);
+
+  autostart.uninstall();
+  assert.equal(fs.existsSync(lnk), false, 'uninstall removes the shortcut');
+  assert.equal(autostart.status().enabled, false, 'and the status stops claiming it is on');
+});
+
+// 只有真要开桌面窗口时才需要 Electron。`--no-overlay` / `--browser` 不该在启动
+// 输出里说「正在拉取窗口运行时」，也不该让用户去找一个不存在的窗口。
+test('a window is only expected when neither --no-overlay nor --browser is given', () => {
+  const { needsWindow } = require('../src/cli');
+  assert.equal(needsWindow({}), true);
+  assert.equal(needsWindow({ 'no-overlay': true }), false);
+  assert.equal(needsWindow({ browser: true }), false);
+  assert.equal(needsWindow({ 'no-overlay': true, browser: true }), false);
 });

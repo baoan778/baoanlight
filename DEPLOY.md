@@ -137,7 +137,7 @@ node src/cli.js start
 预期输出包含：
 
 - `baoanlight is running in the background.`
-- 自检通过（8 项全绿）
+- 自检没有 FAIL 项（没装的代理/可选组件只会显示 WARN，不影响运行）
 - 已连接代理的提示
 
 `bao start` 默认脱离终端，关掉终端不会停掉机器人；用 `bao stop` 停止。
@@ -325,7 +325,10 @@ npm uninstall -g baoanlight
 ### `bao setup` 下载 Electron 失败
 
 1. 重试一次 `bao setup`。
-2. 检查代理/防火墙是否拦截 Electron 下载源。
+2. 检查代理/防火墙是否拦截 Electron 下载源。国内网络可以先切到镜像再重试
+   （Electron 官方包在 GitHub，下载源经常不可达）：
+   PowerShell：`$env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"`，
+   然后再执行 `bao setup`。
 3. 清缓存后再试（执行前告诉用户）。PowerShell 里：
    `Remove-Item -Recurse -Force "$env:LOCALAPPDATA\electron\Cache"`
    （cmd 里是 `rmdir /s /q "%LOCALAPPDATA%\electron\Cache"`）

@@ -12,3 +12,6 @@ node_modules/
 test-results/
 playwright-report/
 blob-report/
+
+# 搜狗输入法会把 debug.log 写进当前工作目录，不属于项目产物
+/debug.log

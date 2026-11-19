@@ -27,11 +27,23 @@ function launcherPath() {
   return path.join(config.DIR, 'autostart.vbs');
 }
 
+// Windows Script Host 和 Windows PowerShell 5.1 都按「系统 ANSI 代码页」解码**没有
+// BOM** 的脚本文件。系统是中文时，`C:\Users\张三\...` 会被读成乱码，登录时 node
+// 根本不在那个路径上——机器人永远不出现，而 `bao autostart status` 仍然显示「已开启」
+// （两个文件都在），用户没有任何线索。WSH 只认 UTF-16 的 BOM，PowerShell 5.1 认
+// UTF-8 的 BOM，所以两种格式分开写。
+const BOM = { utf16: Buffer.from([0xff, 0xfe]), utf8: Buffer.from([0xef, 0xbb, 0xbf]) };
+
+function writeScript(file, text, encoding) {
+  const body = Buffer.from(String(text), encoding === 'utf16' ? 'utf16le' : 'utf8');
+  fs.writeFileSync(file, Buffer.concat([BOM[encoding], body]));
+}
+
 // Run a PowerShell script from a temp file: passing a multi-line script through
 // -Command means fighting two layers of quoting, and this is not worth it.
 function psRun(script) {
   const tmp = path.join(os.tmpdir(), `bao-autostart-${process.pid}-${Date.now()}.ps1`);
-  fs.writeFileSync(tmp, script, 'utf8');
+  writeScript(tmp, script, 'utf8');
   try {
     return execFileSync('powershell',
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tmp], { encoding: 'utf8' });
@@ -50,13 +62,13 @@ function install() {
   // the robot just never appears. The absolute path cannot miss.
   const vbs = launcherPath();
   fs.mkdirSync(path.dirname(vbs), { recursive: true });
-  fs.writeFileSync(vbs, [
+  writeScript(vbs, [
     'Set sh = CreateObject("WScript.Shell")',
     `nodeExe = "${process.execPath}"`,
     `cli = "${path.join(ROOT, 'src', 'cli.js')}"`,
     // 一条 start 就够了：它会把 server、窗口和日志观察器一起带起来。
     'sh.Run """" & nodeExe & """ """ & cli & """ start", 0, False',
-  ].join('\r\n') + '\r\n');
+  ].join('\r\n') + '\r\n', 'utf16');
 
   fs.mkdirSync(startupDir(), { recursive: true });
   psRun([
@@ -100,4 +112,4 @@ function status() {
   };
 }
 
-module.exports = { install, uninstall, status, targetPath, launcherPath };
+module.exports = { install, uninstall, status, targetPath, launcherPath, writeScript };
