@@ -43,23 +43,16 @@ baoanlight，让桌面机器人正常显示 AI 代理状态。每一步都给出
 | npm | 随 Node 安装 |
 | Git | 仅源码安装需要 |
 | 磁盘 | 至少 300 MB 空闲（Electron 运行时约 140 MB） |
-| 网络 | 首次安装需要能访问 npm 与 Electron 下载源 |
+| 网络 | 首次安装需要能访问 GitHub（以及 Electron 下载源） |
 
 ---
 
 ## 2. 选择安装方式
 
-先执行：
+默认使用「GitHub Release 安装」：这是官方分发方式，不需要 npm 账号，
+也不需要登录任何服务。只有在需要改代码时才用「源码安装」。
 
-```bash
-npm view baoanlight version
-```
-
-- **能正常输出版本号**：优先用「全局安装」，后续命令里的 `bao` 可以直接用。
-- **报 404 / 网络失败 / 没有这个包**：用「GitHub Release 安装」或「源码安装」，
-  后续把 `bao` 换成对应的入口。
-
-三种方式任选一种，不要同时装两套。
+两种方式任选一种，不要同时装两套。
 
 ---
 
@@ -86,10 +79,29 @@ git --version
 
 ## 4. 安装
 
-### 4.1 全局安装（npm 上能查到包时）
+### 4.1 GitHub Release 安装（推荐）
+
+不需要 npm 账号，直接安装官方构建好的发布包：
+
+```powershell
+$ver = "2.0.2"
+$base = "https://github.com/baoan778/baoanlight/releases/download/v$ver"
+$tgz = "$env:TEMP\baoanlight-$ver.tgz"
+Invoke-WebRequest "$base/baoanlight-$ver.tgz" -OutFile $tgz
+Invoke-WebRequest "$base/baoanlight-$ver.tgz.sha256" -OutFile "$tgz.sha256"
+
+# 校验（输出的哈希必须与 .sha256 文件里的一致）
+(Get-FileHash $tgz -Algorithm SHA256).Hash.ToLower()
+Get-Content "$tgz.sha256"
+
+npm install -g $tgz
+bao setup
+```
+
+如果只想一条命令装完，可以省略校验步骤：
 
 ```bash
-npm install -g baoanlight
+npm install -g https://github.com/baoan778/baoanlight/releases/download/v2.0.2/baoanlight-2.0.2.tgz
 bao setup
 ```
 
@@ -115,27 +127,6 @@ node src/cli.js xxx
 
 如果希望源码目录也有全局 `bao` 命令，可以额外执行 `npm link`；
 不执行也不影响使用。
-
-### 4.3 GitHub Release 安装（npm 上还没有包时）
-
-不需要 npm 账号，直接安装官方构建好的发布包：
-
-```powershell
-$ver = "2.0.1"
-$base = "https://github.com/baoan778/baoanlight/releases/download/v$ver"
-$tgz = "$env:TEMP\baoanlight-$ver.tgz"
-Invoke-WebRequest "$base/baoanlight-$ver.tgz" -OutFile $tgz
-Invoke-WebRequest "$base/baoanlight-$ver.tgz.sha256" -OutFile "$tgz.sha256"
-
-# 校验（输出的哈希必须与 .sha256 文件里的一致）
-(Get-FileHash $tgz -Algorithm SHA256).Hash.ToLower()
-Get-Content "$tgz.sha256"
-
-npm install -g $tgz
-bao setup
-```
-
-源码安装与 Release 安装安装的都是同一个包，后续命令完全一样。
 
 ---
 
@@ -292,9 +283,14 @@ bao status
 
 ### 升级（全局）
 
-```bash
+先查最新版本：<https://github.com/baoan778/baoanlight/releases/latest>
+
+```powershell
 bao stop
-npm install -g baoanlight@latest
+$ver = "2.0.2"   # 换成目标版本
+$tgz = "$env:TEMP\baoanlight-$ver.tgz"
+Invoke-WebRequest "https://github.com/baoan778/baoanlight/releases/download/v$ver/baoanlight-$ver.tgz" -OutFile $tgz
+npm install -g $tgz
 bao setup
 bao start
 ```

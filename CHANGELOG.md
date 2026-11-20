@@ -3,6 +3,20 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本号格式为
 `MAJOR.MINOR.PATCH`。每个版本的「用户可见变化」和「升级注意」都记在这里。
 
+## [2.0.2] - 2026-11-20
+
+### 变更
+
+- 分发方式改为 **GitHub Releases**：发布标签（`v*`）由 CI 跑完 lint、逻辑
+  测试、渲染测试与打包检查后，把 `baoanlight-<版本>.tgz` 及其 SHA-256 附到
+  该 Release 上，同时提供稳定别名 `baoanlight.tgz` / `baoanlight.tgz.sha256`。
+  **不再发布到 npm registry**，安装方式见 README / DEPLOY。
+- 启动时的版本检查改为读取 GitHub Releases API（`releases/latest`），仍然
+  24 小时缓存、4 秒超时、失败静默。
+- 终端里的升级提示（`bao connect`、`bao doctor`、`bao setup` 与生成片段）
+  改为指向 Release 安装包，不再给出会 404 的 `npm install -g baoanlight`。
+- 新增一条版本检查测试：tag 不带 `v` 前缀时也能正确比较。
+
 ## [2.0.1] - 2026-11-19
 
 ### 修复

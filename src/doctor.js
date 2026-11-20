@@ -161,7 +161,7 @@ async function run() {
       'bao connect claude   (rewrites the paths for this machine)');
     // 钩子指向「既不是这个 checkout、也不是任何 node_modules/baoanlight 安装」的
     // 地方，多半是移动过项目 / 从别的机器同步了配置 —— 旧路径已经失效。
-    // 全局安装（npm i -g baoanlight）恰恰是推荐位置，不该被这条误报成异常。
+    // 全局安装（从 Release 包 `npm i -g`）恰恰是推荐位置，不该被这条误报成异常。
     // 没加引号的钩子命令（手写配置里很常见）会让 script 是 undefined：上面两条
     // 已经用 `(unparsed)` 报了 fail，这里不能再 startsWith 一下把 doctor 本身崩掉。
     if (script) {
@@ -180,7 +180,9 @@ async function run() {
     if (script && install.isCheckout() && script.startsWith(ROOT.replace(/\\/g, '/'))) {
       check('  hooks run from a working checkout', 'warn',
         `${ROOT} is held open while any agent runs`,
-        'npm install -g baoanlight && bao connect claude');
+        'npm install -g '
+          + 'https://github.com/baoan778/baoanlight/releases/latest/download/baoanlight.tgz'
+          + ' && bao connect claude');
     }
   }
 

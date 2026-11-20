@@ -20,12 +20,12 @@ test('prerelease versions compare by semver rules, not lexically', () => {
   assert.equal(isNewer('2.0.1-alpha', '2.0.0'), true, 'a newer core still wins');
 });
 
-test('a newer version on the registry is reported, without phoning home twice', async () => {
+test('a newer version in the latest GitHub release is reported, without phoning home twice', async () => {
   reset();
   let calls = 0;
   const fetchImpl = async () => {
     calls += 1;
-    return { ok: true, json: async () => ({ version: '9.9.9' }) };
+    return { ok: true, json: async () => ({ tag_name: 'v9.9.9' }) };
   };
 
   const r = await check({ fetchImpl });
@@ -41,15 +41,22 @@ test('a newer version on the registry is reported, without phoning home twice', 
   assert.equal(lastValue().latest, '9.9.9');
 });
 
-test('a registry behind the installed version is not an update', async () => {
+test('a release behind the installed version is not an update', async () => {
   reset();
-  const r = await check({ fetchImpl: async () => ({ ok: true, json: async () => ({ version: '0.0.1' }) }) });
+  const r = await check({ fetchImpl: async () => ({ ok: true, json: async () => ({ tag_name: 'v0.0.1' }) }) });
   assert.equal(r.newer, false, 'the installed build is ahead; never suggest a downgrade');
 
   // 缓存里存着更老的版本时，同样不能用「字符串不同」来判断有新版本。
   const cached = await check({ fetchImpl: async () => { throw new Error('should not fetch twice'); } });
   assert.equal(cached.latest, '0.0.1');
   assert.equal(cached.newer, false, 'a cached older version is still not newer');
+});
+
+test('a release tag without the leading v still parses', async () => {
+  reset();
+  const r = await check({ fetchImpl: async () => ({ ok: true, json: async () => ({ tag_name: '9.9.9' }) }) });
+  assert.equal(r.latest, '9.9.9');
+  assert.equal(r.newer, true);
 });
 
 test('offline or a bad response degrades to "no newer version", never an error', async () => {

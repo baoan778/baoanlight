@@ -1427,7 +1427,7 @@ import {
     if (updEl) {
       const u = snap.update;
       const show = !!(u && u.newer);
-      const text = show ? `有新版本 ${u.latest}（当前 ${u.current}）— npm i -g baoanlight 更新` : '';
+      const text = show ? `有新版本 ${u.latest}（当前 ${u.current}）— 从 GitHub Releases 更新` : '';
       if (updEl.textContent !== text || updEl.hidden === show) {
         updEl.textContent = text;
         updEl.hidden = !show;

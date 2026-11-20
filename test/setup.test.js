@@ -49,7 +49,7 @@ test('a download that fails on the official source still succeeds on the mirror'
 // 依赖），`bao setup` 没法再下载自己——所以提示不能是「再跑一次 bao setup」。
 test('the missing-Electron hint never sends the user back to the same command', () => {
   assert.doesNotMatch(installHint({ checkout: false }), /^\s*bao setup\s*$/);
-  assert.match(installHint({ checkout: false }), /npm install -g baoanlight/);
+  assert.match(installHint({ checkout: false }), /npm install -g https:\/\/github\.com\/baoan778\/baoanlight\/releases/);
   assert.match(installHint({ checkout: true }), /npm install/);
   assert.match(installHint({ checkout: true }), /npm run setup/);
 });

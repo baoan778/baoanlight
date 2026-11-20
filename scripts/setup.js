@@ -110,7 +110,9 @@ function runDownloader(mirror, {
 function installHint({ checkout = false } = {}) {
   return checkout
     ? 'npm install && npm run setup'
-    : 'npm install -g baoanlight   (reinstalls its optional Electron dependency), then: bao setup';
+    : 'npm install -g '
+      + 'https://github.com/baoan778/baoanlight/releases/latest/download/baoanlight.tgz'
+      + '   (reinstalls its optional Electron dependency), then: bao setup';
 }
 
 function main() {

@@ -1078,7 +1078,8 @@ function cmdInstall(positional, flags) {
       console.log(c.dim('  cannot be renamed or deleted while an agent is running, and other apps'));
       console.log(c.dim('  touching it report "file in use". The hooks also break if it ever moves.'));
       console.log(c.dim('  For everyday use, install once and wire up from there:'));
-      console.log(c.dim('    npm install -g baoanlight && bao connect claude'));
+      console.log(c.dim('    npm install -g https://github.com/baoan778/baoanlight/releases/latest/download/baoanlight.tgz'));
+      console.log(c.dim('    bao connect claude'));
     }
     return;
   }

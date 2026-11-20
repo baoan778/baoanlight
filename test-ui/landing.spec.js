@@ -126,7 +126,10 @@ test('the page is readable at rest, with the demo already running', async ({ pag
   await page.goto(PAGE);
   await expect(page.locator('h1')).toBeVisible();
   await expect(page.locator('.pill')).toBeVisible();
-  await expect(page.getByText('npm install -g baoanlight')).toBeVisible();
+  // 安装命令指向 GitHub Releases（不再走 npm registry）；这里只校验分发来源，
+  // 不绑死某个版本号。
+  await expect(page.locator('h2:text-is("Install") + pre'))
+    .toContainText('npm install -g https://github.com/baoan778/baoanlight/releases/download/');
 
   // The robot is awake from the first frame — a powered-down widget would look
   // broken in a screenshot or a link preview.

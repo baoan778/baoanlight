@@ -221,7 +221,7 @@ function genericSnippet(agent = 'my-agent') {
     '# when it finishes a turn',
     set('idle'),
     '',
-    `# if \`bao\` is on PATH (npm install -g baoanlight), this is shorter:`,
+    `# if \`bao\` is on PATH (a global install from the release tarball), this is shorter:`,
     `bao set waiting --agent ${agent} --detail "needs you"`,
     '',
     '# or straight over HTTP, from anything at all (writes need the local token):',

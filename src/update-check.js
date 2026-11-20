@@ -1,15 +1,16 @@
 'use strict';
 // 静默的新版本检查：只在启动时 fire-and-forget 一次，24 小时内命中缓存就不再联网。
 //
-// 为什么值得做：`npm i -g baoanlight` 之后程序就一直停在那个版本，用户不知道有
-// 新版（尤其是修了 bug 的版本）。这里只问 npm registry 一句「latest 是几」，任何
-// 失败（离线、被墙、超时）都静默吞掉 —— 一个状态灯没有理由因为查不到版本而吵。
+// 为什么值得做：从 GitHub Release 安装之后程序就一直停在那个版本，用户不知道有
+// 新版（尤其是修了 bug 的版本）。这里只问 GitHub Releases API 一句「latest 是几」，
+// 任何失败（离线、被墙、超时）都静默吞掉 —— 一个状态灯没有理由因为查不到版本而吵。
 const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 
 const CACHE_MS = 24 * 60 * 60 * 1000;
 const TIMEOUT_MS = 4000;
+const RELEASE_URL = 'https://api.github.com/repos/baoan778/baoanlight/releases/latest';
 
 let last = null;      // { current, latest, newer }
 
@@ -100,13 +101,17 @@ async function check({ fetchImpl = globalThis.fetch } = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
-    const res = await fetchImpl('https://registry.npmjs.org/baoanlight/latest', { signal: ctrl.signal });
+    const res = await fetchImpl(RELEASE_URL, {
+      signal: ctrl.signal,
+      headers: { Accept: 'application/vnd.github+json' },
+    });
     if (!res.ok) return last = fresh;
     const data = await res.json();
-    if (data && typeof data.version === 'string') {
-      fresh.latest = data.version;
-      fresh.newer = isNewer(data.version, current);
-      writeCache(data.version);
+    const tag = data && typeof data.tag_name === 'string' ? data.tag_name.replace(/^v/, '') : '';
+    if (tag) {
+      fresh.latest = tag;
+      fresh.newer = isNewer(tag, current);
+      writeCache(tag);
     }
   } catch {
     // 离线/超时/被墙：不报错，也别写「未知」进缓存。

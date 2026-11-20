@@ -37,7 +37,7 @@
 Gemini CLI、Aider、Cursor、opencode、Copilot、Cline、Windsurf、Qwen Code、Kimi**，
 以及任何能执行一条命令或发一个 HTTP 请求的工具。
 
-**能做什么**（全部本地，无遥测；仅启动时向 npm 查一次版本号）：
+**能做什么**（全部本地，无遥测；仅启动时向 GitHub 查一次版本号）：
 
 - **状态灯**：绿=运行、黄=需要你、红=失败、紫=刚完成（瞬态）、白=空闲，语义严格、绝不撒谎（见 [docs/state-design.md](docs/state-design.md)）
 - **多代理同时盯**：胸口 8 段槽位灯 + 底座 16 段灯环，谁在跑、谁在拖后腿一眼可见
@@ -79,11 +79,15 @@ baoanlight：核心状态机与「安静不等于完成」等设计延续至今�
 > 想把这台机器交给 AI 部署？把 [DEPLOY.md](DEPLOY.md) 发给它，里面是逐步执行、
 > 验收和失败处理清单。
 
+从 GitHub Release 安装（官方分发方式，不需要 npm 账号）：
+
 ```bash
-npm install -g baoanlight
+npm install -g https://github.com/baoan778/baoanlight/releases/download/v2.0.2/baoanlight-2.0.2.tgz
 bao setup        # 首次运行：下载 Electron 运行时（约 140 MB）
 bao start
 ```
+
+需要校验安装包完整性时，见 [DEPLOY.md](DEPLOY.md#4-安装) 里的 SHA-256 步骤。
 
 从源码跑：
 
@@ -93,13 +97,6 @@ cd baoanlight
 npm install
 npm run setup
 node src/cli.js start
-```
-
-npm 上暂时还没有这个包时，可以直接从 GitHub Release 安装：
-
-```bash
-npm install -g https://github.com/baoan778/baoanlight/releases/download/v2.0.1/baoanlight-2.0.1.tgz
-bao setup
 ```
 
 不需要桌面窗口也可以：
@@ -391,7 +388,7 @@ WorkBuddy 任务板的 failed/error 状态。DeepSeek 投影和 CodeBuddy/WorkBu
 是否删除数据由你决定，详见 [DEPLOY.md](DEPLOY.md#8-升级与卸载)。
 
 **会上传数据吗？**
-不会。状态、日志、便签、统计都在本机；只有启动时向 npm 查一次版本号。
+不会。状态、日志、便签、统计都在本机；只有启动时向 GitHub 查一次版本号。
 
 ---
 
@@ -410,7 +407,7 @@ WorkBuddy 任务板的 failed/error 状态。DeepSeek 投影和 CodeBuddy/WorkBu
 ## 本机接线对不对
 
 ```bash
-npm test         # 246 个逻辑测试：状态机、适配器、钩子、安装器、电量、鉴权、资源采样、证据链、调色板、事件契约、HTTP 请求体、配置落盘与导出覆盖、启动自检、整机守护、桌面待办、退出时统计落盘、终端安全
+npm test         # 247 个逻辑测试：状态机、适配器、钩子、安装器、电量、鉴权、资源采样、证据链、调色板、事件契约、HTTP 请求体、配置落盘与导出覆盖、启动自检、整机守护、桌面待办、退出时统计落盘、终端安全
 npm run test:ui  # 137 个渲染测试：机器人、系统面板、标签、多会话展开与折叠、证据链、桌面便签、电量条、CSP、XSS、朗读文本、键盘路径、帧率/降级预算、多软件并发/竞态、报错与完成提示、通知抑制与卡住阈值、每一项自定义控件的接线与重启恢复，以及落地页对比度
 npm run test:electron  # Electron 主进程烟测：preload 桥、真实窗口、SSE 状态、五软件并发与置顶（需要 Electron）
 npm run check:pack     # 发布前检查 npm 包内容：运行文件齐全、测试/密钥不会被打包
@@ -433,7 +430,7 @@ bao doctor       # 本机：二进制、配置路径、日志目录、服务器
 - `token` —— 本机写入令牌（Windows 下继承用户目录 ACL，首次启动自动生成）。`bao token` 打印它；
   钩子、CLI、MCP 自己读，不需要你抄到任何地方
 - `port`、`server.log`
-- `.update-check.json` —— 最近一次 npm 版本检查的结果（24 小时内不再联网）
+- `.update-check.json` —— 最近一次 GitHub Release 版本检查的结果（24 小时内不再联网）
 
 从旧版本升级时，第一次运行会把 `~/.signalhead/config.json` 复制过来，旧目录不删除。
 
@@ -456,7 +453,7 @@ bao doctor       # 本机：二进制、配置路径、日志目录、服务器
 - **渲染进程是沙箱。** 页面自带 CSP（`script-src 'self'`，没有内联脚本），Electron
   窗口 `sandbox: true` 且禁止跳转到别的地址；服务端来的字符串（软件名、detail、
   模型名）一律按文本渲染，不拼 HTML。
-- **版本检查只问一句。** 启动时最多每 24 小时向 npm registry 请求一次最新版本号，
+- **版本检查只问一句。** 启动时最多每 24 小时向 GitHub Releases 请求一次最新版本号，
   结果缓存在 `~/.baoanlight/.update-check.json`；不发送会话、状态、路径或任何机器
   信息，离线、超时或被墙都静默忽略。
 
