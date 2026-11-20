@@ -84,9 +84,8 @@ git --version
 不需要 npm 账号，直接安装官方构建好的发布包：
 
 ```powershell
-$ver = "2.0.5"
-$base = "https://github.com/baoan778/baoanlight/releases/download/v$ver"
-$tgz = "$env:TEMP\baoanlight-$ver.tgz"
+$base = "https://github.com/baoan778/baoanlight/releases/latest/download"
+$tgz = "$env:TEMP\baoanlight.tgz"
 Invoke-WebRequest "$base/baoanlight.tgz" -OutFile $tgz
 Invoke-WebRequest "$base/baoanlight.tgz.sha256" -OutFile "$tgz.sha256"
 
@@ -97,6 +96,9 @@ Get-Content "$tgz.sha256"
 npm install -g $tgz
 bao setup
 ```
+
+上面的 `latest` 永远取最新版；需要固定版本时，把 `latest` 换成标签名即可，例如
+`https://github.com/baoan778/baoanlight/releases/download/v2.0.6/baoanlight.tgz`。
 
 如果只想一条命令装完，可以省略校验步骤：
 

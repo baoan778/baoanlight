@@ -3,6 +3,14 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本号格式为
 `MAJOR.MINOR.PATCH`。每个版本的「用户可见变化」和「升级注意」都记在这里。
 
+## [2.0.6] - 2026-11-20
+
+### 变更
+
+- 每个 Release 只保留一个安装包 `baoanlight.tgz`（附 `.sha256`），不再同时上传带版本号
+  的副本。版本由标签记录，`releases/latest/download/baoanlight.tgz` 永远指向最新版。
+- README、DEPLOY 与落地页的安装命令统一使用上面的 latest 链接，发版时不再需要改版本号。
+
 ## [2.0.5] - 2026-11-20
 
 ### 变更
