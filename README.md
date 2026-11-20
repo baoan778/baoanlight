@@ -138,8 +138,8 @@ bao stop               # 全部关闭
 ## 开发与测试
 
 ```bash
-npm test               # 250 个逻辑测试（状态机、适配器、鉴权、安装器、自愈…）
-npx playwright test    # 137 个渲染测试（真实浏览器里的界面与落地页）
+npm test               # 252 个逻辑测试（状态机、适配器、鉴权、安装器、自愈…）
+npx playwright test    # 138 个渲染测试（真实浏览器里的界面与落地页）
 npm run test:electron  # Electron 主进程烟测（需先 npm run setup）
 npm run lint           # 未定义 / 未使用的变量、重复键、死代码
 npm run check:pack     # 发布包内容：运行文件齐全、测试与密钥不会被打包

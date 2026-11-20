@@ -3,6 +3,16 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本号格式为
 `MAJOR.MINOR.PATCH`。每个版本的「用户可见变化」和「升级注意」都记在这里。
 
+## [2.0.8] - 2026-11-20
+
+### 修复
+
+- `bao doctor` / `bao onboard` 不再把 WorkBuddy 的 `sessions/`、DeepSeek 的原始
+  `sessions/` 当成可用的日志源：这两个目录没有任何观察器会读，之前会报「已找到」
+  并建议一条注定失败的 `bao watch` 命令。
+- 勿扰 / 静音期间被抑制的「卡住」提醒不再被标记成已发送；解除后，仍然卡住的
+  软件会补上提醒。
+
 ## [2.0.7] - 2026-11-20
 
 ### 修复
