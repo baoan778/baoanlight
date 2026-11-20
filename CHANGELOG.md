@@ -3,6 +3,16 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本号格式为
 `MAJOR.MINOR.PATCH`。每个版本的「用户可见变化」和「升级注意」都记在这里。
 
+## [2.0.9] - 2026-11-20
+
+### 修复
+
+- 用 Windows 编辑器手改过的 `config.json` / `notes.json` / `stats.json` 若带有
+  UTF-8 BOM，不再被当成损坏文件：配置不会静默回到出厂值，便签与统计也不会被
+  清空或改名。
+- `bao doctor` 与窗口内自检读取 Claude Code `settings.json` 时同样剥离 BOM，
+  不再把一份能正常工作的钩子配置报成「不是合法 JSON」。
+
 ## [2.0.8] - 2026-11-20
 
 ### 修复
