@@ -836,18 +836,17 @@ import {
       if (freshAgents.has(s.agent)) continue;
       if (s.state === 'busy' && s.quiet && s.quietFor > busyMs) {
         stuckAgents.add(s.agent);
-        if (!stuckNotified.has(s.agent)) {
+        // 只有真的弹出去才记「已提醒」。静音 / 勿扰期间标记成已发，会让解除
+        // 之后仍然卡着的软件永远收不到第二条 —— 和 notifySlots / 久等提醒的
+        // 约定相反（那两处都是「没弹就不记账」）。
+        if (!stuckNotified.has(s.agent) && canNotify) {
           stuckNotified.add(s.agent);
-          if (canNotify) {
-            bridge.notify(`${displayName(s.agent)} 好像卡住了`, `已经 ${busyMin} 分钟没有任何动静了，去看看`);
-          }
+          bridge.notify(`${displayName(s.agent)} 好像卡住了`, `已经 ${busyMin} 分钟没有任何动静了，去看看`);
         }
-        if (s.quietFor > busyMs * 2 && !stuckEscalated.has(s.agent)) {
+        if (s.quietFor > busyMs * 2 && !stuckEscalated.has(s.agent) && canNotify) {
           stuckEscalated.add(s.agent);
-          if (canNotify) {
-            bridge.notify(`${displayName(s.agent)} 大概率卡死了`,
-              `${Math.round(s.quietFor / 60000)} 分钟完全没动静，建议去终端看看`);
-          }
+          bridge.notify(`${displayName(s.agent)} 大概率卡死了`,
+            `${Math.round(s.quietFor / 60000)} 分钟完全没动静，建议去终端看看`);
         }
       }
     }

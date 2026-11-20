@@ -1751,6 +1751,29 @@ test('a stuck software is alerted once and escalated at twice the threshold', as
   await expect.poll(() => notified(page)).toContain('Codex 大概率卡死了');
 });
 
+// 勿扰 / 静音期间不该弹，但也不能把提醒标记成「已发」：解除之后仍然卡着的软件
+// 必须补上这一条，否则用户永远不知道它从会议开始一直卡到现在。
+test('a stuck alert suppressed by do-not-disturb is delivered once it lifts', async ({ page }) => {
+  await withNotifySpy(page, {
+    stuckBusyMin: 1, doNotDisturb: true, dndStart: '00:00', dndEnd: '23:59',
+  });
+  await api('/state', { session: 'stuck-dnd', agent: 'dndagent', state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+
+  ageSession('stuck-dnd', { updatedAt: Date.now() - 100_000 });
+  await page.waitForTimeout(600);
+  expect(await notified(page)).not.toContain('dndagent 好像卡住了');
+
+  // 解除勿扰：下一帧就要补发同一条提醒。
+  await page.evaluate(() => {
+    const el = document.getElementById('m-dnd');
+    el.checked = false;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  ageSession('stuck-dnd', { updatedAt: Date.now() - 100_000 });
+  await expect.poll(() => notified(page)).toContain('dndagent 好像卡住了');
+});
+
 // 「等待多久提醒」：同一轮等待只提醒一次；离开等待再回来重新计时。
 test('a long wait is reminded once per waiting episode', async ({ page }) => {
   await withNotifySpy(page, { stuckWaitMin: 1 });
