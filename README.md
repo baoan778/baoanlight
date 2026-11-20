@@ -38,7 +38,7 @@ Kimi**，以及任何能执行一条命令或发一个 HTTP 请求的工具。
 从 GitHub Release 安装（官方方式，不需要 npm 账号）：
 
 ```bash
-npm install -g https://github.com/baoan778/baoanlight/releases/download/v2.0.3/baoanlight-2.0.3.tgz
+npm install -g https://github.com/baoan778/baoanlight/releases/download/v2.0.4/baoanlight-2.0.4.tgz
 bao setup        # 首次运行：下载 Electron 运行时（约 140 MB）
 bao start
 ```
@@ -138,7 +138,7 @@ bao stop               # 全部关闭
 ## 开发与测试
 
 ```bash
-npm test               # 247 个逻辑测试（状态机、适配器、鉴权、安装器、自愈…）
+npm test               # 248 个逻辑测试（状态机、适配器、鉴权、安装器、自愈…）
 npx playwright test    # 137 个渲染测试（真实浏览器里的界面与落地页）
 npm run test:electron  # Electron 主进程烟测（需先 npm run setup）
 npm run lint           # 未定义 / 未使用的变量、重复键、死代码

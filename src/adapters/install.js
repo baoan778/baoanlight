@@ -60,6 +60,11 @@ function readJson(file) {
     throw new Error(`cannot read ${file} (${err.code || err.message}); refusing to overwrite it`);
   }
   if (!raw.trim()) return {};
+  // Windows 的记事本等编辑器会把 UTF-8 存成「带 BOM」：文件头多一个 U+FEFF，
+  // 肉眼看不见，但 JSON.parse 直接报错。于是 connect 拒绝写一个其实完好的配置，
+  // 用户只会看到「文件不是合法 JSON」。只剥掉开头这一个字符，其余照旧解析；
+  // 真坏了的文件仍然走下面同一条错误。
+  raw = raw.replace(/^\uFEFF/, '');
   try {
     return JSON.parse(raw);
   } catch (err) {

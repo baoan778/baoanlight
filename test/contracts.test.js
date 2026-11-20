@@ -199,6 +199,21 @@ test('a settings file we cannot parse is never overwritten', () => {
 });
 
 // 反过来：一个能读的文件，必须原样保住我们不认识的键。
+// 记事本等 Windows 编辑器会把 UTF-8 存成带 BOM 的形态：文件头一个不可见的
+// U+FEFF，JSON.parse 会直接报错。这种文件其实是好的，不能因此拒绝写入。
+test('a UTF-8 BOM does not make a good settings file unreadable', () => {
+  withScopeProject(({ file }) => {
+    fs.writeFileSync(file, '\uFEFF' + JSON.stringify({ model: 'opus', permissions: { allow: ['Bash(ls:*)'] } }));
+
+    install.installClaude({ scope: 'project' });
+    const s = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+    assert.equal(s.model, 'opus', 'unrelated keys survived');
+    assert.deepEqual(s.permissions, { allow: ['Bash(ls:*)'] });
+    const hooks = Object.values(s.hooks).flat().flatMap((g) => g.hooks).length;
+    assert.equal(hooks, 8, 'all eight lifecycle hooks are wired');
+  });
+});
+
 test('installing hooks keeps every key it does not own', () => {
   withScopeProject(({ file }) => {
     fs.writeFileSync(file, JSON.stringify({
