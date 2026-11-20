@@ -384,6 +384,7 @@ function codebuddyHookCount() {
 
 module.exports = {
   isCheckout,
+  readJson,
   claudeHookCount,
   installClaude,
   uninstallClaude,

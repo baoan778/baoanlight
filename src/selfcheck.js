@@ -57,7 +57,10 @@ function run() {
     if (!exists(file)) return null;                 // 这个作用域没装，不算失败
     let settings = null;
     try {
-      settings = JSON.parse(fs.readFileSync(file, 'utf8'));
+      // 和 `bao connect` / `bao doctor` 共用同一个解析器：它负责剥掉编辑器加上
+      // 的 UTF-8 BOM。这里自己 parse 一份，会把一个能正常工作的钩子文件报成
+      // 「不是合法 JSON」的 fail，而 doctor 同时说它通过 —— 两处自相矛盾。
+      settings = install.readJson(file);
     } catch {
       return { status: 'fail', detail: `${file} 不是合法 JSON`, fix: '修复或从 baoanlight-backup-* 恢复' };
     }

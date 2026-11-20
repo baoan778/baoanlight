@@ -156,6 +156,27 @@ test('a corrupted config is repaired by the next save, not crashed on', () => {
   }
 });
 
+// Windows 记事本保存 UTF-8 会加 BOM。用户手改 config.json 之后，整份配置不该
+// 因为一个看不见的字符就静默回到出厂值。
+test('a config file saved with a BOM is read, not reset to factory defaults', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-cfg3-'));
+  try {
+    fs.writeFileSync(path.join(home, 'config.json'),
+      '\uFEFF' + JSON.stringify({ scale: 1.4, skin: '军绿' }));
+    const script = [
+      `process.env.BAOANLIGHT_HOME = ${JSON.stringify(home)};`,
+      `const c = require(${JSON.stringify(path.join(ROOT, 'src', 'config.js'))});`,
+      'const cfg = c.load();',
+      'process.stdout.write(JSON.stringify({ scale: cfg.scale, skin: cfg.skin }));',
+    ].join('\n');
+    const out = execFileSync(process.execPath, ['-e', script], { stdio: 'pipe', encoding: 'utf8' });
+    assert.deepEqual(JSON.parse(out), { scale: 1.4, skin: '军绿' },
+      'a BOM is an encoding marker, not a corrupt file');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 // ------------------------------------------------------------- installer safety
 
 const withScopeProject = (fn) => {

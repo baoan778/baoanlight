@@ -45,7 +45,7 @@ function read() {
   }
   let data;
   try {
-    data = JSON.parse(raw);
+    data = JSON.parse(config.stripBom(raw));
   } catch {
     // 坏文件不能静默清空：备份一份，下一次写入会重建。至少给排查留证据。
     try { fs.renameSync(FILE, `${FILE}.bad`); } catch { /* 备份失败也不影响使用 */ }

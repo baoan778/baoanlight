@@ -58,7 +58,7 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
   // 今日统计持久化：重启不丢，跨天自动清零。
   const statsFile = path.join(config.DIR, 'stats.json');
   try {
-    store.mergeStats(JSON.parse(fs.readFileSync(statsFile, 'utf8')));
+    store.mergeStats(JSON.parse(config.stripBom(fs.readFileSync(statsFile, 'utf8'))));
   } catch (err) {
     // 首次运行没有文件是正常的；文件坏了不能静默丢弃 —— 今日时长/周报少一天却
     // 没有任何提示，用户会以为是自己漏记了。备份 + 说一句。

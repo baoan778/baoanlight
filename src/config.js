@@ -182,12 +182,19 @@ function migrateLegacy() {
 
 let warnedCorrupt = false;
 
+// Windows 记事本/自带编辑器保存 UTF-8 时会加一个 BOM。肉眼看不出，JSON.parse
+// 却会在第一个字符直接失败 —— 于是用户手改过的 config.json / notes.json 被当成
+// 「文件坏了」，整个配置静默回到出厂值。只剥掉开头这一个字符，其余照旧解析。
+function stripBom(text) {
+  return String(text == null ? '' : text).replace(/^\uFEFF/, '');
+}
+
 function load() {
   let cfg;
   try {
     const text = fs.readFileSync(CONFIG_FILE, 'utf8');
     if (!text.trim()) throw new Error('empty config file');
-    const raw = JSON.parse(text);
+    const raw = JSON.parse(stripBom(text));
     cfg = {
       ...DEFAULTS,
       ...raw,
@@ -265,5 +272,5 @@ function runningPort() {
 
 module.exports = {
   DIR, CONFIG_FILE, PORT_FILE, LOG_FILE, DEFAULTS,
-  ensureDir, load, save, port, runningPort, portFromFile,
+  ensureDir, load, save, port, runningPort, portFromFile, stripBom,
 };

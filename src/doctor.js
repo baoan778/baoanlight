@@ -128,8 +128,11 @@ async function run() {
       continue;
     }
     let settings = {};
-    try { settings = JSON.parse(fs.readFileSync(file, 'utf8')); }
-    catch (e) {
+    try {
+      // 与 `bao connect` 共用解析器：它会剥掉 Windows 编辑器加的 UTF-8 BOM。
+      // 自己 parse 一份会把一份能正常工作的钩子文件报成「不是合法 JSON」。
+      settings = install.readJson(file);
+    } catch (e) {
       check(`Claude Code settings (${scope})`, 'fail', `${file} is not valid JSON: ${e.message}`,
         'fix or restore the file from its baoanlight-backup-* copy');
       continue;

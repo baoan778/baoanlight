@@ -109,6 +109,19 @@ test('unfinished notes from earlier days are counted separately', () => {
   assert.equal(s.olderOpen, 1);
 });
 
+// 记事本保存的 UTF-8 会带 BOM：那是一份完好的便签，不该被当成坏文件改名/清空。
+test('a notes file saved with a BOM is read, not treated as corrupt', () => {
+  reset();
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.writeFileSync(notes.FILE, '\uFEFF' + JSON.stringify({
+    items: [{ id: 'bom', text: '带 BOM 的便签', done: false, createdAt: Date.now(), doneAt: 0, day: notes.dayKey() }],
+  }));
+  const s = notes.snapshot();
+  assert.equal(s.open, 1);
+  assert.equal(s.items[0].text, '带 BOM 的便签');
+  assert.equal(fs.existsSync(notes.FILE + '.bad'), false, 'a BOM is not a corrupt file');
+});
+
 test('a very long note is truncated, and clearDone keeps open items', () => {
   reset();
   const long = '长'.repeat(400);

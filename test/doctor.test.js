@@ -69,6 +69,29 @@ test('the write-token check looks at the file instead of inventing one', () => {
   }
 });
 
+// 记事本保存的 settings.json 会带 BOM。`bao connect` 已经能读它，doctor 若不剥
+// BOM，会把一份完全正常的钩子配置报成「不是合法 JSON」的 FAIL。
+test('a hook settings file saved with a BOM is not reported as broken', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-doc-'));
+  try {
+    const script = path.join(ROOT, 'src', 'hooks', 'claude.js').replace(/\\/g, '/');
+    const command = `"${process.execPath.replace(/\\/g, '/')}" "${script}"`;
+    const events = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse',
+      'Notification', 'Stop', 'PreCompact', 'SessionEnd'];
+    const hooks = {};
+    for (const evt of events) hooks[evt] = [{ hooks: [{ type: 'command', command }] }];
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'),
+      '\uFEFF' + JSON.stringify({ hooks }));
+
+    const { out } = runDoctor(home);
+    assert.doesNotMatch(out, /is not valid JSON/i, 'a BOM is an encoding marker, not corruption');
+    assert.match(out, /PASS\s+Claude Code hooks \(user\)/, 'the live hooks are recognised');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 // WorkBuddy 的 sessions/ 只是应用日志，`bao watch workbuddy` 读的是 tasks/ 任务板。
 // 只凭 sessions/ 存在就报 PASS，会让用户照着提示去跑一条注定失败的命令。
 test('a WorkBuddy transcript folder is not mistaken for its task board', () => {
