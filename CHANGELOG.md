@@ -3,6 +3,15 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本号格式为
 `MAJOR.MINOR.PATCH`。每个版本的「用户可见变化」和「升级注意」都记在这里。
 
+## [2.0.5] - 2026-11-20
+
+### 变更
+
+- LICENSE 拆成纯英文 MIT（`LICENSE`）+ 中文参考（`LICENSE.zh-CN.md`）：GitHub 之前把
+  整份文件识别成 “Other”，现在正确显示为 MIT。许可条款本身没有变化。
+- CI 升级到 actions/checkout@v7、actions/setup-node@v7、actions/configure-pages@v6，
+  开发依赖（Playwright / ESLint）更新到最新补丁版本。运行时依赖与用户可见行为不变。
+
 ## [2.0.4] - 2026-11-20
 
 ### 修复

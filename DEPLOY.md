@@ -84,7 +84,7 @@ git --version
 不需要 npm 账号，直接安装官方构建好的发布包：
 
 ```powershell
-$ver = "2.0.4"
+$ver = "2.0.5"
 $base = "https://github.com/baoan778/baoanlight/releases/download/v$ver"
 $tgz = "$env:TEMP\baoanlight-$ver.tgz"
 Invoke-WebRequest "$base/baoanlight-$ver.tgz" -OutFile $tgz
@@ -101,7 +101,7 @@ bao setup
 如果只想一条命令装完，可以省略校验步骤：
 
 ```bash
-npm install -g https://github.com/baoan778/baoanlight/releases/download/v2.0.4/baoanlight-2.0.4.tgz
+npm install -g https://github.com/baoan778/baoanlight/releases/download/v2.0.5/baoanlight-2.0.5.tgz
 bao setup
 ```
 
@@ -287,7 +287,7 @@ bao status
 
 ```powershell
 bao stop
-$ver = "2.0.4"   # 换成目标版本
+$ver = "2.0.5"   # 换成目标版本
 $tgz = "$env:TEMP\baoanlight-$ver.tgz"
 Invoke-WebRequest "https://github.com/baoan778/baoanlight/releases/download/v$ver/baoanlight-$ver.tgz" -OutFile $tgz
 npm install -g $tgz
