@@ -38,7 +38,7 @@ Kimi**，以及任何能执行一条命令或发一个 HTTP 请求的工具。
 从 GitHub Release 安装（官方方式，不需要 npm 账号）：
 
 ```bash
-npm install -g https://github.com/baoan778/baoanlight/releases/download/v2.0.5/baoanlight-2.0.5.tgz
+npm install -g https://github.com/baoan778/baoanlight/releases/latest/download/baoanlight.tgz
 bao setup        # 首次运行：下载 Electron 运行时（约 140 MB）
 bao start
 ```

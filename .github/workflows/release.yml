@@ -6,9 +6,11 @@ name: release
 #   npm version patch    # or minor / major — bumps, commits and tags
 #   git push --follow-tags
 #
-# Pushing the tag runs the full gate again and then attaches
-# `baoanlight-<version>.tgz` and `baoanlight-<version>.tgz.sha256` to the
-# release. If the release already exists, the assets are replaced.
+# Pushing the tag runs the full gate again and then attaches exactly two files,
+# `baoanlight.tgz` and `baoanlight.tgz.sha256`. The name stays constant so
+# .../releases/latest/download/baoanlight.tgz always means the newest build, and
+# the version is whatever the tag says. If the release already exists, the
+# assets are replaced.
 
 on:
   push:
@@ -66,24 +68,21 @@ jobs:
         run: |
           npm pack
           PKG=$(node -p "require('./package.json').version")
-          TGZ="baoanlight-$PKG.tgz"
-          test -f "$TGZ" || { echo "::error::npm pack did not produce $TGZ"; exit 1; }
-          sha256sum "$TGZ" | cut -d' ' -f1 > "$TGZ.sha256"
+          PACKED="baoanlight-$PKG.tgz"
+          test -f "$PACKED" || { echo "::error::npm pack did not produce $PACKED"; exit 1; }
+          # One asset name for every version: docs and the in-app hints can point
+          # at .../releases/latest/download/baoanlight.tgz, while the release tag
+          # still records which version the bytes belong to.
+          mv "$PACKED" baoanlight.tgz
+          sha256sum baoanlight.tgz | cut -d' ' -f1 > baoanlight.tgz.sha256
           echo "--- sha256 ---"
-          cat "$TGZ.sha256"
-          # Stable asset names, so docs and the in-app hints can point at
-          # .../releases/latest/download/baoanlight.tgz without knowing the
-          # version. Same bytes as the versioned tarball above.
-          cp "$TGZ" baoanlight.tgz
-          cp "$TGZ.sha256" baoanlight.tgz.sha256
+          cat baoanlight.tgz.sha256
 
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PKG=$(node -p "require('./package.json').version")
-          TGZ="baoanlight-$PKG.tgz"
-          ASSETS=("$TGZ" "$TGZ.sha256" baoanlight.tgz baoanlight.tgz.sha256)
+          ASSETS=(baoanlight.tgz baoanlight.tgz.sha256)
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${ASSETS[@]}" --clobber
           else
