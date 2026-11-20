@@ -58,6 +58,10 @@ const ERROR = new Set([
 // 中性收尾 / 用户取消：既不是成功也不是失败，回到就绪。
 const IDLE = new Set([
   'task_aborted', 'task_cancelled', 'turn_end', 'agent_end',
+  // Codex 取消一轮时发的是 turn_aborted / turn_cancelled，不是 task_aborted。
+  // 认不出来的话，用户按 Ctrl+C 之后绿灯会一直亮到静默超时（30 分钟），
+  // 而代理其实已经停下来等下一句了。
+  'turn_aborted', 'turn_cancelled',
   'step_complete', 'step_completed',
   'aborted', 'cancelled', 'stop', 'stop_hook', 'idle', 'end',
 ]);
@@ -144,13 +148,32 @@ function newestFiles(dir, sinceMs) {
       else if (e.isFile() && /\.(jsonl|json|log)$/i.test(e.name)) {
         try {
           const st = fs.statSync(p);
-          if (st.mtimeMs >= sinceMs) out.push({ path: p, size: st.size, mtimeMs: st.mtimeMs });
+          if (st.mtimeMs >= sinceMs) {
+            out.push({ path: p, size: st.size, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs });
+          }
         } catch { /* file vanished mid-scan */ }
       }
     }
   };
   walk(dir);
   return out;
+}
+
+// 「这个文件是刚出生的，还是早就存在」——决定第一次看到它时要不要从第 0 字节
+// 读起。用修改时间判断（旧实现）会犯两个方向的错，而两者都是常事：
+//   * watcher 在一次活跃会话中途重启：文件刚被写过，mtime 是「现在」，于是整个
+//     文件被从头重放，几天前的 busy→done 全被当成刚发生 —— 今日完成数被灌水，
+//     还会触发一串迟到的完成通知；
+//   * 会话静默超过 lookback 后文件被移出跟踪，用户发下一句时文件又被当成新文件，
+//     同样从头重放。
+// 创建时间（Windows/NTFS 上有）不会因为写入而变：老文件永远按「已存在」处理，
+// 只回读尾部并恢复最后一次 waiting/busy。没有创建时间（部分文件系统）时才退回
+// 修改时间，行为与旧版一致。
+const NEW_FILE_WINDOW_MS = 15_000;
+function isNewFile(stat, now, pollMs) {
+  const born = Number(stat && stat.birthtimeMs);
+  const age = born > 0 ? now - born : now - Number(stat && stat.mtimeMs);
+  return age < Math.max(Number(pollMs) * 3, NEW_FILE_WINDOW_MS);
 }
 
 // Logs differ in shape, so look in the places a session id and a cwd can hide.
@@ -336,8 +359,11 @@ function run(opts = {}) {
   // 已经存在、但不是刚写的文件：回读尾部，恢复「它最后一次在做什么」并且只上报
   // 这一次。原来直接跳到文件末尾 —— 而一个 waiting 的会话不会再写任何一行，
   // watcher 一重启，最该被看见的那盏黄灯就自己熄了。
-  // 只恢复 waiting / busy：error/idle/done 描述的是过去时，重启后重放只会让
-  // 灯说一句迟到的话。
+  // 只恢复 waiting / busy / error：idle/done 描述的是过去时，重启后重放只会让
+  // 灯说一句迟到的话（done 还会变成一次假的「刚刚完成」）。error 必须恢复 ——
+  // store 里红灯本来就不会自己衰减，watcher 重启不该让一盏红灯自己消失。
+  // 能走到这里的文件 mtime 都在 lookback（默认 10 分钟）之内，所以重放的证据
+  // 最老也只有 10 分钟，不会把几天前的失败重新点亮。
   const RECOVER_BYTES = 16 * 1024;
   const recoverFromTail = (f, t) => {
     const from = Math.max(0, f.size - RECOVER_BYTES);
@@ -359,7 +385,7 @@ function run(opts = {}) {
     }
     const p = t.pending;
     t.pending = null;
-    if (p && (p.state === 'waiting' || p.state === 'busy')) {
+    if (p && (p.state === 'waiting' || p.state === 'busy' || p.state === 'error')) {
       t.reportedAt = Date.now();
       setState(p);
     }
@@ -391,15 +417,16 @@ function run(opts = {}) {
         continue;
       }
       const hit = byPath.get(p);
-      if (hit) { hit.size = st.size; hit.mtimeMs = st.mtimeMs; }
-      else byPath.set(p, { path: p, size: st.size, mtimeMs: st.mtimeMs });
+      if (hit) { hit.size = st.size; hit.mtimeMs = st.mtimeMs; hit.birthtimeMs = st.birthtimeMs; }
+      else byPath.set(p, { path: p, size: st.size, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs });
     }
     for (const f of byPath.values()) {
       let t = tracked.get(f.path);
       if (!t) {
         // Start from the end of a file that already existed, so old sessions do
         // not replay on startup — but read a brand-new file from the beginning.
-        const fresh = Date.now() - f.mtimeMs < pollMs * 3;
+        // 「新」看的是创建时间，不是修改时间：活跃会话的 mtime 也永远是「现在」。
+        const fresh = isNewFile(f, Date.now(), pollMs);
         t = { offset: fresh ? 0 : f.size, state: null, buffer: '', reportedAt: 0 };
         tracked.set(f.path, t);
         if (!fresh) {
@@ -474,4 +501,4 @@ function run(opts = {}) {
   return { stop, tracked, dir };
 }
 
-module.exports = { run, classify, readFuel, newestFiles, typeOf, metaOf, fallbackId };
+module.exports = { run, classify, readFuel, newestFiles, typeOf, metaOf, fallbackId, isNewFile };

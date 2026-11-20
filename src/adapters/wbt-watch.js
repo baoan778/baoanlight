@@ -23,6 +23,10 @@ const agents = require('./agents');
 const POLL_MS = 1500;
 const TAIL_MAX = 256 * 1024;      // 首读时只回看尾部，别把 2MB 的老对话整段扫一遍
 const ACTIVE_MS = 30 * 60 * 1000; // 半小时没新记录的会话不再显示
+// 「完成」是瞬态（store 里 30 秒后回落空闲）。第一次看到文件时补发 done 只在
+// 它刚刚发生时才诚实；一个 20 分钟前结束的会话，在 watcher 重启后被补成
+// 「刚刚完成」，会多转一圈庆祝、多弹一条通知，还把今日完成数多加一次。
+const DONE_REPLAY_MS = 30_000;
 
 // assistant message 只有在这一轮真的结束时才算 done。中途发言常常是「我要调用
 // 工具了」，后面紧跟 function_call；无条件按 done 处理会让灯闪一下紫灯再变绿，
@@ -247,7 +251,11 @@ function run({
 
       if (!st.primed) {
         st.primed = true;
-        if (st.pending) emit(st, st.pending.state, st.pending.detail);
+        // 第一次看到文件时只补发「现在还在发生」的事情：waiting / busy 无论
+        // 多久都值得亮（会话不会自己把黄灯写回去）；done 只在刚刚发生时才补发。
+        const staleDone = st.pending && st.pending.state === 'done'
+          && Date.now() - stat.mtimeMs > DONE_REPLAY_MS;
+        if (st.pending && !staleDone) emit(st, st.pending.state, st.pending.detail);
         st.pending = null;
       }
     }

@@ -104,6 +104,43 @@ test('a WorkBuddy transcript is reported under the WorkBuddy name', async () => 
   }
 });
 
+// 端到端：一轮对话早就结束了，watcher 现在才启动。不能把那次完成补发成
+// 「刚刚完成」—— 那会多转一圈庆祝、多弹一条通知，也让今日完成数+1。
+test('a transcript that finished long ago does not replay its completion on startup', async () => {
+  const { start } = require('../src/server');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wbt-stale-'));
+  const proj = path.join(dir, 'proj');
+  fs.mkdirSync(proj, { recursive: true });
+  const stale = path.join(proj, 'sess-stale.jsonl');
+  fs.writeFileSync(stale, [
+    JSON.stringify({ type: 'session-meta', sessionId: 'sess-stale' }),
+    JSON.stringify({ type: 'function_call', name: 'Bash' }),
+    JSON.stringify({ type: 'message', role: 'assistant' }),
+  ].join('\n') + '\n');
+  // 十分钟前结束：仍在 ACTIVE_MS（30 分钟）里，但早已不是「刚完成」。
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  fs.utimesSync(stale, old, old);
+
+  let srv;
+  let timer;
+  try {
+    ({ server: srv } = await start({ port: 0 }));
+    const port = srv.address().port;
+    timer = wbt.run({ dir, interval: 40, quiet: true, manual: true });
+    await new Promise((r) => setTimeout(r, 400));
+    const snap = await (await fetch(`http://127.0.0.1:${port}/state`)).json();
+    assert.equal(
+      (snap.sessions || []).some((s) => s.session === 'codebuddy:sess-stale'),
+      false,
+      'an old finished turn must not come back as a fresh completion'
+    );
+  } finally {
+    if (timer && timer.stop) timer.stop(); else if (timer) clearInterval(timer);
+    srv && srv.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // 端到端：写一条记录，灯就该亮；助手回完，灯就该收。
 test('watching a transcript turns into live state on the server', async () => {
   const { start } = require('../src/server');

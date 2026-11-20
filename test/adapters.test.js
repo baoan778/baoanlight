@@ -79,10 +79,28 @@ test('codex events map onto the full state set', () => {
   assert.equal(classify('task_complete'), 'done');
   assert.equal(classify('task_completed'), 'done');
   assert.equal(classify('task_aborted'), 'idle');
+  // 用户按 Ctrl+C 取消一轮：Codex 发的是 turn_aborted / turn_cancelled。
+  // 认不出来就会一直亮绿灯，直到 30 分钟的静默超时。
+  assert.equal(classify('turn_aborted'), 'idle');
+  assert.equal(classify('turn_cancelled'), 'idle');
   assert.equal(classify('task_failed'), 'error');
   assert.equal(classify('run_failed'), 'error');
   assert.equal(classify('exec_approval_request'), 'waiting');
   assert.equal(classify('apply_patch_approval_request'), 'waiting');
+});
+
+// 「新文件」决定第一次看到时从第 0 字节读起还是只回读尾部。修改时间不能当依据：
+// 一个跑了几小时的会话，mtime 也永远是「现在」。用创建时间，才不会在 watcher
+// 重启 / 静默后重新跟踪时把整段历史当成刚发生的事重放一遍。
+test('only a genuinely new file is read from the beginning', () => {
+  const now = Date.now();
+  assert.equal(logWatch.isNewFile({ birthtimeMs: now - 1_000, mtimeMs: now }, now, 1000), true);
+  assert.equal(logWatch.isNewFile({ birthtimeMs: now - 60_000, mtimeMs: now }, now, 1000), false,
+    'an old file that was just written is an existing session, not a new one');
+  // 没有创建时间的文件系统：退回修改时间，保持旧行为。
+  assert.equal(logWatch.isNewFile({ birthtimeMs: 0, mtimeMs: now - 500 }, now, 1000), true);
+  assert.equal(logWatch.isNewFile({ birthtimeMs: 0, mtimeMs: now - 120_000 }, now, 1000), false);
+  assert.equal(logWatch.isNewFile({}, now, 1000), false, 'no timestamps means do not replay');
 });
 
 // Same class of bug as Claude's SubagentStop: an event arriving after the turn
