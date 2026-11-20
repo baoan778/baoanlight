@@ -83,8 +83,8 @@
     "url": "https://github.com/baoan778/baoanlight/issues"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.1",
-    "eslint": "^10.14.0",
+    "@playwright/test": "^1.65.1",
+    "eslint": "^10.15.0",
     "globals": "^17.14.0",
     "three": "^0.187.0"
   },
