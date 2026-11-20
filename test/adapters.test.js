@@ -203,7 +203,23 @@ test('the registry knows every agent the CLI advertises', () => {
   assert.equal(agents.find('deepseek-harness').name, 'deepseek', 'long names resolve too');
   assert.equal(agents.find('nonsense-agent'), null);
   assert.ok(agents.candidates('deepseek').length >= 3, 'deepseek has candidate log dirs');
-  assert.ok(agents.candidates('workbuddy').length >= 3, 'workbuddy has candidate log dirs');
+  assert.ok(agents.candidates('workbuddy').length >= 2, 'workbuddy has candidate log dirs');
+});
+
+// doctor / onboard 用同一张表判断「这个来源能不能起来」。WorkBuddy 的任务板观察器
+// 只读 tasks/；把 sessions/ 或 logs/ 列成候选，会让 doctor 对一条跑不起来的观察器
+// 报 PASS，并建议用户执行注定失败的 `bao watch workbuddy`。DeepSeek 同理：dsh-watch
+// 只读 session_projcache/sessions，原始 sessions/（zstd JSONL）它读不了。
+test('detection only lists folders the matching watcher can actually read', () => {
+  const wb = agents.candidates('workbuddy');
+  assert.ok(wb.length >= 2);
+  assert.ok(wb.every((d) => /[\\/]tasks$/.test(d)),
+    `workbuddy: only the task board is watched: ${wb.join(', ')}`);
+
+  const ds = agents.candidates('deepseek');
+  assert.ok(ds.length >= 3);
+  assert.ok(ds.every((d) => /session_projcache[\\/]sessions$/.test(d)),
+    `deepseek: only the projection cache is read: ${ds.join(', ')}`);
 });
 
 // The generic hook is the escape hatch for a tool nobody has written an

@@ -33,6 +33,10 @@ const LOG_DIRS = {
   deepseek: () => {
     // DeepSeek Harness (`dsh`) keeps a plain-JSON projection per session; that
     // is what dsh-watch reads. The raw session is zstd-compressed JSONL.
+    //
+    // 只列 projection 目录：dsh-watch 不读原始 sessions/（zstd JSONL，它没有
+    // 解码器）。把它们列成候选，会让 doctor / onboard 对一个跑不起来的来源报
+    // 「已找到」，并建议一条注定失败的命令。
     const roots = [
       firstEnv('DSH_HOME', 'DSH_DESKTOP_HOME'),
       path.join(appData(), 'dsh-desktop'),
@@ -41,23 +45,19 @@ const LOG_DIRS = {
     return roots.flatMap((root) => [
       path.join(root, 'harness', 'storages', 'session_projcache', 'sessions'),
       path.join(root, 'storages', 'session_projcache', 'sessions'),
-      // Older/self-hosted layouts put the raw sessions here; the generic JSONL
-      // reader still works if someone points --dir at them.
-      path.join(root, 'harness', 'sessions'),
-      path.join(root, 'sessions'),
     ]);
   },
   workbuddy: () => {
     const root = firstEnv('WORKBUDDY_HOME') || path.join(home(), '.workbuddy');
     const appDataRoot = path.join(appData(), 'WorkBuddy');
     return [
-      // Its task board is the only machine-readable state WorkBuddy leaves on
-      // disk; `hooks` is the exact route.
+      // Its task board is the only machine-readable state `bao watch workbuddy`
+      // reads. 不要去列 sessions/logs：那些目录没有任何观察器会读，列出来只会让
+      // `bao doctor` 对一个跑不起来的观察器报 PASS，并建议一条注定失败的命令。
+      // WorkBuddy 的逐轮 transcript 在 projects/ 下，由 codebuddy 观察器负责
+      // （wbt-watch 会按路径把它标回 WorkBuddy）。
       path.join(root, 'tasks'),
-      path.join(root, 'sessions'),
-      path.join(root, 'logs'),
       path.join(appDataRoot, 'tasks'),
-      path.join(appDataRoot, 'logs'),
     ];
   },
   claude: () => {

@@ -20,6 +20,10 @@ function runDoctor(home) {
       USERPROFILE: home,   // Windows: os.homedir()
       HOME: home,          // POSIX
       BAOANLIGHT_HOME: path.join(home, '.baoanlight'),
+      // 隔离 APPDATA：否则 doctor 会读到开发机上真实的 WorkBuddy / cc-switch 目录，
+      // 测试结果就取决于跑测试的这台机器装了什么。
+      APPDATA: path.join(home, 'AppData', 'Roaming'),
+      LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
     },
   });
   return { out: `${r.stdout || ''}${r.stderr || ''}`, code: r.status };
@@ -60,6 +64,25 @@ test('the write-token check looks at the file instead of inventing one', () => {
     assert.match(out, /no token file yet/i, 'a missing token file is reported honestly');
     assert.equal(fs.existsSync(path.join(home, '.baoanlight', 'token')), false,
       'doctor must not create a token as a side effect');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// WorkBuddy 的 sessions/ 只是应用日志，`bao watch workbuddy` 读的是 tasks/ 任务板。
+// 只凭 sessions/ 存在就报 PASS，会让用户照着提示去跑一条注定失败的命令。
+test('a WorkBuddy transcript folder is not mistaken for its task board', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-doc-'));
+  try {
+    fs.mkdirSync(path.join(home, '.workbuddy', 'sessions'), { recursive: true });
+    let { out } = runDoctor(home);
+    assert.doesNotMatch(out, /PASS\s+WorkBuddy logs/,
+      'sessions/ is not watched by `bao watch workbuddy`');
+    assert.match(out, /WARN\s+WorkBuddy logs/, 'a missing task board is reported as a warning');
+
+    fs.mkdirSync(path.join(home, '.workbuddy', 'tasks'), { recursive: true });
+    ({ out } = runDoctor(home));
+    assert.match(out, /PASS\s+WorkBuddy logs/, 'the real task board is detected');
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
