@@ -161,8 +161,8 @@ npm run check:pack     # 发布包内容：运行文件齐全、测试与密钥�
 
 ## 授权
 
-MIT，版权归 [baoan778](https://github.com/baoan778/baoanlight) 所有，完整许可见 [LICENSE](LICENSE)。
-内置 three.js（MIT），第三方版权文本见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+MIT，版权归 [baoan778](https://github.com/baoan778/baoanlight) 所有，完整许可见 [LICENSE](LICENSE)
+（[中文参考](LICENSE.zh-CN.md)）。内置 three.js（MIT），第三方版权文本见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 Claude、Codex、DeepSeek、WorkBuddy、CodeBuddy、Cursor、GitHub Copilot、Gemini、Aider、
 Qwen、Kimi 等名称与商标归其各自所有者；本项目仅用于描述兼容性，与上述公司或产品无隶属、
