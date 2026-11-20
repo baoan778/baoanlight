@@ -3,6 +3,19 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本号格式为
 `MAJOR.MINOR.PATCH`。每个版本的「用户可见变化」和「升级注意」都记在这里。
 
+## [2.0.7] - 2026-11-20
+
+### 修复
+
+- 日志观察器不再在重启或长时间静默后把整段会话历史当成刚发生的事重放：是否
+  「新文件」改由创建时间判断，避免今日完成数被灌水和迟到的完成通知。
+- watcher 重启时，尾部恢复会补回最后一次 `error`，红灯不会因为观察器重启而
+  自己消失。
+- CodeBuddy / WorkBuddy transcript 在 watcher 启动时不再把很久以前的一轮完成
+  补发成「刚刚完成」。
+- 补上 Codex 的 `turn_aborted` / `turn_cancelled`：用户取消一轮后回到空闲，
+  而不是绿灯一直亮到静默超时。
+
 ## [2.0.6] - 2026-11-20
 
 ### 变更
