@@ -67,7 +67,11 @@ const clear = async () => {
 // Wait for the page's own SSE-driven render, rather than a fixed sleep.
 // 可选的 arg 会原样交给 page.evaluate：这样断言可以带一份「哪几个软件」的清单，
 // 而不必为每个组合再写一个内联闭包。
-const settled = (page, fn, arg) => expect.poll(() => page.evaluate(fn, arg), { timeout: 4000 });
+// CI 的 runner 上 SSE → 渲染这一跳可能超过 4 秒（实测有一次刚好卡在线上，
+// 于是被判「未运行」）。这是等待预算，不是断言强度：真出问题时多等几秒只是
+// 让失败来得慢一点，不会把错误变成通过。
+const POLL_TIMEOUT = process.env.CI ? 20000 : 4000;
+const settled = (page, fn, arg) => expect.poll(() => page.evaluate(fn, arg), { timeout: POLL_TIMEOUT });
 
 test.beforeEach(async ({ page }) => {
   await clear();
