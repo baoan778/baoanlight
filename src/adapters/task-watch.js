@@ -23,6 +23,11 @@ const path = require('path');
 const { setState } = require('../client');
 const { keepAliveWith } = require('./watchdog');
 
+// 「完成」是瞬态：首次看到一块任务板时，只有刚刚结束的 done 才值得重放。
+// 一块几小时前就全部完成的板子，在观察器每次重启后都重放一次 done，会多闪
+// 一次紫灯、多弹一条完成通知，并把「今日完成」重复相加。
+const DONE_REPLAY_MS = 30_000;
+
 function taskDirs() {
   const out = [];
   const root = process.env.WORKBUDDY_HOME || path.join(os.homedir(), '.workbuddy');
@@ -145,6 +150,9 @@ function run(opts = {}) {
       // 目录时间停在你建任务那天。按目录时间算，一块用了半天的任务板会在 12 小时
       // 后被当成过期，从此再也不上报 —— 灯一直灭着，而任务还在跑。
       const freshAt = newest || st.mtimeMs;
+      // 首次看到这块板（seenAt 还是 0）要单独记下来：下面的「历史状态不重放」
+      // 只针对第一次上报，后续变化必须照常点亮。
+      const firstSight = !t.seenAt;
       const fresh = newest > (t.seenAt || 0);
       t.seenAt = newest;
       t.mtimeMs = freshAt;
@@ -161,6 +169,14 @@ function run(opts = {}) {
 
       const next = deriveTaskState(items);
       if (!next) continue;
+      // done / idle 描述的是过去时。首次看到它们时只记账、不点灯：一块昨天就
+      // 做完的板子不该在今天开机时再庆祝一次；一块闲置的板子也不该冒出一行。
+      // busy / waiting / error 是「此刻仍成立」的证据，首次看到就应当点亮。
+      if (firstSight && (next === 'idle' || (next === 'done' && now - newest > DONE_REPLAY_MS))) {
+        t.state = next;
+        t.reportedAt = 0;
+        continue;
+      }
       const alive = next === t.state && next === 'busy' && fresh
         && Date.now() - (t.reportedAt || 0) > heartbeatMs;
       if (next === t.state && !alive) continue;

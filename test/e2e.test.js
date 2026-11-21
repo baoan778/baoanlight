@@ -693,6 +693,65 @@ test('a long-lived WorkBuddy task board keeps reporting, and an empty one goes d
   }
 });
 
+// 观察器重启时，一块早已全部完成的任务板不能被重放成「刚刚完成」：否则每
+// 重启一次就多闪一次紫灯、多弹一条完成通知，并把今日完成数重复相加。闲置板
+// 同样不该冒出一行；但真正的 in_progress 必须立刻恢复成忙碌。
+test('a restarted task-board watcher does not replay an old completion', async () => {
+  const taskWatch = require('../src/adapters/task-watch');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-task-replay-'));
+  const doneFolder = path.join(dir, 'task-old-done');
+  const idleFolder = path.join(dir, 'task-old-idle');
+  fs.mkdirSync(doneFolder);
+  fs.mkdirSync(idleFolder);
+  const doneItem = path.join(doneFolder, '1.json');
+  const idleItem = path.join(idleFolder, '1.json');
+  fs.writeFileSync(doneItem, JSON.stringify({ status: 'completed' }));
+  fs.writeFileSync(idleItem, JSON.stringify({ status: 'cancelled' }));
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  fs.utimesSync(doneItem, old, old);
+  fs.utimesSync(idleItem, old, old);
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const stateOf = async (sid) => {
+    const snap = await api('/state');
+    return snap.sessions.find((x) => x.session === sid) || null;
+  };
+
+  const previousPort = process.env.BAOANLIGHT_PORT;
+  process.env.BAOANLIGHT_PORT = String(PORT);
+  const handle = taskWatch.run({ dir, interval: 100, quiet: true, manual: true, lookback: 3_600_000 });
+
+  try {
+    await sleep(500);
+    assert.equal(await stateOf('workbuddy:task-old-done'), null,
+      'a completion older than the replay window is not announced again');
+    assert.equal(await stateOf('workbuddy:task-old-idle'), null,
+      'an old idle board does not create a row');
+
+    // 同一块板重新开始工作：首次静默不能把后续真实变化一起吞掉。
+    fs.writeFileSync(doneItem, JSON.stringify({ status: 'in_progress' }));
+    let busy = null;
+    for (let i = 0; i < 40 && !busy; i++) {
+      const s = await stateOf('workbuddy:task-old-done');
+      if (s && s.state === 'busy') busy = s;
+      else await sleep(100);
+    }
+    assert.ok(busy, 'a real in-progress item still lights up after the restart');
+  } finally {
+    handle.stop();
+    for (const sid of ['workbuddy:task-old-done', 'workbuddy:task-old-idle']) {
+      await api('/state', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ session: sid, state: 'offline' }),
+      });
+    }
+    if (previousPort === undefined) delete process.env.BAOANLIGHT_PORT;
+    else process.env.BAOANLIGHT_PORT = previousPort;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // `bao mcp` reports over POST /set/<state> with a JSON body. The handler used to
 // read only the query string, so every MCP report landed as agent="agent" with
 // no detail and no cwd — the whole route silently lied about who was busy.
