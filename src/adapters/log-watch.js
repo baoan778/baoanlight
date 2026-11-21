@@ -203,7 +203,11 @@ function metaOf(rec) {
   return {
     sessionId: rec.session_id || rec.sessionId || rec.thread_id || rec['thread-id']
       || rec.conversation_id || rec.conversationId
-      || p.session_id || p.sessionId || p.thread_id || p.conversation_id || p.id,
+      || p.session_id || p.sessionId || p.thread_id || p.conversation_id
+      // payload.id 只有在 session_meta 里才是会话身份。Codex 的 response_item
+      // 也带 id（item_…/msg_…）：把它当成会话 id，会让同一场会话在观察器从
+      // 日志尾部恢复后换一个键，列表里多出一条永远等不到收摊的旧记录。
+      || (rec.type === 'session_meta' ? p.id : undefined),
     cwd: rec.cwd || rec.workspace || p.cwd || p.workspace,
   };
 }
@@ -224,12 +228,17 @@ function typeOf(rec) {
 // A file whose name carries no identity (WorkBuddy numbers its task files
 // 1.json, 2.json inside a per-task folder) borrows the folder's name instead
 // of collapsing every task onto the same session.
+const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 function fallbackId(file) {
   const base = path.basename(file).replace(/\.(jsonl|json|log)$/i, '');
   if (/^\d+$/.test(base) || base.length < 3) {
     return path.basename(path.dirname(file)) || base;
   }
-  return base;
+  // Codex 的 rollout 文件名是 rollout-<时间>-<会话 uuid>_<回合 uuid>。从日志尾部
+  // 恢复时看不到文件头的 session_meta，只能靠文件名拿到稳定身份。取**第一个**
+  // uuid（会话），不要退回整段文件名 —— 后者会随恢复起点变化。
+  const uuid = base.match(UUID_RE);
+  return uuid ? uuid[1] : base;
 }
 
 function run(opts = {}) {

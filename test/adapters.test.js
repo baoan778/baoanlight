@@ -194,6 +194,29 @@ test('codex response_item turns are recognised, not hidden behind the wrapper na
   assert.equal(logWatch.typeOf({ type: 'turn_context', payload: { cwd: '/x' } }), 'turn_context');
 });
 
+// 真实的 Codex rollout 有 1.5MB，观察器从日志尾部恢复时早就看不到文件头的
+// session_meta。此时一条 response_item 的 payload.id（item_…）不是会话身份：
+// 拿它当 session id，同一场会话每次重启都会换一个键，列表里多出一条收不了摊的
+// 旧记录。会话身份应来自 session_meta，或文件名里的第一个 uuid。
+test('a recovered codex log is keyed by its session, never by an item id', () => {
+  const item = { type: 'response_item', payload: { type: 'function_call_output', id: 'item_e24236af' } };
+  assert.equal(logWatch.metaOf(item).sessionId, undefined, 'an item id is not a session id');
+  const meta = {
+    type: 'session_meta',
+    payload: { id: '01a1fc25-d4a4-7262-86da-64e271c82c61', cwd: 'E:/x' },
+  };
+  assert.equal(logWatch.metaOf(meta).sessionId, '01a1fc25-d4a4-7262-86da-64e271c82c61');
+  assert.equal(logWatch.metaOf(meta).cwd, 'E:/x');
+
+  const file = 'C:/x/sessions/2026/11/21/'
+    + 'rollout-2026-11-21T12-40-17-01a1fc25-d4a4-7262-86da-64e271c82c61'
+    + '_01a1fc67-b4ae-75d1-a502-551128e63d56.jsonl';
+  assert.equal(logWatch.fallbackId(file), '01a1fc25-d4a4-7262-86da-64e271c82c61',
+    'the first uuid in a rollout name is the session');
+  // 没有 uuid 的普通文件名仍然原样使用，不凭空编一个身份。
+  assert.equal(logWatch.fallbackId('C:/x/rollout-simple.jsonl'), 'rollout-simple');
+});
+
 // Every advertised agent must resolve, or `bao agents` lies.
 test('the registry knows every agent the CLI advertises', () => {
   for (const name of ['claude', 'codex', 'deepseek', 'workbuddy', 'gemini', 'aider', 'cursor', 'opencode', 'copilot']) {
