@@ -26,7 +26,11 @@ function parse(argv) {
     if (afterDoubleDash) { rest.push(a); continue; }
     if (a === '--') { afterDoubleDash = true; continue; }
     if (a.startsWith('--')) {
-      const [k, v] = a.slice(2).split('=');
+      // 只按第一个 `=` 切：`--detail=exit=1` 是一个值里带等号的常见写法，
+      // `split('=')` 会把它截成 "exit"，按钮文案就少了一半。
+      const eq = a.indexOf('=');
+      const k = a.slice(2, eq < 0 ? undefined : eq);
+      const v = eq < 0 ? undefined : a.slice(eq + 1);
       if (v !== undefined) flags[k] = v;
       // 只把 `--` 开头的下一个参数当成另一个选项：`--detail -1`、`--agent -x`
       // 这类负值/短横线开头的值曾经被静默吞成布尔 true。
@@ -777,9 +781,13 @@ function printStatus(snap, flags = {}) {
     return;
   }
   if (!snap) { console.log(`${c.dim('○')} server not running`); return; }
-  console.log(`${DOT[snap.overall]()} ${c.b(snap.overall)}`);
-  if (!snap.sessions.length) { console.log(c.dim('  no active agents')); return; }
-  for (const s of snap.sessions) {
+  // 端口上回 JSON 的不一定是 baoanlight：别的本地服务也可能占着 4747。缺字段的
+  // 响应不能让 `bao status` 带着堆栈崩掉 —— 诊断入口自己崩溃是最糟的结果。
+  const dot = (state) => DOT[state] || DOT.unknown;
+  const sessions = Array.isArray(snap.sessions) ? snap.sessions : [];
+  console.log(`${dot(snap.overall)()} ${c.b(snap.overall)}`);
+  if (!sessions.length) { console.log(c.dim('  no active agents')); return; }
+  for (const s of sessions) {
     const age = Math.round((Date.now() - s.since) / 1000);
     // 「silent」只对还在忙、却不再上报的会话才有意义（那才是卡住的信号）。一个
     // 正常 idle/done 的会话本来就该安静，标成「失联 N 分钟」和界面里 idle=就绪 矛盾。
@@ -787,7 +795,7 @@ function printStatus(snap, flags = {}) {
     const note = quietStuck
       ? `${s.detail || ''} (silent ${Math.round(s.quietFor / 60000)}m)`.trim()
       : s.detail || '';
-    console.log(`  ${DOT[s.state]()} ${s.agent.padEnd(12)} ${String(s.state).padEnd(8)} ${c.dim(`${age}s  ${note}`)}`);
+    console.log(`  ${dot(s.state)()} ${String(s.agent).padEnd(12)} ${String(s.state).padEnd(8)} ${c.dim(`${age}s  ${note}`)}`);
   }
 }
 
@@ -825,7 +833,10 @@ async function statusWatch() {
 async function cmdStatus(flags = {}) {
   // `--json` 是一次性快照（脚本要的），不该被 --watch 变成刷屏。
   if (flags.watch && !flags.json) return statusWatch();
-  printStatus(await client.snapshot(), flags);
+  // 先按名字确认端口上真的是我们：别的本地服务回 200 + JSON 时，
+  // `running: true` 和一份没有 sessions 的对象都是一句假话。
+  const healthy = await client.health();
+  printStatus(healthy ? await client.snapshot() : null, flags);
 }
 
 async function cmdDemo() {
@@ -1405,4 +1416,4 @@ if (require.main === module) {
   main().catch((err) => { console.error(err.message || err); process.exit(1); });
 }
 
-module.exports = { parse, startChildArgs, needsWindow, ensureWindowRuntime };
+module.exports = { parse, printStatus, startChildArgs, needsWindow, ensureWindowRuntime };

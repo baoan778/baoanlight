@@ -69,6 +69,31 @@ test('boolean flags are not stolen by the positional argument behind them', () =
   assert.deepEqual(positional, ['start']);
 });
 
+// `--detail=exit=1` 是「值里带等号」的常见写法。按所有等号切分会把它截成
+// "exit"，而这条文案是要显示在机器人气泡/列表里的。
+test('an inline option value may contain an equals sign', () => {
+  const { parse } = require('../src/cli');
+  const { flags } = parse(['set', 'error', '--agent=x', '--detail=exit=1', '--session=a=b']);
+  assert.equal(flags.agent, 'x');
+  assert.equal(flags.detail, 'exit=1');
+  assert.equal(flags.session, 'a=b');
+});
+
+// 端口上回 JSON 的不一定是 baoanlight。别的本地服务占着同一个端口时，
+// `bao status` 不能因为缺 sessions/overall 就带着堆栈崩掉。
+test('bao status survives a foreign JSON service on the port', () => {
+  const { printStatus } = require('../src/cli');
+  const logs = [];
+  const orig = console.log;
+  console.log = (...args) => logs.push(args.join(' '));
+  try {
+    assert.doesNotThrow(() => printStatus({ hello: 'world' }));
+  } finally {
+    console.log = orig;
+  }
+  assert.ok(logs.length > 0, 'it still says something instead of dying');
+});
+
 // CLI 的帮助图例也属于「颜色即事实」的一部分：它曾经写着「green = working
 // or finished」，而完成早已是紫色瞬态、空闲是暗白。帮助文本错了，用户就会把
 // 紫色当成绿色、把空闲当成在干活。
