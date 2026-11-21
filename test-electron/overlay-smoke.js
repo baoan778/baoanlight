@@ -103,10 +103,17 @@ async function main() {
       multi.codex === 'red' && multi.deepseek === 'green',
       `codex=${multi.codex} deepseek=${multi.deepseek}`);
 
-    const visible = await app.evaluate(({ BrowserWindow }) => {
-      const win = BrowserWindow.getAllWindows()[0];
-      return !!win && win.isVisible() && win.isAlwaysOnTop();
-    });
+    // 窗口在 `ready-to-show` 里才 showInactive()。CI 的慢 runner 上，页面已经能
+    // 响应脚本时窗口可能还没真正显示出来 —— 读一个瞬时值会把「慢」误判成「没有
+    // 窗口」。给它最多 5 秒，等那个事件发生。
+    let visible = false;
+    for (let i = 0; i < 50 && !visible; i++) {
+      visible = await app.evaluate(({ BrowserWindow }) => {
+        const win = BrowserWindow.getAllWindows()[0];
+        return !!win && win.isVisible() && win.isAlwaysOnTop();
+      });
+      if (!visible) await new Promise((r) => setTimeout(r, 100));
+    }
     check('a visible always-on-top window exists', visible);
 
     await page.evaluate(() => window.bao.saveConfig({ nameplate: 'electron-smoke' }));
