@@ -1275,6 +1275,23 @@ test('scenes can switch automatically between day and night', async ({ page }) =
   });
   await expect(page.locator('#m-scene')).toHaveValue('星空');
 
+  // 起止相同 = 夜晚时段为空。自动切换仍开着，但会一直停在白天，必须说出来。
+  await page.evaluate(() => {
+    const set = (id, v) => { const el = document.getElementById(id); el.value = v; el.dispatchEvent(new Event('change')); };
+    set('m-night-start', '09:00');
+    set('m-night-end', '09:00');
+  });
+  await expect(page.locator('#m-night-note')).toBeVisible();
+
+  // 清空时间框不能留下一个「永不生效」的空值：收回默认值并写回控件。
+  await page.evaluate(() => {
+    const el = document.getElementById('m-night-start');
+    el.value = '';
+    el.dispatchEvent(new Event('change'));
+  });
+  await expect(page.locator('#m-night-start')).toHaveValue('20:00');
+  await expect(page.locator('#m-night-note')).toBeHidden();
+
   // 关掉自动切换：选项收起、手动下拉恢复可用。
   await page.evaluate(() => {
     const el = document.getElementById('m-autoscene');
@@ -2486,17 +2503,111 @@ test('a log directory can be pointed somewhere else from settings', async ({ pag
 test('appearance presets save, apply and delete', async ({ page }) => {
   await openGroups(page, ['外观', '配置']);
   await page.selectOption('#m-decoration', '皇冠');
-  await page.fill('#m-preset-name', '测试方案');
+
+  // 空名字不能静默失败：点了「保存」却什么都没发生，用户只会再点几次。
   await page.locator('#m-preset-save').click();
+  expect(await page.locator('#note').textContent()).toContain('请输入方案名');
+
+  // 回车与按钮是同一条提交路径。
+  await page.fill('#m-preset-name', '测试方案');
+  await page.press('#m-preset-name', 'Enter');
   expect(await page.locator('#note').textContent()).toContain('已保存方案「测试方案」');
   await expect(page.locator('#m-preset-list option')).toHaveCount(1);
 
   await page.selectOption('#m-decoration', '无');
   await page.locator('#m-preset-apply').click();
   await expect(page.locator('#m-decoration')).toHaveValue('皇冠');
+  expect(await page.locator('#note').textContent()).toContain('已应用方案「测试方案」');
 
   await page.locator('#m-preset-del').click();
   await expect(page.locator('#m-preset-list option')).toHaveCount(0);
+  expect(await page.locator('#note').textContent()).toContain('已删除方案「测试方案」');
+  // 空列表要把「下一步」说出来，而不是只剩一个空下拉和两个还能点的按钮。
+  await expect(page.locator('#m-preset-empty')).toBeVisible();
+  await expect(page.locator('#m-preset-apply')).toBeDisabled();
+  await expect(page.locator('#m-preset-del')).toBeDisabled();
+});
+
+// 方案是可导入、可手改的数据。套用时必须按外观白名单取值：一个带 port 的
+// 方案不能把端口写回配置，一个 brightness: 9 也不能让界面显示 100% 而磁盘里
+// 永远留着 9。
+test('an imported preset cannot write unrelated or out-of-range config', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__saved = [];
+    window.bao = {
+      serverUrl: location.origin,
+      saveConfig: (patch) => { window.__saved.push(patch); },
+      getConfig: () => Promise.resolve({
+        presets: {
+          危险: {
+            port: 9999, window: { x: 1 }, skin: '不存在',
+            brightness: 9, wear: -5, signOffset: { x: 'x', y: 0 },
+          },
+          空壳: { port: 9999 },
+          无效: '不是对象',
+        },
+      }),
+      getAutostart: () => Promise.resolve({ enabled: false }),
+      setAutostart: () => Promise.resolve({ enabled: false }),
+      contentSize: () => {}, hotRect: () => {}, onCursor: () => {}, notify: () => {},
+      openTerminal: () => {}, trayStatus: () => {}, quit: () => {},
+      dragStart: () => {}, dragEnd: () => {},
+    };
+  });
+  await page.reload();
+  await page.waitForFunction(() => document.body.dataset.state !== undefined);
+  await openGroups(page, ['配置']);
+
+  // 字符串方案在启动时就被过滤掉：下拉里只留下两个真正的对象。
+  await expect(page.locator('#m-preset-list option')).toHaveCount(2);
+  await page.selectOption('#m-preset-list', '危险');
+  await page.locator('#m-preset-apply').click();
+  // 配置落盘有 200ms 防抖：等这次写入真的发生，而不是读一个还没 flush 的数组。
+  await page.waitForFunction(() => window.__saved.some((p) => p && p.brightness === 1));
+
+  const saved = await page.evaluate(() => window.__saved);
+  // 套用一套方案会分几次落盘（外观一次、广告牌一次），按合并后的结果断言：
+  // 任何一次都不许出现未知键，越界值也必须先被夹住。
+  const merged = Object.assign({}, ...saved);
+  expect(merged).not.toHaveProperty('port');
+  expect(merged).not.toHaveProperty('window');
+  expect(merged).not.toHaveProperty('skin');
+  expect(merged.brightness).toBe(1);
+  expect(merged.wear).toBe(0);
+  expect(merged.signOffset).toEqual({ x: 0, y: 0 });
+  expect(await page.locator('#note').textContent()).toContain('已应用方案「危险」');
+
+  // 一个只剩未知键的方案必须明确失败，并且不落盘。
+  const before = saved.length;
+  await page.selectOption('#m-preset-list', '空壳');
+  await page.locator('#m-preset-apply').click();
+  await expect(page.locator('#note')).toContainText('没有可用的外观设置');
+  await page.waitForTimeout(350);   // 给防抖写盘留出机会，再断言确实什么都没写
+  expect(await page.evaluate(() => window.__saved.length)).toBe(before);
+});
+
+// 首次 refresh 发生在 getConfig 返回之前。那一刻 cfg 里还没有磁盘上的时间，
+// 如果没有初始值，「修复无效时间」的落盘会把 20:00/07:00 写在用户保存的
+// 21:00/06:30 之上 —— 启动一次就丢一次设置。
+test('startup never overwrites saved night hours before the config arrives', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__saved = [];
+    window.bao = {
+      serverUrl: location.origin,
+      saveConfig: (patch) => { window.__saved.push(patch); },
+      getConfig: () => Promise.resolve({ nightStart: '21:00', nightEnd: '06:30' }),
+      getAutostart: () => Promise.resolve({ enabled: false }),
+      setAutostart: () => Promise.resolve({ enabled: false }),
+      contentSize: () => {}, hotRect: () => {}, onCursor: () => {}, notify: () => {},
+      openTerminal: () => {}, trayStatus: () => {}, quit: () => {},
+      dragStart: () => {}, dragEnd: () => {},
+    };
+  });
+  await page.reload();
+  await page.waitForFunction(() => document.body.dataset.state !== undefined);
+  await page.waitForTimeout(300);   // 让首次防抖写盘真的发生
+  const patches = await page.evaluate(() => window.__saved);
+  expect(patches.some((p) => p && ('nightStart' in p || 'nightEnd' in p))).toBe(false);
 });
 
 test('the config export contains every customisation currently on screen', async ({ page }) => {

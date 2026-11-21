@@ -974,6 +974,7 @@
         <label for="m-decoration">头部装饰</label>
         <select id="m-decoration"></select>
       </div>
+      <div class="hint">颜色下拉里的「自定义」会打开取色器；换回调色板后，上次挑的颜色仍会记着。重置与随机只改机器人本体，广告牌和场景时间在各自分组里。</div>
       <button id="m-reset-look">重置外观</button>
       <button id="m-random-look">随机换装</button>
     </details>
@@ -1079,6 +1080,7 @@
           <input id="m-night-end" type="time" value="07:00" aria-label="夜晚结束时间" />
         </div>
         <div class="hint">跨午夜可以让结束时间早于开始时间（20:00 → 07:00）；打开后上面的「场景」不再生效，由时间决定。</div>
+        <div class="hint warn" id="m-night-note" hidden>起止时间相同 = 夜晚时段为空，自动切换会一直停在白天场景。</div>
       </div>
     </details>
     <details class="group">
@@ -1208,15 +1210,16 @@
       <div class="hint">数据来自本机统计；日报含今天与近 7/30 天汇总，CSV 按「日期 + 软件」逐行导出。</div>
       <div class="title">外观方案</div>
       <div class="row">
-        <input id="m-preset-name" type="text" maxlength="12" placeholder="方案名" />
+        <input id="m-preset-name" type="text" maxlength="12" placeholder="方案名" aria-label="外观方案名称" />
         <button id="m-preset-save">保存</button>
       </div>
       <div class="row">
-        <select id="m-preset-list"></select>
+        <select id="m-preset-list" aria-label="已有外观方案"></select>
         <button id="m-preset-apply">应用</button>
         <button id="m-preset-del">删除</button>
       </div>
-      <div class="hint">方案会保存机器人外观、场景自动切换和广告牌设置；尺寸、声音与系统开关不在其中。</div>
+      <div class="hint" id="m-preset-empty" hidden>还没有保存的方案：输入名字后点「保存」（或按回车）。</div>
+      <div class="hint">方案会保存机器人外观、场景自动切换和广告牌设置；尺寸、声音与系统开关不在其中。同名保存会覆盖。</div>
       <div class="hint">尺寸快捷键（先点一下机器人让它获得焦点）：Ctrl+Shift+= 放大，- 缩小，0 重置。全局显示/隐藏是 Ctrl+Alt+B。</div>
       <button id="m-quit" class="danger">退出</button>
     </details>

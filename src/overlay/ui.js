@@ -154,6 +154,9 @@ import {
   let cfg = {
     showLabels: true, theme: 'full', collapsed: false, scale: 1,
     clickThrough: true, sound: false, showSys: true,
+    // 自动场景的时间必须在第一次 refresh 时就是合法值：否则「修复并落盘」
+    // 会在 getConfig 返回之前把默认时段写进磁盘，覆盖用户保存的设置。
+    autoScene: false, dayScene: '无', nightScene: '星空', nightStart: '20:00', nightEnd: '07:00',
   };
   let collapsed = false;
   let scale = 1;
@@ -938,6 +941,10 @@ import {
     if (!m) return null;
     return Number(m[1]) * 60 + Number(m[2]);
   };
+  // "HH:MM"（24 小时制）。勿扰与自动场景的时间都要拿去和当前时间比较，一个
+  // 随手写的 "abc" 会让整段时间静默失效：界面显示「已开启」，而那段时间
+  // 永远不会来。
+  const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
   function isDnd() {
     if (!cfg.doNotDisturb) return false;
     const s = toMin(cfg.dndStart);
@@ -2922,14 +2929,26 @@ import {
     window.dispatchEvent(new CustomEvent('bao:scene', { detail: { scene: name } }));
     updateSwatch('scene-swatch', SCENE_COLORS[name]);
   };
-  const autoSceneTime = (v, fallback) => (/^\d{1,2}:\d{2}$/.test(String(v || '')) ? v : fallback);
+  // 自动场景的时间字段与勿扰共用同一条校验：空值或 "99:99" 会让夜晚时段
+  // 永远不生效，而界面上看起来只是两个空框。
+  const NIGHT_DEFAULTS = { nightStart: '20:00', nightEnd: '07:00' };
   const refreshAutoSceneUI = () => {
     autoSceneOpts.hidden = !cfg.autoScene;
     sceneSel.disabled = !!cfg.autoScene;
     daySceneSel.value = SCENE_NAMES.includes(cfg.dayScene) ? cfg.dayScene : '无';
     nightSceneSel.value = SCENE_NAMES.includes(cfg.nightScene) ? cfg.nightScene : '星空';
-    nightStartInput.value = autoSceneTime(cfg.nightStart, '20:00');
-    nightEndInput.value = autoSceneTime(cfg.nightEnd, '07:00');
+    // 读取时也校验：手改配置、旧版本、导入失败留下的残值都要收回默认，并且
+    // 真的写回磁盘 —— 只改显示的话，下次启动又会回到那个永不触发的时段。
+    let repaired = false;
+    if (!TIME_RE.test(cfg.nightStart)) { cfg.nightStart = NIGHT_DEFAULTS.nightStart; repaired = true; }
+    if (!TIME_RE.test(cfg.nightEnd)) { cfg.nightEnd = NIGHT_DEFAULTS.nightEnd; repaired = true; }
+    nightStartInput.value = cfg.nightStart;
+    nightEndInput.value = cfg.nightEnd;
+    if (repaired && inElectron) saveConfig({ nightStart: cfg.nightStart, nightEnd: cfg.nightEnd });
+    // 起止相同 = 夜晚时段为空：自动切换仍开着，但会一直停在白天场景。
+    // 和勿扰那条一样把原因写出来，别让「已开启」和一个永不到来的时段并排。
+    const note = document.getElementById('m-night-note');
+    if (note) note.hidden = !(cfg.autoScene && toMin(cfg.nightStart) === toMin(cfg.nightEnd));
   };
   const saveAutoScene = () => {
     if (inElectron) saveConfig({
@@ -2956,8 +2975,15 @@ import {
   });
   daySceneSel.addEventListener('change', (e) => { cfg.dayScene = e.target.value; saveAutoScene(); });
   nightSceneSel.addEventListener('change', (e) => { cfg.nightScene = e.target.value; saveAutoScene(); });
-  nightStartInput.addEventListener('change', (e) => { cfg.nightStart = e.target.value; saveAutoScene(); });
-  nightEndInput.addEventListener('change', (e) => { cfg.nightEnd = e.target.value; saveAutoScene(); });
+  // 清空时间框（或写入手改的坏值）时收回默认值，并把它写回控件：一个空框
+  // 看起来只是「没填」，实际含义却是夜晚时段永远不生效。
+  const setNightTime = (key, input, fallback) => {
+    cfg[key] = TIME_RE.test(input.value) ? input.value : fallback;
+    if (input.value !== cfg[key]) input.value = cfg[key];
+    saveAutoScene();
+  };
+  nightStartInput.addEventListener('change', () => setNightTime('nightStart', nightStartInput, NIGHT_DEFAULTS.nightStart));
+  nightEndInput.addEventListener('change', () => setNightTime('nightEnd', nightEndInput, NIGHT_DEFAULTS.nightEnd));
   refreshAutoSceneUI();
   // 每分钟看一次：跨过夜晚时段边界时自动切场景。
   setInterval(() => { applyAutoScene(); }, 60_000);
@@ -3735,6 +3761,61 @@ import {
     applyDnd();
   });
 
+  // 一套外观允许保存的键。方案是「可导入、可手改」的数据：套用时按白名单
+  // 取值，未知键（port / window / agents…）绝不能顺着 Object.assign 写进配置。
+  const LOOK_KEYS = ['skin', 'eyestyle', 'eyeshape', 'trackstyle', 'tracktype', 'armskin',
+    'claw', 'armtype', 'headtype', 'scene', 'motion', 'halo', 'body', 'baseEffect', 'brightness',
+    'decoration', 'finish'];
+  function lookSelects() {
+    return {
+      skin: skinSel, eyestyle: eyestyleSel, eyeshape: eyeshapeSel, trackstyle: trackstyleSel,
+      tracktype: tracktypeSel, armskin: armskinSel, claw: clawSel, armtype: armtypeSel,
+      headtype: headtypeSel, scene: sceneSel, motion: motionSel, halo: haloSel, body: bodySel,
+      baseEffect: effectSel, decoration: decorationSel, finish: finishSel,
+    };
+  }
+  // 归一化一套外观：只留下控件真的能表达的值。导入的方案、旧版本存下的方案、
+  // 手改过的 config.json 都可能带越界数字或已经不存在的选项；原样落盘会让
+  // 「界面显示的」和「配置文件里的」从此不是同一件事。
+  function sanitizeLook(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    const out = {};
+    for (const [k, sel] of Object.entries(lookSelects())) {
+      const v = raw[k];
+      if (typeof v === 'string' && [...sel.options].some((o) => o.value === v)) out[k] = v;
+    }
+    for (const p of PARTS) {
+      const hex = normHex(raw[p.configKey]);
+      if (hex) out[p.configKey] = hex;
+    }
+    if (typeof raw.brightness === 'number' && Number.isFinite(raw.brightness)) {
+      out.brightness = Math.max(0.5, Math.min(1, raw.brightness));
+    }
+    if (typeof raw.wear === 'number' && Number.isFinite(raw.wear)) {
+      out.wear = Math.max(0, Math.min(1.5, raw.wear));
+    }
+    if (raw.poses && typeof raw.poses === 'object' && !Array.isArray(raw.poses)) {
+      const poses = {};
+      for (const st of POSE_STATE_KEYS) if (POSE_NAMES.includes(raw.poses[st])) poses[st] = raw.poses[st];
+      if (Object.keys(poses).length) out.poses = poses;
+    }
+    if (typeof raw.autoScene === 'boolean') out.autoScene = raw.autoScene;
+    if (SCENE_NAMES.includes(raw.dayScene)) out.dayScene = raw.dayScene;
+    if (SCENE_NAMES.includes(raw.nightScene)) out.nightScene = raw.nightScene;
+    for (const k of ['nightStart', 'nightEnd']) if (TIME_RE.test(raw[k])) out[k] = raw[k];
+    if (Object.values(SIGN_MODES).includes(raw.signMode)) out.signMode = raw.signMode;
+    if (raw.signPos === 'left' || raw.signPos === 'right') out.signPos = raw.signPos;
+    if (Object.values(SIGN_SHAPES).includes(raw.signShape)) out.signShape = raw.signShape;
+    const signColor = normHex(raw.signColor);
+    if (signColor) out.signColor = signColor;
+    const customSign = normHex(raw.customSign);
+    if (customSign) out.customSign = customSign;
+    if (raw.signOffset && typeof raw.signOffset === 'object' && !Array.isArray(raw.signOffset)) {
+      out.signOffset = normalizeSignOffset(raw.signOffset);
+    }
+    return out;
+  }
+
   // 一键重置外观：只恢复外观与动作，不碰尺寸、位置、声音和系统开关。
   const LOOK_DEFAULTS = {
     skin: '钛金白', eyestyle: '默认黑', eyeshape: '圆', trackstyle: '黑', tracktype: '梯形',
@@ -3745,7 +3826,11 @@ import {
   };
   // 把一套外观即时套用到界面（不整页刷新）：逐个设置控件值并触发 change，
   // 复用各控件原有的 change 监听（派发 bao:* 事件 + 保存 + 色块/主题联动）。
-  function applyLook(look) {
+  function applyLook(raw) {
+    const look = sanitizeLook(raw);
+    // 一个包里只有未知键（例如导入的方案带的是 port）时什么都不做：这时
+    // 「应用」应当明确地失败，而不是把无关配置写进磁盘后再假装成功。
+    if (!Object.keys(look).length) return false;
     if (inElectron) saveConfig(look);
     Object.assign(cfg, look);
     // 自定义颜色要先于对应下拉的 change 就位：change 会立刻按取色器上色。
@@ -3753,16 +3838,14 @@ import {
       const v = normHex(look[p.configKey]);
       if (v) p.input.value = v;
     }
-    const sets = {
-      skin: skinSel, eyestyle: eyestyleSel, eyeshape: eyeshapeSel, trackstyle: trackstyleSel,
-      tracktype: tracktypeSel, armskin: armskinSel, claw: clawSel, armtype: armtypeSel,
-      headtype: headtypeSel, scene: sceneSel, motion: motionSel, halo: haloSel, body: bodySel,
-      baseEffect: effectSel, decoration: decorationSel, finish: finishSel,
-    };
+    const sets = lookSelects();
+    // 方案自己带 autoScene=true 时，场景下拉只是「此刻生效值」的显示器。
+    // 先按当前 cfg 判断，会把方案里自动选中的场景写进手动的 cfg.scene。
+    const autoOn = typeof look.autoScene === 'boolean' ? look.autoScene : cfg.autoScene;
     for (const [k, sel] of Object.entries(sets)) {
       // 自动场景开着时，场景下拉只是「此刻生效值」的显示器。应用方案/重置外观
       // 在这里派发 change 会把自动结果顶掉，而且要等下一分钟轮询才会恢复。
-      if (k === 'scene' && cfg.autoScene) continue;
+      if (k === 'scene' && autoOn) continue;
       if (look[k] != null && [...sel.options].some((o) => o.value === String(look[k]))) {
         sel.value = String(look[k]);
         sel.dispatchEvent(new Event('change'));
@@ -3825,6 +3908,7 @@ import {
       pushWear();
     }
     renderLookSummary();
+    return true;
   }
 
   document.getElementById('m-reset-look').onclick = () => applyLook(LOOK_DEFAULTS);
@@ -3845,9 +3929,6 @@ import {
   // 外观方案：把当前外观存成一套命名方案，之后一键切换。
   const presetList = document.getElementById('m-preset-list');
   const presetName = document.getElementById('m-preset-name');
-  const LOOK_KEYS = ['skin', 'eyestyle', 'eyeshape', 'trackstyle', 'tracktype', 'armskin',
-    'claw', 'armtype', 'headtype', 'scene', 'motion', 'halo', 'body', 'baseEffect', 'brightness',
-    'decoration', 'finish'];
   function currentLook() {
     const poses = {};
     for (const st of POSE_STATE_KEYS) poses[st] = poseSels[st].value;
@@ -3945,10 +4026,21 @@ import {
     // 重建后把选中项还回去。否则列表会跳回第一项，连点两次「删除」删掉的是
     // 另一个方案 —— 而屏幕上那个名字已经换了，用户很难把两件事对上。
     if (keep && Object.prototype.hasOwnProperty.call(cfg.presets || {}, keep)) presetList.value = keep;
+    // 空列表不是「坏了」：把下一步写出来，并让应用/删除按钮明确不可用。
+    const empty = document.getElementById('m-preset-empty');
+    if (empty) empty.hidden = presetList.options.length > 0;
+    for (const id of ['m-preset-apply', 'm-preset-del']) {
+      const btn = document.getElementById(id);
+      if (btn) btn.disabled = presetList.options.length === 0;
+    }
   }
-  document.getElementById('m-preset-save').onclick = () => {
+  const savePreset = () => {
     const name = presetName.value.trim().slice(0, 12);
-    if (!name) return;
+    if (!name) {
+      flashNote('请输入方案名');
+      presetName.focus();
+      return;
+    }
     const existed = Object.prototype.hasOwnProperty.call(cfg.presets || {}, name);
     cfg.presets = { ...(cfg.presets || {}), [name]: currentLook() };
     if (inElectron) saveConfig({ presets: cfg.presets });
@@ -3959,20 +4051,30 @@ import {
     // 而旧方案已经没了、并且已落盘 —— 没有任何可撤销的地方。
     flashNote(existed ? `已覆盖方案「${name}」` : `已保存方案「${name}」`);
   };
+  document.getElementById('m-preset-save').onclick = savePreset;
+  // 在名字框里按回车就保存：这是这类「输入 + 按钮」最自然的提交方式。
+  presetName.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    savePreset();
+  });
   document.getElementById('m-preset-apply').onclick = () => {
-    const look = (cfg.presets || {})[presetList.value];
-    if (!look) return;
-    applyLook(look);
+    const name = presetList.value;
+    if (!name) return flashNote('先保存一个外观方案');
+    const look = (cfg.presets || {})[name];
+    const ok = applyLook(look);
+    flashNote(ok ? `已应用方案「${name}」` : `方案「${name}」没有可用的外观设置`);
   };
   document.getElementById('m-preset-del').onclick = () => {
     const name = presetList.value;
-    if (!name) return;
+    if (!name) return flashNote('先保存一个外观方案');
     const presets = { ...(cfg.presets || {}) };
     delete presets[name];
     cfg.presets = presets;
     if (inElectron) saveConfig({ presets });
     // 删掉的那一项已经不在了，这里传空让浏览器落到剩下的第一项（合理）。
     renderPresetList('');
+    flashNote(`已删除方案「${name}」`);
   };
 
   // 键盘出口：工具栏和尺寸条都依赖指针，键盘用户至少要有办法打开设置、
@@ -4066,9 +4168,21 @@ import {
     'stuckBusyMin', 'stuckWaitMin',
     'customSign', 'presets', 'aliases', 'mutedAgents', 'mutedSoundAgents', 'agentColors', 'agents',
     'signMode', 'signPos', 'signColor', 'signShape', 'signOffset', 'decoration', 'personality'];
-  // "HH:MM"（24 小时制）。勿扰时间是要拿去和当前时间比较的，一个随手写的
-  // "abc" 会让整段时间静默失效：界面显示「已开启」，而那段时间永远不会来。
-  const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+  // 方案名会变成下拉里的一行：去掉首尾空白、按保存时的 12 字上限收窄；
+  // 方案本身必须是对象（字符串方案套用不出任何外观），条数也设上限，
+  // 免得导入一份超大配置后下拉长得用不了。
+  function cleanPresetMap(raw) {
+    const map = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return map;
+    for (const [name, look] of Object.entries(raw)) {
+      const key = String(name).trim().slice(0, 12);
+      if (!key || key === '__proto__') continue;
+      if (!look || typeof look !== 'object' || Array.isArray(look)) continue;
+      if (Object.keys(map).length >= 40) break;
+      map[key] = look;
+    }
+    return map;
+  }
   // 导入的是别人给的文件，不能假设类型正确：一条 "scale": 1e9、一个列表里混进
   // 数字、或者十万字的铭牌，都能把布局撑坏，而 reload 之后没有撤销按钮。
   // 所以按已知键逐个归一化，坏值直接丢弃（保留当前设置），绝不原样落盘。
@@ -4105,7 +4219,7 @@ import {
         if (Number.isFinite(x) && Number.isFinite(y)) out[k] = normalizeSignOffset({ x, y });
       }
       else if (k === 'presets' && v && typeof v === 'object' && !Array.isArray(v)
-        && JSON.stringify(v).length <= 20000) out[k] = v;
+        && JSON.stringify(v).length <= 20000) out[k] = cleanPresetMap(v);
       else if (k === 'aliases' && v && typeof v === 'object' && !Array.isArray(v)) {
         // 只收「agent 键 → 短名字」，并重新建一个干净对象：不把文件里的
         // __proto__ / constructor 之类的键原样带进配置。
@@ -4590,6 +4704,8 @@ import {
         if (typeof name === 'string' && name.trim()) cleanAliases[agent] = name.trim().slice(0, 10);
       }
       cfg.aliases = cleanAliases;
+      // 方案同样是手改配置的常客：数组/字符串会被 Object.keys 拆成一串假方案名。
+      cfg.presets = cleanPresetMap(cfg.presets);
       // 通知开关名单：只收合法的 agent 键，去重。手改配置塞进来的脏值丢掉。
       cfg.mutedAgents = Array.isArray(cfg.mutedAgents)
         ? [...new Set(cfg.mutedAgents.filter((a) => typeof a === 'string' && /^[\w-]{1,32}$/.test(a)))]
