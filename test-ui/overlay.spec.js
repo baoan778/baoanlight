@@ -716,12 +716,18 @@ test('losing the connection clears the note line and keeps it clear', async ({ p
     }
   });
   // 打开提示音 → flashNote 显示「提示音已开启」，并起一个 1.6 秒的定时器。
-  await page.evaluate(() => {
+  // 必须在同一个 evaluate 里立刻读一次：CI 的慢 runner 上，从派发 change 到
+  // 下一次跨进程可见性检查可能超过 1.6 秒，再断言 "visible" 就是在赌调度速度
+  // （真实发生过：主 test 流程因此红了一次，本机重复 10 次全过）。
+  const flash = await page.evaluate(() => {
     const el = document.getElementById('m-sound');
     el.checked = true;
     el.dispatchEvent(new Event('change'));
+    const n = document.getElementById('note');
+    return { hidden: n.hidden, text: n.textContent };
   });
-  await expect(page.locator('#note')).toBeVisible();
+  expect(flash.hidden, 'the flash note is shown synchronously').toBe(false);
+  expect(flash.text).toContain('提示音已开启');
 
   await page.evaluate(() => window.dispatchEvent(new Event('offline')));
   await page.evaluate(() => document.body.classList.add('disconnected'));
