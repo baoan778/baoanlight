@@ -118,8 +118,15 @@ function readFuel(payload, mode = 'quota') {
     };
   }
 
-  const total = payload?.info?.total_token_usage?.total_tokens;
-  const window = payload?.info?.model_context_window;
+  // 上下文窗口约束的是**这一次请求**装了多少，不是整个会话累计用了多少。
+  // Codex 的 total_token_usage.total_tokens 会随会话一直涨（实测一个正常会话
+  // 已经 347 万），拿它除以 12 万的窗口，电量就永远是 0% —— 一个其实还有三成
+  // 余量的会话被报成「快用完了」。last_token_usage 才是最近一次请求的大小；
+  // 没有这个字段的旧格式退回累计值（单次请求时两者相等）。
+  const info = payload?.info || {};
+  const last = info.last_token_usage;
+  const total = Number.isFinite(last?.total_tokens) ? last.total_tokens : info.total_token_usage?.total_tokens;
+  const window = info.model_context_window;
   if (Number.isFinite(total) && Number.isFinite(window) && window > 0) {
     return { remaining: 100 - (total / window) * 100, label: 'context' };
   }
@@ -137,6 +144,17 @@ function readFuel(payload, mode = 'quota') {
   return null;
 }
 
+// 有些写入方会持续追加内容，却把修改时间钉在创建时刻（实测 Codex 的 rollout
+// 就是这样：文件每秒都在长，mtime 却停在 11:28）。只看 mtime 的话，一个正在
+// 干活的会话会在 lookback（默认 10 分钟）之后被当成历史文件踢出跟踪，而代理
+// 还在写 —— 灯就永远停在上一轮结束时的状态。NTFS 的 ctime 会随写入更新，
+// 取两者较新的那个才算「最后一次变化」。
+function fileStamp(stat) {
+  const m = Number(stat && stat.mtimeMs);
+  const c = Number(stat && stat.ctimeMs);
+  return Math.max(Number.isFinite(m) ? m : 0, Number.isFinite(c) ? c : 0);
+}
+
 function newestFiles(dir, sinceMs) {
   const out = [];
   const walk = (d) => {
@@ -148,8 +166,11 @@ function newestFiles(dir, sinceMs) {
       else if (e.isFile() && /\.(jsonl|json|log)$/i.test(e.name)) {
         try {
           const st = fs.statSync(p);
-          if (st.mtimeMs >= sinceMs) {
-            out.push({ path: p, size: st.size, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs });
+          if (fileStamp(st) >= sinceMs) {
+            out.push({
+              path: p, size: st.size,
+              mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs, birthtimeMs: st.birthtimeMs,
+            });
           }
         } catch { /* file vanished mid-scan */ }
       }
@@ -412,13 +433,24 @@ function run(opts = {}) {
         tracked.delete(p);   // 文件没了：连跟踪状态一起清掉
         continue;
       }
-      if (st.mtimeMs < now - lookbackMs) {
+      // 用 fileStamp 而不是 mtime：见它的注释 —— 一个仍在追加、但 mtime 被钉住的
+      // 活跃日志，不能因为「修改时间很旧」就被踢出跟踪。
+      if (fileStamp(st) < now - lookbackMs) {
         tracked.delete(p);
         continue;
       }
       const hit = byPath.get(p);
-      if (hit) { hit.size = st.size; hit.mtimeMs = st.mtimeMs; hit.birthtimeMs = st.birthtimeMs; }
-      else byPath.set(p, { path: p, size: st.size, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs });
+      if (hit) {
+        hit.size = st.size;
+        hit.mtimeMs = st.mtimeMs;
+        hit.ctimeMs = st.ctimeMs;
+        hit.birthtimeMs = st.birthtimeMs;
+      } else {
+        byPath.set(p, {
+          path: p, size: st.size,
+          mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs, birthtimeMs: st.birthtimeMs,
+        });
+      }
     }
     for (const f of byPath.values()) {
       let t = tracked.get(f.path);

@@ -153,6 +153,24 @@ test('codex context window is available as an alternative gauge', () => {
   assert.ok(f.remaining > 91 && f.remaining < 92, `expected ~91.5, got ${f.remaining}`);
 });
 
+// 真实 rollout 里 total_token_usage 是整场会话的累计值（实测已经到 347 万），
+// 而 model_context_window 只约束**当前这次请求**。拿累计值算剩余，一个还有三成
+// 余量的会话会被报成 0% —— 电量条亮红，用户却毫无办法，因为根本没满。
+test('cumulative session tokens do not empty the context gauge', () => {
+  const real = {
+    type: 'token_count',
+    info: {
+      total_token_usage: { total_tokens: 3473211 },
+      last_token_usage: { total_tokens: 84868 },
+      model_context_window: 121600,
+    },
+    rate_limits: { primary: null },
+  };
+  const f = readFuel(real);
+  assert.equal(f.label, 'context');
+  assert.ok(f.remaining > 29 && f.remaining < 32, `expected ~30.2% left, got ${f.remaining}`);
+});
+
 test('quota is preferred, because that is what actually blocks the next turn', () => {
   assert.equal(readFuel(TOKEN_COUNT).label, 'plan quota');
 });

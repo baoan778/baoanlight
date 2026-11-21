@@ -494,6 +494,71 @@ test('a continuously busy session is re-reported so it never looks abandoned', a
   }
 });
 
+// 有些写入方会持续追加，却把修改时间钉在创建时刻（实测 Codex 的 rollout：文件
+// 每秒都在长，mtime 一直停在开头）。观察器若只凭 mtime 判断「还新鲜吗」，会在
+// lookback 到期后把一个正在干活的会话踢出跟踪 —— 灯停在上一次 task_complete 上，
+// 而代理后面写的每一行都没人看。ctime 随写入更新，必须一起看。
+test('a log that grows while its mtime stays frozen is still followed', async () => {
+  const logWatch = require('../src/adapters/log-watch');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-frozen-'));
+  const file = path.join(dir, 'rollout-frozen.jsonl');
+  const frozen = new Date(Date.now() - 60 * 60 * 1000);
+  const meta = JSON.stringify({ type: 'session_meta', payload: { id: 'frozen-1', cwd: '/tmp/x' } });
+  const busy = JSON.stringify({ type: 'event_msg', payload: { type: 'task_started' } });
+  const ambient = JSON.stringify({ type: 'event_msg', payload: { type: 'token_count' } });
+  const done = JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete' } });
+  fs.writeFileSync(file, [meta, busy].join('\n') + '\n');
+  // 每次追加后把 mtime 钉回一小时前，模拟「只追加、不改 mtime」的写入方。
+  const freeze = () => fs.utimesSync(file, frozen, frozen);
+  freeze();
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const previousPort = process.env.BAOANLIGHT_PORT;
+  process.env.BAOANLIGHT_PORT = String(PORT);
+  // lookback 只有 1.5 秒：旧实现会在第一轮之后就把它当成历史文件丢掉。
+  const handle = logWatch.run({
+    agent: 'codex', dir, interval: 100, quiet: true, manual: true, lookback: 1500,
+  });
+
+  try {
+    const find = async () => (await api('/state')).sessions.find((s) => s.session === 'codex:frozen-1') || null;
+    let first = null;
+    for (let i = 0; i < 40 && !first; i++) {
+      first = await find();
+      if (!first) await sleep(100);
+    }
+    assert.ok(first && first.state === 'busy', 'the growing session is tracked');
+
+    // 连续写 3 秒（远超 lookback），mtime 每轮都被钉住。
+    for (let i = 0; i < 10; i++) {
+      await sleep(300);
+      fs.appendFileSync(file, ambient + '\n');
+      freeze();
+    }
+    assert.ok(await find(), 'the session survived the lookback window instead of going stale');
+
+    fs.appendFileSync(file, done + '\n');
+    freeze();
+    let finished = null;
+    for (let i = 0; i < 40; i++) {
+      finished = await find();
+      if (finished && finished.state === 'done') break;
+      await sleep(100);
+    }
+    assert.ok(finished && finished.state === 'done', 'lines written after the window are still read');
+  } finally {
+    handle.stop();
+    await api('/state', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: 'codex:frozen-1', state: 'offline' }),
+    });
+    if (previousPort === undefined) delete process.env.BAOANLIGHT_PORT;
+    else process.env.BAOANLIGHT_PORT = previousPort;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // End-to-end for the agent that has no hooks to install: a dsh session
 // projection on disk, and the real HTTP store on the other side.
 test('the dsh watcher follows a session projection through a whole turn', async () => {
