@@ -4029,6 +4029,19 @@ import {
     return cfg;
   }
 
+  // 删除方案会丢掉用户手调的一整套外观，撤销不了。两段式确认：第一下只把
+  // 按钮改成「确认删除」，4 秒内再点才真的删；换选、保存或超时都会复位。
+  const presetDelBtn = document.getElementById('m-preset-del');
+  let presetDeletePending = '';
+  let presetDeleteTimer = 0;
+  const resetPresetDelete = () => {
+    clearTimeout(presetDeleteTimer);
+    presetDeleteTimer = 0;
+    presetDeletePending = '';
+    presetDelBtn.textContent = '删除';
+  };
+  presetList.addEventListener('change', resetPresetDelete);
+
   function renderPresetList(keep = presetList.value) {
     presetList.innerHTML = '';
     for (const name of Object.keys(cfg.presets || {})) {
@@ -4055,6 +4068,7 @@ import {
       presetName.focus();
       return;
     }
+    resetPresetDelete();
     const existed = Object.prototype.hasOwnProperty.call(cfg.presets || {}, name);
     cfg.presets = { ...(cfg.presets || {}), [name]: currentLook() };
     if (inElectron) saveConfig({ presets: cfg.presets });
@@ -4075,13 +4089,23 @@ import {
   document.getElementById('m-preset-apply').onclick = () => {
     const name = presetList.value;
     if (!name) return flashNote('先保存一个外观方案');
+    resetPresetDelete();
     const look = (cfg.presets || {})[name];
     const ok = applyLook(look);
     flashNote(ok ? `已应用方案「${name}」` : `方案「${name}」没有可用的外观设置`);
   };
-  document.getElementById('m-preset-del').onclick = () => {
+  presetDelBtn.onclick = () => {
     const name = presetList.value;
     if (!name) return flashNote('先保存一个外观方案');
+    // 第一下只是确认，真的删除发生在第二下。这样误点一次不会丢掉方案。
+    if (presetDeletePending !== name) {
+      presetDeletePending = name;
+      presetDelBtn.textContent = '确认删除';
+      clearTimeout(presetDeleteTimer);
+      presetDeleteTimer = setTimeout(resetPresetDelete, 4000);
+      return flashNote(`再点一次删除「${name}」`);
+    }
+    resetPresetDelete();
     const presets = { ...(cfg.presets || {}) };
     delete presets[name];
     cfg.presets = presets;

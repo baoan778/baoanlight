@@ -2533,9 +2533,16 @@ test('appearance presets save, apply and delete', async ({ page }) => {
   await expect(page.locator('#m-decoration')).toHaveValue('皇冠');
   expect(await page.locator('#note').textContent()).toContain('已应用方案「测试方案」');
 
+  // 删除是两段式：第一下只确认，方案还在；第二下才真的删。
+  await page.locator('#m-preset-del').click();
+  await expect(page.locator('#m-preset-list option')).toHaveCount(1);
+  await expect(page.locator('#m-preset-del')).toHaveText('确认删除');
+  expect(await page.locator('#note').textContent()).toContain('再点一次删除「测试方案」');
+
   await page.locator('#m-preset-del').click();
   await expect(page.locator('#m-preset-list option')).toHaveCount(0);
   expect(await page.locator('#note').textContent()).toContain('已删除方案「测试方案」');
+  await expect(page.locator('#m-preset-del')).toHaveText('删除');
   // 空列表要把「下一步」说出来，而不是只剩一个空下拉和两个还能点的按钮。
   await expect(page.locator('#m-preset-empty')).toBeVisible();
   await expect(page.locator('#m-preset-apply')).toBeDisabled();
