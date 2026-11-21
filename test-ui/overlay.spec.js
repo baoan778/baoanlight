@@ -2624,6 +2624,46 @@ test('startup never overwrites saved night hours before the config arrives', asy
   expect(patches.some((p) => p && ('nightStart' in p || 'nightEnd' in p))).toBe(false);
 });
 
+// 下拉显示的场景必须就是机器人实际用的场景。手改配置里一个不存在的场景名，
+// 旧实现只把下拉回落到「无/星空」，cfg 里仍是坏值：夜晚场景下拉写着「星空」，
+// 实际生效的却是「无」。
+test('startup repairs invalid scene settings instead of showing a different scene', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__saved = [];
+    window.bao = {
+      serverUrl: location.origin,
+      saveConfig: (patch) => { window.__saved.push(patch); },
+      getConfig: () => Promise.resolve({
+        autoScene: 'false', dayScene: '不存在', nightScene: '不存在',
+        nightStart: '99:99', nightEnd: '',
+      }),
+      getAutostart: () => Promise.resolve({ enabled: false }),
+      setAutostart: () => Promise.resolve({ enabled: false }),
+      contentSize: () => {}, hotRect: () => {}, onCursor: () => {}, notify: () => {},
+      openTerminal: () => {}, trayStatus: () => {}, quit: () => {},
+      dragStart: () => {}, dragEnd: () => {},
+    };
+  });
+  await page.reload();
+  await page.waitForFunction(() => document.body.dataset.state !== undefined);
+  await openGroups(page, ['场景']);
+
+  await expect(page.locator('#m-autoscene')).not.toBeChecked();
+  await expect(page.locator('#m-dayscene')).toHaveValue('无');
+  await expect(page.locator('#m-nightscene')).toHaveValue('星空');
+  await expect(page.locator('#m-night-start')).toHaveValue('20:00');
+  await expect(page.locator('#m-night-end')).toHaveValue('07:00');
+
+  // 修复不只是显示：同一组值必须落盘，否则下次启动又回到自相矛盾的状态。
+  await page.waitForTimeout(300);
+  const merged = Object.assign({}, ...(await page.evaluate(() => window.__saved)));
+  expect(merged.autoScene).toBe(false);
+  expect(merged.dayScene).toBe('无');
+  expect(merged.nightScene).toBe('星空');
+  expect(merged.nightStart).toBe('20:00');
+  expect(merged.nightEnd).toBe('07:00');
+});
+
 test('the config export contains every customisation currently on screen', async ({ page }) => {
   await openGroups(page, ['基础', '外观', '场景', '日记', '系统', '配置']);
   await page.selectOption('#m-decoration', '围巾');

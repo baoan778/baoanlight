@@ -2935,16 +2935,28 @@ import {
   const refreshAutoSceneUI = () => {
     autoSceneOpts.hidden = !cfg.autoScene;
     sceneSel.disabled = !!cfg.autoScene;
-    daySceneSel.value = SCENE_NAMES.includes(cfg.dayScene) ? cfg.dayScene : '无';
-    nightSceneSel.value = SCENE_NAMES.includes(cfg.nightScene) ? cfg.nightScene : '星空';
-    // 读取时也校验：手改配置、旧版本、导入失败留下的残值都要收回默认，并且
-    // 真的写回磁盘 —— 只改显示的话，下次启动又会回到那个永不触发的时段。
+    // autoScene/dayScene/nightScene 也可能被手改成非布尔或不存在的场景。
+    // UI 的回落值必须同时写回 cfg：只在显示上回落到「星空」而 cfg 仍是坏值，
+    // 机器人实际会落到「无」—— 下拉和桌面说的就不是同一件事了。
     let repaired = false;
+    if (typeof cfg.autoScene !== 'boolean') { cfg.autoScene = cfg.autoScene === true; repaired = true; }
+    if (!SCENE_NAMES.includes(cfg.dayScene)) { cfg.dayScene = '无'; repaired = true; }
+    if (!SCENE_NAMES.includes(cfg.nightScene)) { cfg.nightScene = '星空'; repaired = true; }
+    // 读取时也校验时间：手改配置、旧版本、导入失败留下的残值都要收回默认，
+    // 并且真的写回磁盘 —— 只改显示的话，下次启动又会回到那个永不触发的时段。
     if (!TIME_RE.test(cfg.nightStart)) { cfg.nightStart = NIGHT_DEFAULTS.nightStart; repaired = true; }
     if (!TIME_RE.test(cfg.nightEnd)) { cfg.nightEnd = NIGHT_DEFAULTS.nightEnd; repaired = true; }
+    autoSceneInput.checked = cfg.autoScene;
+    daySceneSel.value = cfg.dayScene;
+    nightSceneSel.value = cfg.nightScene;
     nightStartInput.value = cfg.nightStart;
     nightEndInput.value = cfg.nightEnd;
-    if (repaired && inElectron) saveConfig({ nightStart: cfg.nightStart, nightEnd: cfg.nightEnd });
+    if (repaired && inElectron) {
+      saveConfig({
+        autoScene: cfg.autoScene, dayScene: cfg.dayScene, nightScene: cfg.nightScene,
+        nightStart: cfg.nightStart, nightEnd: cfg.nightEnd,
+      });
+    }
     // 起止相同 = 夜晚时段为空：自动切换仍开着，但会一直停在白天场景。
     // 和勿扰那条一样把原因写出来，别让「已开启」和一个永不到来的时段并排。
     const note = document.getElementById('m-night-note');
