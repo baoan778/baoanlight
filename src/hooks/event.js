@@ -69,7 +69,11 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
-      const [k, v] = a.slice(2).split('=');
+      // 与 cli.js 同一个理由：只按第一个 `=` 切。`--detail=exit=1` 按所有等号
+      // 切会只剩 "exit"，而 detail 正是要给人看的那行字。
+      const eq = a.indexOf('=');
+      const k = a.slice(2, eq < 0 ? undefined : eq);
+      const v = eq < 0 ? undefined : a.slice(eq + 1);
       if (v !== undefined) out.flags[k] = v;
       // 见 cli.js：只把 `--` 开头的下一个参数当成另一个选项，别吞掉负值。
       else if (argv[i + 1] && !argv[i + 1].startsWith('--')) out.flags[k] = argv[++i];

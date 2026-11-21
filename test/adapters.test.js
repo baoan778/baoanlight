@@ -148,7 +148,7 @@ test('hook survives malformed input', () => {
 
 const logWatch = require('../src/adapters/log-watch');
 const agents = require('../src/adapters/agents');
-const { pickState } = require('../src/hooks/event');
+const { pickState, parseArgs } = require('../src/hooks/event');
 
 // DeepSeek Harness and WorkBuddy do not ship log schemas we control, so they
 // share one forgiving vocabulary. The point is that a new agent needs a
@@ -253,6 +253,18 @@ test('the generic hook maps literal states and common event names', () => {
   assert.equal(pickState({ event: 'task_complete' }), 'done');
   assert.equal(pickState({ type: 'approval_request' }), 'waiting');
   assert.equal(pickState({ type: 'something_unknown' }), null, 'unknown leaves state alone');
+});
+
+// `bao hook --detail=exit=1` 是文档里的接法。按所有等号切分会把 detail 截成
+// "exit"，机器人旁边的按钮文案就少了一半。通用钩子与 cli.js 必须同样处理。
+test('the generic hook keeps equals signs inside an inline value', () => {
+  const { flags } = parseArgs([
+    '--agent', 'deploy', '--state', 'error', '--detail=exit=1', '--session=a=b',
+  ]);
+  assert.equal(flags.agent, 'deploy');
+  assert.equal(flags.state, 'error');
+  assert.equal(flags.detail, 'exit=1');
+  assert.equal(flags.session, 'a=b');
 });
 
 // DeepSeek Harness (dsh) writes a projection of reducer rows per session. Only
