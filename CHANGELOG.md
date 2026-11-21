@@ -3,6 +3,14 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本号格式为
 `MAJOR.MINOR.PATCH`。每个版本的「用户可见变化」和「升级注意」都记在这里。
 
+## [2.0.13] - 2026-11-21
+
+### 修复
+
+- 日志观察器从 Codex rollout 尾部恢复时，不再把 `response_item` 的 `payload.id`
+  （`item_…`）当成会话 ID：会话身份改由 `session_meta` 或文件名里的会话 UUID
+  确定。观察器重启后同一场会话不会换键，列表里也不会留下一条收不了摊的旧记录。
+
 ## [2.0.12] - 2026-11-21
 
 ### 修复
