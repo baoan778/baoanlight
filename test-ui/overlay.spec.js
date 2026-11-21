@@ -2070,6 +2070,20 @@ test('the dnd note explains a window whose ends are the same', async ({ page }) 
 
   await set('m-dnd-end', '07:30');
   await expect(page.locator('#m-dnd-note')).toBeHidden();
+
+  // 清空时间框不能留下「空框 + 永不生效的时段」：默认值要写回控件。
+  await page.evaluate(() => {
+    const el = document.getElementById('m-dnd-start');
+    el.value = '';
+    el.dispatchEvent(new Event('change'));
+  });
+  await expect(page.locator('#m-dnd-start')).toHaveValue('22:00');
+  await page.evaluate(() => {
+    const el = document.getElementById('m-dnd-end');
+    el.value = '';
+    el.dispatchEvent(new Event('change'));
+  });
+  await expect(page.locator('#m-dnd-end')).toHaveValue('08:00');
 });
 
 // 自动场景把下拉改成「此刻生效的那一档」时，手动选择不能被覆盖丢失。

@@ -3750,16 +3750,18 @@ import {
     if (inElectron) saveConfig({ doNotDisturb: cfg.doNotDisturb });
     applyDnd();
   });
-  document.getElementById('m-dnd-start').addEventListener('change', (e) => {
-    cfg.dndStart = e.target.value || '22:00';
-    if (inElectron) saveConfig({ dndStart: cfg.dndStart });
+  // 和自动场景同一条规则：空框不是「没填」，而是「这段勿扰永远不生效」。
+  // 非法值收回默认，并把默认写回控件，别让界面和配置各说一套。
+  const dndStartInput = document.getElementById('m-dnd-start');
+  const dndEndInput = document.getElementById('m-dnd-end');
+  const setDndTime = (key, input, fallback) => {
+    cfg[key] = TIME_RE.test(input.value) ? input.value : fallback;
+    if (input.value !== cfg[key]) input.value = cfg[key];
+    if (inElectron) saveConfig({ [key]: cfg[key] });
     applyDnd();
-  });
-  document.getElementById('m-dnd-end').addEventListener('change', (e) => {
-    cfg.dndEnd = e.target.value || '08:00';
-    if (inElectron) saveConfig({ dndEnd: cfg.dndEnd });
-    applyDnd();
-  });
+  };
+  dndStartInput.addEventListener('change', () => setDndTime('dndStart', dndStartInput, '22:00'));
+  dndEndInput.addEventListener('change', () => setDndTime('dndEnd', dndEndInput, '08:00'));
 
   // 一套外观允许保存的键。方案是「可导入、可手改」的数据：套用时按白名单
   // 取值，未知键（port / window / agents…）绝不能顺着 Object.assign 写进配置。
@@ -4773,9 +4775,17 @@ import {
       document.getElementById('m-expand-sessions').checked = cfg.expandSessions === true;
       document.getElementById('m-dnd').checked = !!cfg.doNotDisturb;
       // 手改过的配置里可能是一个写不出 HH:MM 的值。直接塞进 input[type=time]
-      // 会得到一个空框，而空框让这段勿扰永远不生效 —— 回落到出厂时段更诚实。
-      document.getElementById('m-dnd-start').value = TIME_RE.test(cfg.dndStart) ? cfg.dndStart : '22:00';
-      document.getElementById('m-dnd-end').value = TIME_RE.test(cfg.dndEnd) ? cfg.dndEnd : '08:00';
+      // 会得到一个空框，而空框让这段勿扰永远不生效 —— 回落到出厂时段并写回，
+      // 比只修显示更诚实。
+      const dndStart = TIME_RE.test(cfg.dndStart) ? cfg.dndStart : '22:00';
+      const dndEnd = TIME_RE.test(cfg.dndEnd) ? cfg.dndEnd : '08:00';
+      if (dndStart !== cfg.dndStart || dndEnd !== cfg.dndEnd) {
+        cfg.dndStart = dndStart;
+        cfg.dndEnd = dndEnd;
+        if (inElectron) saveConfig({ dndStart, dndEnd });
+      }
+      document.getElementById('m-dnd-start').value = cfg.dndStart;
+      document.getElementById('m-dnd-end').value = cfg.dndEnd;
       applyDnd();
       maxrowsSel.value = String(Math.max(2, Math.min(8, Number(cfg.maxRows) || 5)));
       renderPresetList();
