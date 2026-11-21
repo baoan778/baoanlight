@@ -752,6 +752,78 @@ test('a restarted task-board watcher does not replay an old completion', async (
   }
 });
 
+// DeepSeek 观察器重启时也不该把几十分钟前就结束的会话重新点亮：那会让列表
+// 越来越长，`bao status` 里出现一堆并不是「刚刚完成」的 idle 行。真正刚结束
+// 的会话仍要补发，后续的 open turn 也必须立刻恢复 busy。
+test('a restarted dsh watcher does not replay an old idle session', async () => {
+  const dsh = require('../src/adapters/dsh-watch');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-dsh-idle-'));
+  const oldFile = path.join(dir, 'session-old.json');
+  const recentFile = path.join(dir, 'session-recent.json');
+  const closed = {
+    record: {
+      rows: {
+        turnBoundary: { val: { lastTurn: 1 } },
+        turnOutline: { val: { turns: [{}] } },
+        sessionStats: { val: {} },
+      },
+    },
+  };
+  const open = {
+    record: {
+      rows: {
+        turnBoundary: { val: { openTurnStartSeq: 1 } },
+        sessionStats: { val: {} },
+      },
+    },
+  };
+  fs.writeFileSync(oldFile, JSON.stringify(closed));
+  fs.writeFileSync(recentFile, JSON.stringify(closed));
+  const tenMin = new Date(Date.now() - 10 * 60 * 1000);
+  fs.utimesSync(oldFile, tenMin, tenMin);
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const stateOf = async (sid) => {
+    const snap = await api('/state');
+    return snap.sessions.find((x) => x.session === sid) || null;
+  };
+
+  const previousPort = process.env.BAOANLIGHT_PORT;
+  process.env.BAOANLIGHT_PORT = String(PORT);
+  const handle = dsh.run({ dir, interval: 100, quiet: true, manual: true, lookback: 3_600_000 });
+
+  try {
+    await sleep(500);
+    assert.equal(await stateOf('deepseek:old'), null,
+      'an idle projection from ten minutes ago is not announced again');
+    const recent = await stateOf('deepseek:recent');
+    assert.ok(recent && recent.state === 'idle',
+      'a session that really just finished is still announced');
+
+    // 旧会话重新开一轮：busy 必须立刻出现，不能被首次静默吞掉。
+    fs.writeFileSync(oldFile, JSON.stringify(open));
+    let busy = null;
+    for (let i = 0; i < 40 && !busy; i++) {
+      const s = await stateOf('deepseek:old');
+      if (s && s.state === 'busy') busy = s;
+      else await sleep(100);
+    }
+    assert.ok(busy, 'an open turn after the restart lights up as busy');
+  } finally {
+    handle.stop();
+    for (const sid of ['deepseek:old', 'deepseek:recent']) {
+      await api('/state', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ session: sid, state: 'offline' }),
+      });
+    }
+    if (previousPort === undefined) delete process.env.BAOANLIGHT_PORT;
+    else process.env.BAOANLIGHT_PORT = previousPort;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // `bao mcp` reports over POST /set/<state> with a JSON body. The handler used to
 // read only the query string, so every MCP report landed as agent="agent" with
 // no detail and no cwd — the whole route silently lied about who was busy.

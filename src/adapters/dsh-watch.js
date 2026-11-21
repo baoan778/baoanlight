@@ -27,6 +27,10 @@ const path = require('path');
 const { setState } = require('../client');
 const { keepAliveWith } = require('./watchdog');
 
+// 首次看到一份投影时，只要「刚刚结束」的 idle 才值得补发。一个几十分钟前
+// 就完成的会话，在观察器每次重启后都重新占一行，列表会越长越乱。
+const IDLE_REPLAY_MS = 30_000;
+
 function appDataDir() {
   return process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
 }
@@ -173,6 +177,9 @@ function run(opts = {}) {
       const t = tracked.get(file) || { session: sessionName(file), state: null, mtimeMs: 0, reportedAt: 0 };
       tracked.set(file, t);
       if (st.mtimeMs === t.mtimeMs) continue;
+      // 第一次看到这份投影时 mtimeMs 还是 0。下面的「历史 idle 不重放」只针对
+      // 这一次，后续真实变化必须照常上报。
+      const firstSight = !t.mtimeMs;
       t.mtimeMs = st.mtimeMs;
 
       let rec;
@@ -186,6 +193,13 @@ function run(opts = {}) {
       // also the only way the context gauge can appear for a session that was
       // already finished when the watcher started.
       const now = Date.now();
+      // 但「刚刚」需要证据：重启时读到一份半小时前就结束的会话，不该重新点亮
+      // 一行。busy / waiting 是「此刻仍成立」的状态，首次看到仍然立刻上报。
+      if (firstSight && next === 'idle' && now - st.mtimeMs > IDLE_REPLAY_MS) {
+        t.state = next;
+        if (fuel) t.fuel = fuel;
+        continue;
+      }
       const stateChanged = !!next && next !== t.state;
       const fuelChanged = !!fuel
         && (!t.fuel || Math.round(fuel.remaining) !== Math.round(t.fuel.remaining));

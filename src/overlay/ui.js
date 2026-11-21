@@ -2484,7 +2484,10 @@ import {
   // 一个永远可按、按了也没变化的按钮，看起来就像坏的。
   function updateSignCustomState() {
     const off = normalizeSignOffset(cfg.signOffset);
-    const moved = Math.abs(off.x) > 0.001 || Math.abs(off.y) > 0.001;
+    // 「默认位置」包含默认靠哪一侧：只把牌子拖回去、却停在左侧，仍然不是
+    // 默认位置。所以侧边不是右侧时，重置按钮也要可用、并显示「已自定义」。
+    const moved = Math.abs(off.x) > 0.001 || Math.abs(off.y) > 0.001
+      || signPosSel.value !== '右侧';
     if (signCustomNote) signCustomNote.hidden = !moved;
     if (signResetBtn) signResetBtn.disabled = !moved;
   }
@@ -2516,7 +2519,10 @@ import {
     updateSignCustomState();
   });
   document.getElementById('m-sign-reset').onclick = () => {
+    // 「恢复默认位置」= 默认侧边 + 零偏移。只清偏移会让停在「左侧」的牌子
+    // 看起来毫无变化，而按钮已经灰掉。
     cfg.signOffset = { x: 0, y: 0 };
+    signPosSel.value = '右侧';
     if (inElectron) saveConfig({ signOffset: cfg.signOffset });
     applySign();
   };

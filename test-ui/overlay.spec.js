@@ -2145,6 +2145,25 @@ test('an appearance preset restores the sign and the scene schedule', async ({ p
   await expect(page.locator('#m-sign-color')).toHaveValue('青色');
 });
 
+// 「恢复默认位置」包含默认靠哪一侧：只改了侧边、没有拖动时按钮也必须可用，
+// 点下去要回到右侧 + 零偏移，而不是停在左侧且按钮已经灰掉。
+test('resetting the billboard position also restores the default side', async ({ page }) => {
+  await openGroups(page, ['广告牌']);
+  // 浏览器模式下启动时没有 getConfig，按钮初始态由 HTML 决定；先做一次真实
+  // 选择把状态机跑起来，再断言「默认位置时不可按」。
+  await page.selectOption('#m-sign-pos', '右侧');
+  await expect(page.locator('#m-sign-reset')).toBeDisabled();
+
+  await page.selectOption('#m-sign-pos', '左侧');
+  await expect(page.locator('#m-sign-custom')).toBeVisible();
+  await expect(page.locator('#m-sign-reset')).toBeEnabled();
+
+  await page.locator('#m-sign-reset').click();
+  await expect(page.locator('#m-sign-pos')).toHaveValue('右侧');
+  await expect(page.locator('#m-sign-reset')).toBeDisabled();
+  await expect(page.locator('#m-sign-custom')).toBeHidden();
+});
+
 // 每个软件的颜色是「今日战绩」的一部分：改完必须立刻重画，不能等下一次
 // 统计变化才生效（score 面板按数据签名去重，颜色也得进签名）。
 test('a software colour is applied to the daily score immediately', async ({ page }) => {
