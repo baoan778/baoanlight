@@ -1293,8 +1293,11 @@ import {
       el.appendChild(ol);
     }
     const mins = Math.max(0, Math.floor((Date.now() - (s.lastEventAt || s.updatedAt || Date.now())) / 60000));
-    const busyMin = Number(cfg.stuckBusyMin) || 15;
-    const waitMin = Number(cfg.stuckWaitMin) || 10;
+    // 和上面 checkStuck 用同一套取值规则：手改配置里的 0 / 负数 / 超过 240 的值
+    // 在通知那边会回落到默认，诊断文案若按原值判断，就会一边按时提醒、一边说
+    // 「还没到阈值」。
+    const busyMin = minutesSetting(cfg.stuckBusyMin, 15);
+    const waitMin = minutesSetting(cfg.stuckWaitMin, 10);
     let text = `已静默 ${mins} 分钟`;
     if (s.state === 'busy' && mins >= busyMin) text += ' · 疑似卡住：可能卡在长工具调用，或进程/日志已停止';
     else if (s.state === 'waiting' && mins >= waitMin) text += ' · 已经等你很久，它仍停在确认这一步';
@@ -4800,8 +4803,18 @@ import {
       cfg.sysMotion = ['always', 'load', 'off'].includes(cfg.sysMotion) ? cfg.sysMotion : 'always';
       sysMotionSel.value = cfg.sysMotion;
       applySysMotion();
-      stuckBusyInput.value = String(cfg.stuckBusyMin >= 1 && cfg.stuckBusyMin <= 240 ? cfg.stuckBusyMin : 15);
-      stuckWaitInput.value = String(cfg.stuckWaitMin >= 1 && cfg.stuckWaitMin <= 240 ? cfg.stuckWaitMin : 10);
+      // 阈值必须是 1–240 的整数分钟：手改配置写进来的 0 / 负数 / 999 会让
+      // 「提醒」按默认值走，而输入框却显示原值（或空），界面和实际行为各说一套。
+      // 和勿扰时间一样，非法值当场收回默认并写回磁盘。
+      const stuckBusy = minutesSetting(cfg.stuckBusyMin, 15);
+      const stuckWait = minutesSetting(cfg.stuckWaitMin, 10);
+      if (stuckBusy !== cfg.stuckBusyMin || stuckWait !== cfg.stuckWaitMin) {
+        cfg.stuckBusyMin = stuckBusy;
+        cfg.stuckWaitMin = stuckWait;
+        if (inElectron) saveConfig({ stuckBusyMin: stuckBusy, stuckWaitMin: stuckWait });
+      }
+      stuckBusyInput.value = String(cfg.stuckBusyMin);
+      stuckWaitInput.value = String(cfg.stuckWaitMin);
       scorePanelInput.checked = cfg.showScore !== false;
       panelScore.hidden = cfg.showScore === false;
       recentPanelInput.checked = cfg.showRecent !== false;

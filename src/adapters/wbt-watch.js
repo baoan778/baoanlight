@@ -27,6 +27,12 @@ const ACTIVE_MS = 30 * 60 * 1000; // 半小时没新记录的会话不再显示
 // 它刚刚发生时才诚实；一个 20 分钟前结束的会话，在 watcher 重启后被补成
 // 「刚刚完成」，会多转一圈庆祝、多弹一条通知，还把今日完成数多加一次。
 const DONE_REPLAY_MS = 30_000;
+// 一条 assistant 文本不等于「这一轮结束了」：WorkBuddy 会在调用工具前先说一句
+// 「我先看看工作区」，这句话也是一条 assistant message（实测一场会话 117 条
+// assistant 文本里只有 33 条真的收尾）。以前每条都立刻报 done，灯在忙碌中反复
+// 闪紫、每调一次工具就弹一次「完成」，今日完成数也被灌水。现在先挂起，只有
+// 之后真的没有新记录才落下；紧接着出现的工具调用会取消它。
+const DONE_SETTLE_MS = 2000;
 
 // assistant message 只有在这一轮真的结束时才算 done。中途发言常常是「我要调用
 // 工具了」，后面紧跟 function_call；无条件按 done 处理会让灯闪一下紫灯再变绿，
@@ -215,6 +221,7 @@ function run({
           detail: '',
           primed: false,
           pending: null,
+          pendingDone: null,
           file,
           sessionId: path.basename(file, path.extname(file)),
           agent,
@@ -236,6 +243,14 @@ function run({
         adoptAgent(st);
         const detail = detailOf(rec);
         if (!st.primed) { st.pending = { state: next, detail }; return; }
+        // 完成先挂起：一轮里「说完一句 → 立刻调工具」的间隔通常只有几毫秒，
+        // 同一个 tick 之后马上会读到工具记录。等到安静 DONE_SETTLE_MS 才落下，
+        // 中途的说明就不会再把灯闪成紫色、也不会计成一次完成。
+        if (next === 'done') {
+          st.pendingDone = { at: Date.now(), detail };
+          return;
+        }
+        st.pendingDone = null;
         // 状态没变也要更新那行小字：从「收到新指令」到「运行 Bash」再到「思考中」，
         // 一直是忙碌，但那一行得说它此刻到底在干什么。
         if (next === st.state && detail === st.detail) {
@@ -255,8 +270,20 @@ function run({
         // 多久都值得亮（会话不会自己把黄灯写回去）；done 只在刚刚发生时才补发。
         const staleDone = st.pending && st.pending.state === 'done'
           && Date.now() - stat.mtimeMs > DONE_REPLAY_MS;
-        if (st.pending && !staleDone) emit(st, st.pending.state, st.pending.detail);
+        if (st.pending && !staleDone) {
+          // 恢复出来的 done 也走「安静确认」这条路：尾部那句话可能只是半轮里的
+          // 说明，紧接着还有工具调用。
+          if (st.pending.state === 'done') st.pendingDone = { at: Date.now(), detail: st.pending.detail };
+          else emit(st, st.pending.state, st.pending.detail);
+        }
         st.pending = null;
+      }
+
+      // 挂起的完成：确实安静了才落下。期间任何忙碌/等待记录都会清掉它。
+      if (st.pendingDone && Date.now() - st.pendingDone.at >= DONE_SETTLE_MS) {
+        const pd = st.pendingDone;
+        st.pendingDone = null;
+        if (st.state !== 'done' || st.detail !== pd.detail) emit(st, 'done', pd.detail);
       }
     }
 

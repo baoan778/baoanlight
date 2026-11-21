@@ -2690,6 +2690,35 @@ test('startup repairs invalid scene settings instead of showing a different scen
   expect(merged.nightEnd).toBe('07:00');
 });
 
+// 提醒阈值也是「界面即行为」：手改配置里的 0 / 999 会让通知按默认值走，
+// 而输入框还显示那个永远不会生效的数字。启动时收回范围并写回。
+test('startup repairs invalid alert thresholds instead of showing a number that never fires', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__saved = [];
+    window.bao = {
+      serverUrl: location.origin,
+      saveConfig: (patch) => { window.__saved.push(patch); },
+      getConfig: () => Promise.resolve({ stuckBusyMin: 0, stuckWaitMin: 999 }),
+      getAutostart: () => Promise.resolve({ enabled: false }),
+      setAutostart: () => Promise.resolve({ enabled: false }),
+      contentSize: () => {}, hotRect: () => {}, onCursor: () => {}, notify: () => {},
+      openTerminal: () => {}, trayStatus: () => {}, quit: () => {},
+      dragStart: () => {}, dragEnd: () => {},
+    };
+  });
+  await page.reload();
+  await page.waitForFunction(() => document.body.dataset.state !== undefined);
+  await openGroups(page, ['系统']);
+
+  await expect(page.locator('#m-stuck-busy')).toHaveValue('15');
+  await expect(page.locator('#m-stuck-wait')).toHaveValue('10');
+
+  await page.waitForTimeout(300);
+  const merged = Object.assign({}, ...(await page.evaluate(() => window.__saved)));
+  expect(merged.stuckBusyMin).toBe(15);
+  expect(merged.stuckWaitMin).toBe(10);
+});
+
 test('the config export contains every customisation currently on screen', async ({ page }) => {
   await openGroups(page, ['基础', '外观', '场景', '日记', '系统', '配置']);
   await page.selectOption('#m-decoration', '围巾');

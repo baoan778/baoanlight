@@ -141,6 +141,74 @@ test('a transcript that finished long ago does not replay its completion on star
   }
 });
 
+// 一场会话里 assistant 的「中途说明」不是完成：它后面往往只隔几毫秒就跟着
+// 工具调用。以前每条 assistant 文本都立刻报 done，灯在忙碌中反复闪紫、
+// 「今日完成」被灌水（实测一场会话 117 条 assistant 文本里只有 33 条真的收尾）。
+test('an assistant line followed by tool calls is not reported as a completion', async () => {
+  const { start } = require('../src/server');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wbt-mid-'));
+  const proj = path.join(dir, 'demo-project');
+  fs.mkdirSync(proj, { recursive: true });
+  const file = path.join(proj, 'sess-mid.jsonl');
+  fs.writeFileSync(file, [
+    JSON.stringify({ type: 'session-meta', sessionId: 'sess-mid' }),
+    JSON.stringify({ type: 'function_call', name: 'Bash' }),
+  ].join('\n') + '\n');
+
+  let srv;
+  let timer;
+  try {
+    ({ server: srv } = await start({ port: 0 }));
+    const port = srv.address().port;
+    const state = async () => (await fetch(`http://127.0.0.1:${port}/state`)).json();
+    const session = (snap) => (snap.sessions || []).find((s) => s.session === 'codebuddy:sess-mid');
+    const doneCount = (snap) => Number(snap && snap.stats && snap.stats.events
+      && snap.stats.events.codebuddy && snap.stats.events.codebuddy.done) || 0;
+    const waitFor = async (fn, label, ms = 5000) => {
+      const until = Date.now() + ms;
+      while (Date.now() < until) {
+        const snap = await state();
+        if (fn(snap)) return snap;
+        await new Promise((r) => setTimeout(r, 30));
+      }
+      throw new Error(`timed out waiting for ${label}`);
+    };
+
+    timer = wbt.run({ dir, interval: 40, quiet: true, manual: true });
+    await waitFor((snap) => session(snap) && session(snap).state === 'busy', 'busy');
+    assert.equal(doneCount(await state()), 0);
+
+    // 中途说明：先挂起，不能马上变成「已完成」。
+    fs.appendFileSync(file, JSON.stringify({
+      type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '我先看看' }],
+    }) + '\n');
+    let sawDone = false;
+    const watchUntil = Date.now() + 900;
+    while (Date.now() < watchUntil) {
+      const snap = await state();
+      const s = session(snap);
+      if (s && s.state === 'done') sawDone = true;
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    // 这轮还没完：紧跟着工具调用，灯必须留在运行中。
+    fs.appendFileSync(file, JSON.stringify({ type: 'function_call', name: 'Bash' }) + '\n');
+    await new Promise((r) => setTimeout(r, 1200));
+    const midway = await state();
+    assert.equal(sawDone, false, 'a mid-turn assistant line must not light the done lamp');
+    assert.equal(session(midway).state, 'busy', 'the turn continues after the assistant line');
+    assert.equal(doneCount(midway), 0, 'and it is not counted as a completed task');
+
+    // 真正收尾（之后没有任何新记录）才该报完成，而且只报一次。
+    fs.appendFileSync(file, JSON.stringify({ type: 'message', role: 'assistant' }) + '\n');
+    const finished = await waitFor((snap) => session(snap) && session(snap).state === 'done', 'done');
+    assert.equal(doneCount(finished), 1);
+  } finally {
+    if (timer && timer.stop) timer.stop(); else if (timer) clearInterval(timer);
+    srv && srv.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // 端到端：写一条记录，灯就该亮；助手回完，灯就该收。
 test('watching a transcript turns into live state on the server', async () => {
   const { start } = require('../src/server');
