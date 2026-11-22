@@ -455,12 +455,14 @@ test('done and error transitions are counted per agent', () => {
 test('done is transient and decays back to idle', async () => {
   const s = new Store({ doneTtlMs: 30 });
   s.set({ session: 'a', agent: 'claude', state: 'busy' });
-  s.set({ session: 'a', agent: 'claude', state: 'done' });
+  s.set({ session: 'a', agent: 'claude', state: 'done', detail: '这一轮结束' });
   assert.equal(s.snapshot().sessions[0].state, 'done');
 
   await new Promise((r) => setTimeout(r, 50));
   s.sweep();
-  assert.equal(s.snapshot().sessions[0].state, 'idle', 'done 过了 doneTtl 就退回空闲');
+  const idle = s.snapshot().sessions[0];
+  assert.equal(idle.state, 'idle', 'done 过了 doneTtl 就退回空闲');
+  assert.equal(idle.detail, '', '退回空闲后不再挂着上一轮的动作说明');
 });
 
 test('a state change is recorded as one evidence event', () => {

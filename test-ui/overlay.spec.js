@@ -1669,6 +1669,28 @@ test('a turn that ends as idle still gets a completion notification and cue', as
   await expect.poll(() => page.evaluate(() => window.__tones)).toBeGreaterThan(before);
 });
 
+// 同一软件开两个窗口：一个还在忙、另一个刚空闲。上一帧状态以前按软件记，
+// 忙碌窗口的每次心跳都会把空闲窗口误判成「刚完成」：机器人反复点头、气泡
+// 反复说「完成啦」。完成必须按会话判断。
+test('an idle window is not re-announced when another window of the same software reports', async ({ page }) => {
+  await withNotifySpy(page);
+  await api('/state', { session: 'wb-busy', agent: 'workbuddy', state: 'busy' });
+  await api('/state', { session: 'wb-idle', agent: 'workbuddy', state: 'idle', detail: '这一轮结束' });
+  await settled(page, LIVE_ROWS, ['workbuddy']).toBe(true);
+
+  await page.evaluate(() => {
+    window.__done = 0;
+    window.addEventListener('bao:done', () => { window.__done += 1; });
+  });
+  // 忙碌窗口连续心跳（状态没变）：静默窗口不该因此被再宣一次完成。
+  for (let i = 0; i < 3; i += 1) {
+    await api('/state', { session: 'wb-busy', agent: 'workbuddy', state: 'busy' });
+    await page.waitForTimeout(150);
+  }
+  expect(await page.evaluate(() => window.__done)).toBe(0);
+  expect(await notified(page)).not.toContain('WorkBuddy 完成了');
+});
+
 // 取消不是完成：日志里的 turn_aborted / cancelled 也会把状态带回 idle，
 // 但「报喜」在这里就是撒谎。
 test('a cancelled turn is not announced as a completion', async ({ page }) => {
@@ -2717,6 +2739,36 @@ test('startup repairs invalid alert thresholds instead of showing a number that 
   const merged = Object.assign({}, ...(await page.evaluate(() => window.__saved)));
   expect(merged.stuckBusyMin).toBe(15);
   expect(merged.stuckWaitMin).toBe(10);
+});
+
+// 每日目标与提示音音量也只接受下拉/滑杆里的档位：手改成 100 小时或 5 倍音量时，
+// 界面按合法值显示，实际生效的却还是原值。启动时收回并写回。
+test('startup repairs an impossible daily goal and an out-of-range cue volume', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__saved = [];
+    window.bao = {
+      serverUrl: location.origin,
+      saveConfig: (patch) => { window.__saved.push(patch); },
+      getConfig: () => Promise.resolve({ dailyGoalHours: 100, soundVolume: 5 }),
+      getAutostart: () => Promise.resolve({ enabled: false }),
+      setAutostart: () => Promise.resolve({ enabled: false }),
+      contentSize: () => {}, hotRect: () => {}, onCursor: () => {}, notify: () => {},
+      openTerminal: () => {}, trayStatus: () => {}, quit: () => {},
+      dragStart: () => {}, dragEnd: () => {},
+    };
+  });
+  await page.reload();
+  await page.waitForFunction(() => document.body.dataset.state !== undefined);
+  await openGroups(page, ['基础', '系统']);
+
+  await expect(page.locator('#m-goal')).toHaveValue('0');
+  await expect(page.locator('#m-soundvol')).toHaveValue('60');
+  await expect(page.locator('#m-soundvol-val')).toHaveText('60%');
+
+  await page.waitForTimeout(300);
+  const merged = Object.assign({}, ...(await page.evaluate(() => window.__saved)));
+  expect(merged.dailyGoalHours).toBe(0);
+  expect(merged.soundVolume).toBe(0.6);
 });
 
 test('the config export contains every customisation currently on screen', async ({ page }) => {

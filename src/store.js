@@ -356,6 +356,9 @@ class Store extends EventEmitter {
       if (s.state === 'done' && now - s.since > this.doneTtlMs) {
         s.state = 'idle';
         s.since = now;
+        // 「这一轮结束」描述的是刚刚那次完成，不是此刻还在做什么。不清掉的话，
+        // 整个空闲期（半个小时）那一行都会挂着上一轮的动作说明。
+        s.detail = '';
         changed = true;
       }
 

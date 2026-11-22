@@ -531,7 +531,11 @@ import {
     }
   }
 
-  const lastByAgent = new Map();
+  // 上一帧的状态按**会话**记，不能按软件：同一软件开两个窗口时，一个在忙、
+  // 一个刚空闲，按软件记的 prev 会把「另一个窗口在忙」当成这个窗口的上一帧，
+  // 于是每次心跳到达都会给那个空闲窗口再报一次「完成」—— 机器人反复点头、
+  // 气泡反复说「完成啦」。会话键才是真正在变化的东西。
+  const lastBySession = new Map();
   // 最近动态：本次运行期间每个软件的状态变化时间线，菜单里一眼可看。
   const recent = [];
   const RECENT_VERB = { busy: '开始运行', waiting: '需要你', error: '出错了', done: '完成了', idle: '就绪', unknown: '状态未知', offline: '离线' };
@@ -777,13 +781,13 @@ import {
 
   function announceDone(sessions) {
     // 会话被 /clear、`bao set offline` 或 TTL 清掉后，这里不能留着它的旧状态：
-    // 否则同一个软件下次以 idle 出现时会被判成「刚完成」，为一个没发生的事转圈
+    // 否则同一个会话下次以 idle 出现时会被判成「刚完成」，为一个没发生的事转圈
     // 庆祝，还往「最近动态」里写一条假的完成记录。
-    const live = new Set(sessions.map((s) => s.agent));
-    for (const a of [...lastByAgent.keys()]) if (!live.has(a)) lastByAgent.delete(a);
+    const live = new Set(sessions.map((s) => s.session));
+    for (const k of [...lastBySession.keys()]) if (!live.has(k)) lastBySession.delete(k);
     for (const s of sessions) {
-      const prev = lastByAgent.get(s.agent);
-      lastByAgent.set(s.agent, s.state);
+      const prev = lastBySession.get(s.session);
+      lastBySession.set(s.session, s.state);
       // 记录状态变化到「最近动态」（首次出现不算变化，避免初始加载刷屏）。
       // 连续两条同 agent 同状态（SSE 连发两帧）只记一条，不刷屏。
       if (prev && prev !== s.state
@@ -4778,9 +4782,23 @@ import {
       setPersonality(cfg.personality);
       setThemeMode(cfg.theme);
       setCollapsed(!!cfg.collapsed);
-      goalSel.value = String([0, 2, 4, 6, 8].includes(Number(cfg.dailyGoalHours)) ? Number(cfg.dailyGoalHours) : 0);
+      // 每日目标只允许 0/2/4/6/8 小时（下拉里就这五档）。手改配置写进 100 时，
+      // 下拉会显示「关闭」，但战绩面板仍按 100 小时算进度、广告牌按 12 小时封顶
+      // —— 三处说法不同。与提醒阈值一样：收回合法档位并写回。
+      const goalHours = [0, 2, 4, 6, 8].includes(Number(cfg.dailyGoalHours)) ? Number(cfg.dailyGoalHours) : 0;
+      if (goalHours !== cfg.dailyGoalHours) {
+        cfg.dailyGoalHours = goalHours;
+        if (inElectron) saveConfig({ dailyGoalHours: goalHours });
+      }
+      goalSel.value = String(cfg.dailyGoalHours);
       document.getElementById('m-sound').checked = !!cfg.sound;
+      // 音量同理：滑杆只允许 5%–60%，cue() 却直接读 cfg.soundVolume。手改成 5
+      // 就是一次五倍增益的爆音，而界面显示 60%。收回范围并写回。
       const sv = soundVolPct(cfg.soundVolume);
+      if (sv / 100 !== cfg.soundVolume) {
+        cfg.soundVolume = sv / 100;
+        if (inElectron) saveConfig({ soundVolume: cfg.soundVolume });
+      }
       soundvolInput.value = String(sv);
       soundvolOut.textContent = sv + '%';
       document.getElementById('m-voice').checked = !!cfg.voice;
