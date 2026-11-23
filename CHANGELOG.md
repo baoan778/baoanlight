@@ -3,6 +3,21 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，版本号格式为
 `MAJOR.MINOR.PATCH`。每个版本的「用户可见变化」和「升级注意」都记在这里。
 
+## [2.0.22] - 2026-11-23
+
+### 修复
+
+- `bao doctor`、启动自检和 `bao onboard` 不再把正在被实时跟踪的 WorkBuddy 报成
+  「未找到」。没有任务板时，逐轮 transcript（`~/.workbuddy/projects`）由 CodeBuddy
+  观察器读取并把会话标回 WorkBuddy；这三处现在报告同一个事实，不再建议一条
+  注定失败的 `bao watch workbuddy`。
+
+### 改进
+
+- 「软件顺序」只接受内置注册表里的软件名并去重。手改或导入的配置里混进幽灵
+  名称 / 重复项时，设置里不会再长出一行点得动、改得了名、桌面上却永远不出现
+  的软件；清理结果会写回磁盘，导出也不会再带上脏值。
+
 ## [2.0.21] - 2026-11-22
 
 ### 修复
