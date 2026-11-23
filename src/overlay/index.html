@@ -239,15 +239,21 @@
      标题的颜色只说这一组最坏到哪一步；「静止」一组故意压低对比，让眼睛先落在
      上面两组。 */
   #labels .group {
-    display: flex; align-items: center; justify-content: space-between;
+    display: flex; align-items: center; gap: 6px;
     width: calc(100% - 24px); max-width: 304px;
     padding: 3px 9px 0;
     font-size: 9.5px; font-weight: 600; letter-spacing: .04em;
     color: rgba(233,237,242,.48);
     white-space: nowrap;
   }
+  /* 「最久 6 分」：比组名再弱一档，说明的是同一组的理由，不是新信息。 */
+  #labels .group em {
+    font-style: normal; font-weight: 400;
+    opacity: .72; letter-spacing: 0;
+  }
+  #labels .group em[hidden] { display: none; }
   #labels .group b {
-    min-width: 14px; font-weight: 650;
+    min-width: 14px; margin-left: auto; font-weight: 650;
     text-align: right; font-variant-numeric: tabular-nums;
   }
   #labels .group[data-group="need"] { color: rgba(255,204,0,.88); }

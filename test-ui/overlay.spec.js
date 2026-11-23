@@ -326,11 +326,31 @@ test('rows are grouped by urgency, with a count per group', async ({ page }) => 
   await settled(page, () => [...document.querySelectorAll('#labels .group')]
     .map((el) => `${el.dataset.group}:${el.querySelector('b').textContent}`))
     .toEqual(['need:1', 'run:1', 'rest:3']);
+  // 刚发生的等待写「刚刚」：一个总数不足以决定先处理谁，等多久才是答案。
+  await settled(page, () => document.querySelector('#labels .group[data-group="need"] em')?.textContent)
+    .toBe('刚刚');
 
   // 标题真的插在自己那一组前面，而不是全部堆在列表顶部。
   await settled(page, () => [...document.querySelectorAll('#labels > .group, #labels > .pill[data-agent]')]
     .map((el) => el.dataset.group || el.dataset.agent))
     .toEqual(['need', 'claude', 'run', 'codex', 'rest', 'deepseek', 'workbuddy', 'codebuddy']);
+});
+
+// 同组里有多个「需要你」时，等得最久的排最前，标题也直接说出最久等了多久。
+// 否则用户点开列表还要自己算时间戳，才知道先处理谁。
+test('the need group puts the longest wait first and says how long', async ({ page }) => {
+  await api('/state', { session: 'n1', agent: 'claude', state: 'waiting' });
+  await api('/state', { session: 'n2', agent: 'codex', state: 'waiting' });
+  await api('/state', { session: 'n3', agent: 'deepseek', state: 'busy' });
+  await settled(page, () => document.querySelectorAll('#labels .group').length).toBe(3);
+
+  // claude 已经等了 9 分钟：它必须先出现，标题也要说出来。
+  ageSession('n1', { since: Date.now() - 9 * 60 * 1000 });
+
+  await settled(page, () => [...document.querySelectorAll('#labels .pill[data-agent]')]
+    .map((el) => el.dataset.agent)[0]).toBe('claude');
+  await settled(page, () => document.querySelector('#labels .group[data-group="need"] em')?.textContent)
+    .toBe('最久 9 分');
 });
 
 // 静默超过阈值（默认 10 分钟）的「运行中」不能再是绿色：它是不确定，可能卡住。

@@ -1136,22 +1136,27 @@ import {
   // 分组标题：一行小字 + 数量。只有真出现两种以上分组时才显示，全是离线占位时
   // 保持原来那张平列表，避免为了「分组」而制造新的视觉噪音。
   const GROUP_LABEL = { need: '需要你', run: '运行中', rest: '静止' };
-  function groupRow(key, count, worst) {
+  function groupRow(key, count, worst, extra = '') {
     let entry = groupPool.get(key);
     if (!entry) {
       const el = document.createElement('div');
       el.className = 'group';
       el.dataset.group = key;
       const name = document.createElement('span');
+      const more = document.createElement('em');
       const num = document.createElement('b');
-      el.append(name, num);
-      entry = { el, name, num };
+      el.append(name, more, num);
+      entry = { el, name, more, num };
       groupPool.set(key, entry);
     }
     entry.name.textContent = GROUP_LABEL[key];
+    // 第二段说明：目前只有「需要你」用 —— 最久等了多久。数字只回答几个，
+    // 等多久才决定先点谁。
+    entry.more.textContent = extra;
+    entry.more.hidden = !extra;
     entry.num.textContent = String(count);
     entry.el.dataset.worst = worst || '';
-    entry.el.title = `${GROUP_LABEL[key]}：${count} 个软件`;
+    entry.el.title = `${GROUP_LABEL[key]}：${count} 个软件` + (extra ? `，${extra}` : '');
     return entry.el;
   }
 
@@ -1601,6 +1606,14 @@ import {
     const hiddenCount = showPills ? Math.max(0, ordered.length - shown.length) : 0;
     const keep = new Set(shown.map((x) => x.agent));
     const groupCounts = { need: need.length, run: run.length, rest: rest.length };
+    // 「需要你」组里最久的那一个等了多久：数量说明要处理几个，时长说明先点谁。
+    // 组内已经按等待时长排过序，这里把同一个事实放到标题上，不用逐行读。
+    const waitedMs = need.length
+      ? Math.max(0, Date.now() - need.reduce((min, s) => Math.min(min, s.since || Date.now()), Date.now()))
+      : 0;
+    const waitText = !need.length
+      ? ''
+      : (waitedMs >= 60_000 ? `最久 ${Math.max(1, Math.round(waitedMs / 60_000))} 分` : '刚刚');
     // 只有真的出现两种以上分组时才加小标题：只剩「静止」时还要在每行头上写
     // 「静止 5」，那是纯噪音，不是信息。
     const showGroups = showPills
@@ -1763,7 +1776,7 @@ import {
           const worst = g === 'need'
             ? (need.some((x) => x.state === 'error') ? 'error' : 'waiting')
             : (g === 'run' ? 'busy' : '');
-          labels.appendChild(groupRow(g, groupCounts[g], worst));
+          labels.appendChild(groupRow(g, groupCounts[g], worst, g === 'need' ? waitText : ''));
           usedGroups.add(g);
         }
         lastGroup = g;
