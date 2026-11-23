@@ -88,6 +88,9 @@ class Store extends EventEmitter {
     ttlMs = 6 * 60 * 60 * 1000,
     idleTtlMs = 30 * 60 * 1000,
     quietAfterMs = 90_000,
+    // 静默太久的「运行中」不再算运行中：一个卡死的会话不该让机器人一直绿着。
+    // 10 分钟既盖住正常的长编译，也不会让假绿挂半小时。
+    staleBusyMs = 10 * 60 * 1000,
     unusedTtlMs = 2 * 60 * 1000,
     doneTtlMs = 30_000,
   } = {}) {
@@ -95,6 +98,7 @@ class Store extends EventEmitter {
     this.ttlMs = ttlMs;
     this.idleTtlMs = idleTtlMs;
     this.quietAfterMs = quietAfterMs;
+    this.staleBusyMs = staleBusyMs;
     this.unusedTtlMs = unusedTtlMs;
     // 「完成」是瞬态：刚完成值得一眼看到，过了这个时长就退回「空闲」（就绪）。
     this.doneTtlMs = doneTtlMs;
@@ -453,6 +457,10 @@ class Store extends EventEmitter {
         const out = now - s.updatedAt > this.quietAfterMs
           ? { ...s, quiet: true, quietFor: now - s.updatedAt }
           : { ...s };
+        // 静默太久的「运行中」不再算运行中。原始 state 保留（卡住提醒和统计还要
+        // 靠它），展示层按 stale 把它降为「不确定」—— 否则一个卡死的会话会让
+        // 机器人在 30 分钟 TTL 内一直绿着，这正是用户看到的「只有一种颜色」。
+        if (out.state === 'busy' && out.quiet && out.quietFor >= this.staleBusyMs) out.stale = true;
         const trail = this.trails.get(s.session);
         if (trail && trail.length) out.events = trail.filter((e) => now - e.at <= 2 * 60 * 60 * 1000);
         return out;
@@ -463,21 +471,25 @@ class Store extends EventEmitter {
     // windows) collapse into one slot showing the worst of them, with a count —
     // the user cares that Claude needs them, not which window it was.
     const byAgent = new Map();
+    // stale 的会话在灯和槽位上算「不确定」，不在会话本身改 state —— 卡住提醒
+    // 仍需要看到原始的 busy。
+    const lit = (s) => (s.stale ? 'unknown' : s.state);
     for (const s of sessions) {
       const cur = byAgent.get(s.agent);
       if (!cur) {
         byAgent.set(s.agent, {
-          agent: s.agent, state: s.state, detail: s.detail, count: 1,
-          quiet: !!s.quiet, quietFor: s.quietFor,
+          agent: s.agent, state: lit(s), detail: s.detail, count: 1,
+          quiet: !!s.quiet, quietFor: s.quietFor, stale: !!s.stale,
         });
         continue;
       }
       cur.count += 1;
       cur.quiet = cur.quiet && !!s.quiet;
       if (!cur.quiet) cur.quietFor = undefined;
-      if (PRIORITY[s.state] > PRIORITY[cur.state]) {
-        cur.state = s.state;
+      if (PRIORITY[lit(s)] > PRIORITY[cur.state]) {
+        cur.state = lit(s);
         cur.detail = s.detail;
+        cur.stale = !!s.stale;
       }
     }
 

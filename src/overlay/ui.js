@@ -407,7 +407,7 @@ import {
   // no session is drawn dark rather than hidden: "codex is not running" is
   // information, and a cell that appears and disappears makes the strip
   // unreadable at a glance.
-  function renderSlots(slots) {
+  function renderSlots(slots, mainIdx = -1) {
     slotEls.forEach((el, i) => {
       const s = slots[i];
       const live = s && s.count > 0;
@@ -419,6 +419,8 @@ import {
       el.dataset.agent = s ? s.agent : '';
       el.dataset.state = live ? s.state : 'offline';
       el.dataset.count = live ? String(s.count) : '0';
+      // 主灯此刻代表哪个槽位：呼吸的是它，不是所有亮着的灯。
+      el.dataset.main = i === mainIdx ? '1' : '0';
     });
   }
 
@@ -1099,6 +1101,8 @@ import {
   // 那正是这笔开销的来源）。
   const pillPool = new Map();   // agent -> { el, refs }
   let moreRow = null;
+  // 分组小标题（需要你 / 运行中 / 静止）：池化复用，避免每帧重建节点。
+  const groupPool = new Map();  // group -> { el, name, num }
   // 展开的软件：点行尾的 ×N 把它的每个会话各列一行。默认收起，避免把桌面撑长。
   const expandedAgents = new Set();
   // 「默认展开多会话」打开时，手动收起的软件记在这里，否则每一帧都会被重新
@@ -1127,6 +1131,28 @@ import {
     };
     pillPool.set(agent, entry);
     return entry;
+  }
+
+  // 分组标题：一行小字 + 数量。只有真出现两种以上分组时才显示，全是离线占位时
+  // 保持原来那张平列表，避免为了「分组」而制造新的视觉噪音。
+  const GROUP_LABEL = { need: '需要你', run: '运行中', rest: '静止' };
+  function groupRow(key, count, worst) {
+    let entry = groupPool.get(key);
+    if (!entry) {
+      const el = document.createElement('div');
+      el.className = 'group';
+      el.dataset.group = key;
+      const name = document.createElement('span');
+      const num = document.createElement('b');
+      el.append(name, num);
+      entry = { el, name, num };
+      groupPool.set(key, entry);
+    }
+    entry.name.textContent = GROUP_LABEL[key];
+    entry.num.textContent = String(count);
+    entry.el.dataset.worst = worst || '';
+    entry.el.title = `${GROUP_LABEL[key]}：${count} 个软件`;
+    return entry.el;
   }
 
   function paintPill(entry, s, snap, worstKey, count = 1) {
@@ -1176,7 +1202,11 @@ import {
     const elapsed = s.state === 'busy' && s.since ? Date.now() - s.since : 0;
     const paceMs = snap.pace && snap.pace[agent];
     let detail = s.detail || VERB[s.state] || '';
-    if (s.state === 'busy' && elapsed >= 60000) {
+    // 静默太久的「运行中」不再按运行中解释：它现在是不确定，可能卡住，而不是
+    // 一条可以继续相信的「正在干活」。绿色已经撤掉，文案必须跟着撤。
+    if (s.stale) {
+      detail = `静默 ${Math.max(1, Math.round(s.quietFor / 60000))} 分钟 · 可能卡住，状态未确认`;
+    } else if (s.state === 'busy' && elapsed >= 60000) {
       if (paceMs && elapsed < paceMs) detail = `预计还需 ${Math.max(1, Math.round((paceMs - elapsed) / 60000))} 分钟`;
       else if (paceMs) detail = `比平时慢 · 已运行 ${Math.round(elapsed / 60000)} 分钟`;
       else detail = `已运行 ${Math.round(elapsed / 60000)} 分钟`;
@@ -1217,8 +1247,10 @@ import {
   }
 
   function paintSessionRow(el, s) {
-    const hex = HEX[COLOR[s.state]] || '#7a828c';
-    el.dataset.state = s.state;
+    // stale 的会话在行上同样算「不确定」：主行已经变灰，展开行不能还是绿的。
+    const st = s.stale ? 'unknown' : s.state;
+    const hex = HEX[COLOR[st]] || '#7a828c';
+    el.dataset.state = st;
     el.dataset.agent = s.agent || '';
     el.dataset.cwd = s.cwd || '';
     el.classList.toggle('quiet', !!s.quiet);
@@ -1229,7 +1261,9 @@ import {
     // 信息。目录名放前面，短 id 留在后面用于区分同一目录下的两个会话。
     const dir = String(s.cwd || '').split(/[\\/]/).filter(Boolean).pop() || '';
     el.querySelector('.sid').textContent = dir ? `${dir} · ${sid}` : sid;
-    const what = s.detail || VERB[s.state] || s.state;
+    const what = s.stale
+      ? `静默 ${Math.max(1, Math.round((s.quietFor || 0) / 60000))} 分钟 · 状态未确认`
+      : (s.detail || VERB[s.state] || s.state);
     el.querySelector('.what').textContent = what;
     // 时长直接写在行上：不用展开主行、也不用悬停才知道它跑了多久/静了多久。
     const ageEl = el.querySelector('.age');
@@ -1494,12 +1528,15 @@ import {
     // 这段必须放在「聚焦」之前：主灯要不要继续认那个软件，取决于它的行这一帧还在
     // 不在列表里。放到 publish 之后再判，就已经往 3D 场景发出了一帧过期的状态。
     const counts = new Map();   // agent -> 会话数（用于行上的 ×N）
+    // 静默太久的「运行中」在列表和灯里都算「不确定」。原始 state 留给通知和卡住
+    // 提醒，显示层只认这个视图 —— 否则设置里的「静默 17 分」和灯上的绿色各说各的。
+    const viewState = (s) => (s.stale ? 'unknown' : s.state);
     const seen = new Map();
     for (const s of sessions) {
       if (s.state === 'offline') continue;
       counts.set(s.agent, (counts.get(s.agent) || 0) + 1);
       const cur = seen.get(s.agent);
-      if (!cur || PRIO[s.state] > PRIO[cur.state]) seen.set(s.agent, s);
+      if (!cur || PRIO[viewState(s)] > PRIO[viewState(cur)]) seen.set(s.agent, s);
     }
     // 设置里打开「默认展开多会话」：有多个会话的软件自动展开。手动收起的除外。
     if (cfg.expandSessions) {
@@ -1524,27 +1561,50 @@ import {
       : agentOrder;
     // showOffline=false 时退回旧行为：只显示真正有会话的软件。
     const offlineRows = cfg.showOffline !== false;
+    // 显示用副本：stale 的会话改写成「不确定」，但保留原始 state 供文案区分。
+    const forDisplay = (s) => (s.stale ? { ...s, state: 'unknown', reportedState: s.state } : s);
     const list = rowOrder
-      .map((agent) => seen.get(agent) || (offlineRows
-        ? { agent, state: 'offline', detail: '', count: 0, quiet: false }
-        : null))
+      .map((agent) => {
+        const s = seen.get(agent);
+        if (s) return forDisplay(s);
+        return offlineRows ? { agent, state: 'offline', detail: '', count: 0, quiet: false } : null;
+      })
       .filter(Boolean);
     const maxRows = Math.max(2, Math.min(8, Number(cfg.maxRows) || 5));
     const showPills = cfg.showLabels && !collapsed && list.length > 0;
-    // 行数预算先给「真的在跑」的软件 —— 但只在真的溢出时重排：不溢出时顺序必须
-    // 是固定的（离线也占位、位置不跳）。溢出时若不重排，maxRows=2 的前两行可能是
-    // 两个离线占位，唯一在跑、正被主灯代表的那一行被折进「还有 N 个」—— 灯亮着，
-    // 列表里却查不出是谁。两组内部都保持原相对顺序。
-    const overflow = showPills && list.length > maxRows;
-    const ranked = overflow
-      ? list
-        .map((s, i) => ({ s, i, live: s.state !== 'offline' }))
-        .sort((a, b) => (Number(b.live) - Number(a.live)) || (a.i - b.i))
-        .map((x) => x.s)
-      : list;
-    const shown = showPills ? ranked.slice(0, maxRows) : [];
-    const hiddenCount = showPills ? Math.max(0, ranked.length - shown.length) : 0;
+    // 优先级分组：需要你 → 运行中 → 静止。组与组之间按紧急程度排列，组内保持
+    // 固定的软件顺序 —— 用户学一次位置就够了，状态变化只让行换组，不在组内乱跳。
+    // 「需要你」是唯一按严重度和等待时长再排序的一组：同样两组里，红了更久的
+    // 那个应该离眼睛最近。
+    //
+    // 行数预算也按这个顺序切：先保证「需要你」和「运行中」都在可见范围内，
+    // 离线占位只填剩下的空位。否则 maxRows=2 时前两行可能是两个离线占位，
+    // 唯一在跑、正被主灯代表的那一行被折进「还有 N 个」—— 灯亮着，列表里却
+    // 查不出是谁。
+    const groupOf = (s) => (s.state === 'error' || s.state === 'waiting'
+      ? 'need'
+      : (s.state === 'busy' ? 'run' : 'rest'));
+    const rank = (agent) => {
+      const i = rowOrder.indexOf(agent);
+      return i < 0 ? 999 : i;
+    };
+    const need = list.filter((s) => groupOf(s) === 'need')
+      .sort((a, b) => (PRIO[b.state] - PRIO[a.state])
+        || ((a.since || 0) - (b.since || 0))
+        || (rank(a.agent) - rank(b.agent)));
+    const run = list.filter((s) => groupOf(s) === 'run')
+      .sort((a, b) => rank(a.agent) - rank(b.agent));
+    const rest = list.filter((s) => groupOf(s) === 'rest')
+      .sort((a, b) => rank(a.agent) - rank(b.agent));
+    const ordered = [...need, ...run, ...rest];
+    const shown = showPills ? ordered.slice(0, maxRows) : [];
+    const hiddenCount = showPills ? Math.max(0, ordered.length - shown.length) : 0;
     const keep = new Set(shown.map((x) => x.agent));
+    const groupCounts = { need: need.length, run: run.length, rest: rest.length };
+    // 只有真的出现两种以上分组时才加小标题：只剩「静止」时还要在每行头上写
+    // 「静止 5」，那是纯噪音，不是信息。
+    const showGroups = showPills
+      && ['need', 'run', 'rest'].filter((k) => groupCounts[k] > 0).length > 1;
 
     // 点击聚焦：聚焦某软件时主灯临时显示它的状态（否则显示聚合最坏者）。
     // 它下线、或者它的那一行被行数/折叠挤掉，都自动回到聚合 —— 后者尤其重要：
@@ -1588,7 +1648,7 @@ import {
     if (!previewing) {
       led.dataset.color = color || 'red';
       led.classList.toggle('on', !!color);
-      renderSlots(slots);
+      renderSlots(slots, displayState === overall ? mainSlotIdx : -1);
     }
     announceDone(sessions);
     if (!previewing) checkStuck(sessions);
@@ -1690,10 +1750,23 @@ import {
       if (!keep.has(agent)) { entry.el.remove(); pillPool.delete(agent); }
     }
     const usedSubs = new Set();
+    const usedGroups = new Set();
     if (showPills) {
       // Four rows fit comfortably; the rest collapse into a count rather than
       // pushing the robot off the bottom of the desk.
+      let lastGroup = '';
       for (const s of shown) {
+        const g = groupOf(s);
+        if (showGroups && g !== lastGroup) {
+          // 标题的颜色只说这一组最坏到哪一步：需要你里有红就红，否则黄；
+          // 运行中绿；静止不抢眼。
+          const worst = g === 'need'
+            ? (need.some((x) => x.state === 'error') ? 'error' : 'waiting')
+            : (g === 'run' ? 'busy' : '');
+          labels.appendChild(groupRow(g, groupCounts[g], worst));
+          usedGroups.add(g);
+        }
+        lastGroup = g;
         const { el } = pillRow(s.agent);
         paintPill({ el, refs: pillPool.get(s.agent).refs }, s, snap, worstKey, counts.get(s.agent) || 1);
         // appendChild 对已在文档里的节点是「移动」，所以这一行同时保证顺序。
@@ -1713,6 +1786,12 @@ import {
       }
     } else if (moreRow && moreRow.parentNode) {
       moreRow.remove();
+    }
+    // 这一帧没用到的分组标题（组空了、只剩一组、列表被折叠）一起收起。
+    for (const [key, entry] of groupPool) {
+      if (usedGroups.has(key)) continue;
+      entry.el.remove();
+      groupPool.delete(key);
     }
     // 收起、被行数挤掉、或者会话已经结束的展开行都要消失。
     for (const [key, el] of subPool) {

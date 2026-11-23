@@ -234,6 +234,26 @@
   .pill.focused { box-shadow: 0 0 0 1.5px #6aa5ff, 0 0 12px -2px rgba(106,165,255,.6), 0 8px 18px -10px #000; }
   .pill.focused b { color: #cfe0ff; }
   .pill.more { display: block; text-align: center; opacity: .55; font-size: 10px; padding: 3px; }
+  /* 分组小标题：需要你 / 运行中 / 静止。只在出现两种以上分组时渲染（见 ui.js），
+     所以它一定在回答「这几行分别是哪种优先级」，而不是给单一分组加噪音。
+     标题的颜色只说这一组最坏到哪一步；「静止」一组故意压低对比，让眼睛先落在
+     上面两组。 */
+  #labels .group {
+    display: flex; align-items: center; justify-content: space-between;
+    width: calc(100% - 24px); max-width: 304px;
+    padding: 3px 9px 0;
+    font-size: 9.5px; font-weight: 600; letter-spacing: .04em;
+    color: rgba(233,237,242,.48);
+    white-space: nowrap;
+  }
+  #labels .group b {
+    min-width: 14px; font-weight: 650;
+    text-align: right; font-variant-numeric: tabular-nums;
+  }
+  #labels .group[data-group="need"] { color: rgba(255,204,0,.88); }
+  #labels .group[data-group="need"][data-worst="error"] { color: rgba(255,59,48,.92); }
+  #labels .group[data-group="run"] { color: rgba(52,199,89,.82); }
+  #labels .group[data-group="rest"] { color: rgba(233,237,242,.32); }
 
   /* 屏幕阅读器专用：1px 但仍在无障碍树里。这个工具的主要输出是颜色，
      对看不见颜色的人等于什么都没说。 */

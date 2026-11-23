@@ -295,21 +295,64 @@ test('one software with several sessions still shows a single row', async ({ pag
   await api('/state', { session: 'w2', agent: 'workbuddy', state: 'error' });
   await api('/state', { session: 'c1', agent: 'claude', state: 'busy' });
 
-  // Every registered software keeps exactly one row, in the fixed order; two
-  // WorkBuddy sessions must collapse into its single row rather than add another.
+  // Every registered software keeps exactly one row; two WorkBuddy sessions must
+  // collapse into its single row rather than add another.
   await settled(page, () => document.querySelectorAll('.pill').length).toBe(5);
   await settled(page, () => document.querySelectorAll('.pill[data-agent="workbuddy"]').length).toBe(1);
 
+  // 分组顺序是「需要你 → 运行中 → 静止」，组内仍按固定软件顺序：
+  // workbuddy 出错、claude 在跑，其余三个离线占位落在最后。
   const rows = await page.evaluate(() =>
     [...document.querySelectorAll('.pill')].map((el) => el.dataset.agent));
-  expect(rows, 'one row per software, fixed order')
-    .toEqual(['deepseek', 'claude', 'codex', 'workbuddy', 'codebuddy']);
+  expect(rows, 'one row per software, urgent group first')
+    .toEqual(['workbuddy', 'claude', 'deepseek', 'codex', 'codebuddy']);
 
   // 两个会话合成一行时，行尾要有 ×2：否则「Claude 出错了」看不出是三个里哪个。
   // 现在这个数字本身是展开按钮（点开逐条列出会话），名字保持干净。
   await expect(page.locator('.pill[data-agent="workbuddy"] .pill-expand')).toHaveText(/×2/);
   await expect(page.locator('.pill[data-agent="workbuddy"] b')).toHaveText('WorkBuddy');
   await expect(page.locator('.pill[data-agent="claude"] b')).toHaveText('Claude Code');
+});
+
+// 多软件同时红黄绿时，列表必须按「需要你 → 运行中 → 静止」分组并给出每组数量：
+// 光有一列颜色点，用户仍要自己数哪几个在等自己。组内保持固定顺序，只在组间
+// 按紧急程度重排 —— 位置只换组、不乱跳。
+test('rows are grouped by urgency, with a count per group', async ({ page }) => {
+  await api('/state', { session: 'g1', agent: 'claude', state: 'waiting' });
+  await api('/state', { session: 'g2', agent: 'codex', state: 'busy' });
+  await api('/state', { session: 'g3', agent: 'deepseek', state: 'idle' });
+
+  await settled(page, () => document.querySelectorAll('#labels .group').length).toBe(3);
+  await settled(page, () => [...document.querySelectorAll('#labels .group')]
+    .map((el) => `${el.dataset.group}:${el.querySelector('b').textContent}`))
+    .toEqual(['need:1', 'run:1', 'rest:3']);
+
+  // 标题真的插在自己那一组前面，而不是全部堆在列表顶部。
+  await settled(page, () => [...document.querySelectorAll('#labels > .group, #labels > .pill[data-agent]')]
+    .map((el) => el.dataset.group || el.dataset.agent))
+    .toEqual(['need', 'claude', 'run', 'codex', 'rest', 'deepseek', 'workbuddy', 'codebuddy']);
+});
+
+// 静默超过阈值（默认 10 分钟）的「运行中」不能再是绿色：它是不确定，可能卡住。
+// 这是用户看到的「只会显示一种绿色」的直接来源。
+test('a running software silent past the stale window turns grey, not green', async ({ page }) => {
+  await api('/state', { session: 'stuck', agent: 'claude', state: 'busy', detail: 'running Bash' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+
+  // 缩短阈值并把会话改成「2 分钟前最后一次汇报」：走的是同一段判定逻辑，
+  // 只是不用真的等 10 分钟。idleTtlMs（10 分钟）仍大于它，会话不会被清掉。
+  store.staleBusyMs = 60_000;
+  try {
+    ageSession('stuck', { updatedAt: Date.now() - 2 * 60 * 1000 });
+
+    await settled(page, () => document.querySelector('.pill[data-agent="claude"] i')?.dataset.color)
+      .toBe('grey');
+    await settled(page, () => document.querySelector('.pill[data-agent="claude"] span')?.textContent)
+      .toContain('静默 2 分钟');
+    await settled(page, () => document.body.dataset.state).toBe('unknown');
+  } finally {
+    store.staleBusyMs = 10 * 60 * 1000;
+  }
 });
 
 // The list can be reined in: hide the software that is not running, and cap how

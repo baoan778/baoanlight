@@ -198,6 +198,36 @@ test('a busy session silent past the idle window is dropped, not turned green', 
   assert.equal(s.snapshot().overall, 'offline');
 });
 
+// 静默超过 staleBusyMs 的「运行中」不再算运行中：会话本身还活着（卡住提醒要
+// 看得到原始 busy），但灯和槽位必须降为「不确定」，否则一个卡死的会话能让机器人
+// 一直绿到 TTL 结束 —— 这正是「只会显示一种绿色」的来源。
+test('a busy session silent past staleBusyMs is demoted to unknown, not left green', async () => {
+  const s = new Store({ quietAfterMs: 20, staleBusyMs: 100, idleTtlMs: 600_000 });
+  s.set({ session: 'stuck', agent: 'claude', state: 'busy' });
+
+  await new Promise((r) => setTimeout(r, 160));
+
+  const snap = s.snapshot();
+  const x = snap.sessions[0];
+  assert.equal(x.state, 'busy', 'the raw state is kept for the stuck reminder');
+  assert.equal(x.stale, true);
+  assert.equal(snap.slots.find((y) => y.agent === 'claude').state, 'unknown');
+  assert.equal(snap.slots.find((y) => y.agent === 'claude').stale, true);
+  assert.equal(snap.overall, 'unknown');
+});
+
+test('a stale busy never outranks a real waiting session', async () => {
+  const s = new Store({ quietAfterMs: 20, staleBusyMs: 100, idleTtlMs: 600_000 });
+  s.set({ session: 'stuck', agent: 'claude', state: 'busy' });
+
+  await new Promise((r) => setTimeout(r, 160));
+  s.set({ session: 'ask', agent: 'codex', state: 'waiting' });
+
+  const snap = s.snapshot();
+  assert.equal(snap.slots.find((x) => x.agent === 'claude').state, 'unknown');
+  assert.equal(snap.overall, 'waiting');
+});
+
 // 静默超时只说明「它不再汇报了」，不等于它又白干了半小时。今日时长要停在
 // 最后一帧证据上，否则日目标/里程碑会被沉默虚报提前触发。
 test('a dropped busy session is credited only up to its last report', () => {
