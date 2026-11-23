@@ -2771,6 +2771,40 @@ test('startup repairs an impossible daily goal and an out-of-range cue volume', 
   expect(merged.soundVolume).toBe(0.6);
 });
 
+// 手改/导入的配置里可能混进不存在的软件名或重复项。「软件顺序」直接按这份
+// 名单画行，于是设置里会多出一行幽灵软件：能上下移、能改名，桌面上却永远
+// 不会出现它 —— 两处对「有哪些软件」的说法不一致。启动时收窄到内置注册表、
+// 去重，并把干净结果写回。
+test('startup drops software names that do not exist from a hand-edited order', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__saved = [];
+    window.bao = {
+      serverUrl: location.origin,
+      saveConfig: (patch) => { window.__saved.push(patch); },
+      getConfig: () => Promise.resolve({ agentOrder: ['ghost', 'claude', 'claude', 'codex'] }),
+      getAutostart: () => Promise.resolve({ enabled: false }),
+      setAutostart: () => Promise.resolve({ enabled: false }),
+      contentSize: () => {}, hotRect: () => {}, onCursor: () => {}, notify: () => {},
+      openTerminal: () => {}, trayStatus: () => {}, quit: () => {},
+      dragStart: () => {}, dragEnd: () => {},
+    };
+  });
+  await page.reload();
+  await page.waitForFunction(() => document.body.dataset.state !== undefined);
+  await openGroups(page, ['软件']);
+
+  const names = () => page.evaluate(() => [...document.querySelectorAll('#m-order .row span')].map((el) => el.textContent));
+  await expect.poll(names, { timeout: POLL_TIMEOUT }).toHaveLength(5);
+  const rows = await names();
+  expect(rows).not.toContain('ghost');
+  expect(rows[0]).toBe('Claude Code');
+  expect(rows[1]).toBe('Codex');
+
+  await page.waitForTimeout(300);
+  const merged = Object.assign({}, ...(await page.evaluate(() => window.__saved)));
+  expect(merged.agentOrder).toEqual(['claude', 'codex']);
+});
+
 test('the config export contains every customisation currently on screen', async ({ page }) => {
   await openGroups(page, ['基础', '外观', '场景', '日记', '系统', '配置']);
   await page.selectOption('#m-decoration', '围巾');

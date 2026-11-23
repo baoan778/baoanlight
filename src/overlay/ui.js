@@ -4971,12 +4971,21 @@ import {
       const hl = HALO_NAMES.includes(cfg.halo) ? cfg.halo : '环形';
       haloSel.value = hl;
       window.dispatchEvent(new CustomEvent('bao:halo', { detail: { halo: hl } }));
-      // 软件顺序：用户排过就以它为准。长度不再要求等于内置数量 —— 服务端可能
-      // 多接了一个软件，那份顺序里就该有它。
+      // 软件顺序：用户排过就以它为准。但手改/导入的配置里可能混进 `__proto__`、
+      // 重复项，或者根本不存在的软件名 —— 设置里的顺序直接按这份名单画行，于是
+      // 会多出一行幽灵软件（能上移、能改名），而桌面上永远不会出现它。只保留
+      // 内置注册表里的键并去重；服务端将来新增的软件仍会被合并逻辑追加到末尾。
       if (Array.isArray(cfg.agentOrder) && cfg.agentOrder.length) {
-        agentOrder = [...cfg.agentOrder];
+        const clean = [];
+        for (const a of cfg.agentOrder) {
+          if (typeof a !== 'string' || !DEFAULT_ORDER.includes(a)) continue;
+          if (!clean.includes(a)) clean.push(a);
+        }
+        agentOrder = clean.length ? clean : [...DEFAULT_ORDER];
         AGENT_RANK = Object.fromEntries(agentOrder.map((a, i) => [a, i]));
-        customOrder = true;
+        customOrder = clean.length > 0;
+        // 脏值被清掉后写回，否则每次启动都要再修一遍，导出也还是脏的。
+        if (agentOrder.length !== cfg.agentOrder.length) saveConfig({ agentOrder: clean });
       }
       renderOrderUI();
       renderAgentDirs();
