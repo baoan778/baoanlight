@@ -108,6 +108,62 @@ test('the right beacon lights for each state', async ({ page }) => {
   }
 });
 
+// 用户看到的是颜色本身，不是 data-color 标签。3D 机器人、镜面灯和「没有 WebGL
+// 时的备用透镜」都读同一个 --state，所以这七个解析后的值就是桌面上的颜色；
+// 任何一个丢了，机器人就只剩一种颜色（曾经真的只剩绿色）。
+const EXACT_STATE_COLOUR = {
+  busy: { hex: '#34c759', rgb: 'rgb(52, 199, 89)' },
+  waiting: { hex: '#ffcc00', rgb: 'rgb(255, 204, 0)' },
+  error: { hex: '#ff3b30', rgb: 'rgb(255, 59, 48)' },
+  done: { hex: '#b06bff', rgb: 'rgb(176, 107, 255)' },
+  idle: { hex: '#dfe5ec', rgb: 'rgb(223, 229, 236)' },
+  unknown: { hex: '#ccd3dc', rgb: 'rgb(204, 211, 220)' },
+  offline: { hex: '#4a5058', rgb: 'rgb(74, 80, 88)' },
+};
+
+test('every state paints the robot its own exact colour', async ({ page }) => {
+  const paint = () => page.evaluate(() => ({
+    css: getComputedStyle(document.body).getPropertyValue('--state').trim(),
+    led: getComputedStyle(document.getElementById('status-led')).fill,
+    lens: getComputedStyle(document.querySelector('#fallback b')).backgroundColor,
+  }));
+
+  for (const state of ['busy', 'waiting', 'error', 'done', 'idle', 'unknown']) {
+    await api('/state', { session: 'a', agent: 'claude', state });
+    await settled(page, () => document.body.dataset.state).toBe(state);
+    const seen = await paint();
+    expect(seen.css, `${state}: --state`).toBe(EXACT_STATE_COLOUR[state].hex);
+    expect(seen.led, `${state}: beacon fill`).toBe(EXACT_STATE_COLOUR[state].rgb);
+    expect(seen.lens, `${state}: no-WebGL lens`).toBe(EXACT_STATE_COLOUR[state].rgb);
+  }
+
+  await api('/state', { session: 'a', agent: 'claude', state: 'offline' });
+  await settled(page, () => document.body.dataset.state).toBe('offline');
+  expect(await page.evaluate(() => getComputedStyle(document.body).getPropertyValue('--state').trim()))
+    .toBe(EXACT_STATE_COLOUR.offline.hex);
+});
+
+// 报错和暂停必须压过绿色：同一批会话里有软件还在跑时，主灯仍然要变红 / 变黄。
+// 这条盯的是「运行中占着灯，出事了却还是绿的」—— 用户报告过的现象。
+test('a failure or a pause outranks a running software, in the painted colour', async ({ page }) => {
+  const css = () => page.evaluate(() => getComputedStyle(document.body).getPropertyValue('--state').trim());
+  const painted = () => expect.poll(css, { timeout: POLL_TIMEOUT });
+
+  await api('/state', { session: 'run', agent: 'codex', state: 'busy' });
+  await painted().toBe(EXACT_STATE_COLOUR.busy.hex);
+
+  await api('/state', { session: 'ask', agent: 'claude', state: 'waiting' });
+  await painted().toBe(EXACT_STATE_COLOUR.waiting.hex);
+
+  await api('/state', { session: 'boom', agent: 'workbuddy', state: 'error' });
+  await painted().toBe(EXACT_STATE_COLOUR.error.hex);
+
+  // 报错结束、等待结束，才回到正在跑的那一个的绿色。
+  await api('/state', { session: 'boom', agent: 'workbuddy', state: 'offline' });
+  await api('/state', { session: 'ask', agent: 'claude', state: 'offline' });
+  await painted().toBe(EXACT_STATE_COLOUR.busy.hex);
+});
+
 // idle used to be a dim green, which meant "green" could mean either "working"
 // or "not working" — and the colour was the only thing telling them apart.
 // Green now belongs to running alone; idle is a dim neutral.
