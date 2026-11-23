@@ -222,4 +222,22 @@ function candidates(name) {
   return entry.logs();
 }
 
-module.exports = { AGENTS, names, find, logDir, candidates };
+// 「没有自己的日志目录」不等于「抓不到」。WorkBuddy 桌面端和 CodeBuddy CLI 共用
+// 同一套逐轮 transcript（~/.workbuddy/projects），CodeBuddy 观察器会按路径把
+// 带 workbuddy 的会话标回 WorkBuddy（见 wbt-watch 的 agentFor）。doctor / onboard
+// 只看任务板时，会把正在被实时跟踪的 WorkBuddy 报成「未找到」，并建议一条注定
+// 失败的 `bao watch workbuddy`。
+function transcriptCoverage(name, { config = {} } = {}) {
+  if (name !== 'workbuddy') return null;
+  const configured = config.agents?.codebuddy?.dir;
+  const dirs = configured ? [configured] : LOG_DIRS.codebuddy();
+  for (const dir of dirs) {
+    // 判定必须和 wbt-watch 一致：路径里没有 workbuddy 的目录不会被标回
+    // WorkBuddy，那里的会话属于 CodeBuddy。
+    if (!dir || !/workbuddy/i.test(dir)) continue;
+    try { if (fs.existsSync(dir)) return dir; } catch { /* keep looking */ }
+  }
+  return null;
+}
+
+module.exports = { AGENTS, names, find, logDir, candidates, transcriptCoverage };

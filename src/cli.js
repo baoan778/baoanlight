@@ -1245,6 +1245,8 @@ function cmdOnboard() {
     if (dir && fs.existsSync(dir)) return true;
     return agents.candidates(n).some((d) => fs.existsSync(d));
   };
+  // WorkBuddy 没有任务板时，仍可能被 CodeBuddy 观察器按逐轮 transcript 实时跟踪。
+  const wbTranscript = agents.transcriptCoverage('workbuddy', { config: cfg });
   const has = {
     codex: detect('codex'),
     deepseek: detect('deepseek'),
@@ -1257,7 +1259,9 @@ function cmdOnboard() {
   console.log(`    ${'Claude Code'.padEnd(15)}${claudeHooked ? c.grn('✓ 已装钩子') : (claudePresent ? c.yel('○ 已安装，未接') : c.dim('○ 未找到'))}`);
   console.log(`    ${'Codex'.padEnd(15)}${has.codex ? c.grn('✓ 找到日志') : c.dim('○ 未找到')}`);
   console.log(`    ${'DeepSeek Harness'.padEnd(15)}${has.deepseek ? c.grn('✓ 找到日志') : c.dim('○ 未找到')}`);
-  console.log(`    ${'WorkBuddy'.padEnd(15)}${has.workbuddy ? c.grn('✓ 找到日志') : c.dim('○ 未找到')}`);
+  console.log(`    ${'WorkBuddy'.padEnd(15)}${
+    has.workbuddy ? c.grn('✓ 找到任务板')
+      : (wbTranscript ? c.grn('✓ 逐轮日志（CodeBuddy 观察器读取）') : c.dim('○ 未找到'))}`);
   console.log(`    ${'CodeBuddy'.padEnd(15)}${has.codebuddy ? c.grn('✓ 找到日志') : c.dim('○ 未找到')}`);
   console.log('');
 

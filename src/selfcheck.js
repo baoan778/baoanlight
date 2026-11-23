@@ -96,7 +96,12 @@ function run() {
     const entry = agents.find(name);
     if (!entry || entry.tier !== 'log') continue;
     const dir = agents.logDir(name, { config: cfg });
+    // 没有任务板不等于抓不到：WorkBuddy 的逐轮 transcript 由 CodeBuddy 观察器
+    // 实时读取并标回自己（见 agents.transcriptCoverage）。这里报「未找到」会
+    // 和桌面上正在跳动的灯自相矛盾。
+    const covered = agents.transcriptCoverage(name, { config: cfg });
     if (dir && exists(dir)) check(`${entry.label} 日志`, 'pass', dir);
+    else if (covered) check(`${entry.label} 日志`, 'pass', `${covered}（逐轮日志，由 CodeBuddy 观察器读取）`);
     else check(`${entry.label} 日志`, 'warn', '未找到', `bao watch ${name} --dir <路径>`);
   }
 

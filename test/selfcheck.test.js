@@ -86,3 +86,23 @@ test('the self-check looks at every agent that reports through a log', () => {
       `selfcheck never looks at "${name}" (${label}) — the list is hardcoded somewhere`);
   }
 });
+
+// 自检和 doctor 用的是同一份事实。WorkBuddy 没有任务板、但逐轮 transcript 在时，
+// 它正被 CodeBuddy 观察器实时读取；报「未找到」会和桌面上正在跳动的灯矛盾。
+test('a WorkBuddy transcript counts as coverage in the self-check too', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-sc-wb-'));
+  const originalCoverage = agents.transcriptCoverage;
+  const originalLogDir = agents.logDir;
+  agents.transcriptCoverage = (name) => (name === 'workbuddy' ? dir : null);
+  agents.logDir = (name) => (name === 'workbuddy' ? null : originalLogDir(name));
+  try {
+    const line = selfcheck.run().checks.find((c) => c.name === 'WorkBuddy 日志');
+    assert.ok(line, 'WorkBuddy must still be in the self-check');
+    assert.equal(line.status, 'pass', 'live transcripts are not a missing source');
+    assert.match(line.detail, /CodeBuddy/, 'it names the watcher that actually reads it');
+  } finally {
+    agents.transcriptCoverage = originalCoverage;
+    agents.logDir = originalLogDir;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

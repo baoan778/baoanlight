@@ -110,3 +110,20 @@ test('a WorkBuddy transcript folder is not mistaken for its task board', () => {
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+// 没有任务板不代表抓不到 WorkBuddy：逐轮 transcript 是它实时更新的来源，
+// CodeBuddy 观察器读 ~/.workbuddy/projects 并把带 workbuddy 的路径标回 WorkBuddy。
+// 只认 tasks/ 会让 doctor 把「正在被实时跟踪」报成「未找到」，还建议一条注定
+// 失败的 `bao watch workbuddy`。
+test('a WorkBuddy transcript folder counts as live coverage, not as missing', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-doc-'));
+  try {
+    fs.mkdirSync(path.join(home, '.workbuddy', 'projects'), { recursive: true });
+    const { out } = runDoctor(home);
+    assert.doesNotMatch(out, /WARN\s+WorkBuddy logs/, 'a transcript is a live source, not a missing one');
+    assert.match(out, /PASS\s+WorkBuddy logs/, 'the transcript is recognised as coverage');
+    assert.match(out, /bao watch codebuddy/, 'it names the watcher that actually reads it');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

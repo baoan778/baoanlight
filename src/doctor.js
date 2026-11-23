@@ -197,12 +197,19 @@ async function run() {
 
     const dir = agents.logDir(name, { config: cfg });
     const candidates = agents.candidates(name);
+    // 任务板 / 自家日志都没有时，还要看共用的逐轮 transcript：WorkBuddy 在那里
+    // 由 CodeBuddy 观察器实时读取并标回自己。只报「未找到」会让用户去跑一条
+    // 注定失败的 `bao watch workbuddy`，明明状态已经在更新。
+    const covered = agents.transcriptCoverage(name, { config: cfg });
     if (dir && exists(dir)) {
       // 一条检查就够：原来紧跟的第二条状态硬编码 'pass'，既不复核任何东西，又让
       // 末尾的「N checks — N pass」被虚增（日志类代理越多虚增越多）。
       check(`${entry.label} logs`, 'pass', `${dir}   (run: bao watch ${name})`);
     } else if (candidates.some(exists)) {
       check(`${entry.label} logs`, 'pass', candidates.find(exists));
+    } else if (covered) {
+      check(`${entry.label} logs`, 'pass',
+        `${covered}   (per-turn transcripts, via: bao watch codebuddy)`);
     } else if (name === 'codex' && exists(path.join(os.homedir(), '.codex'))) {
       check(`${entry.label} logs`, 'warn', '~/.codex exists but no sessions/ yet',
         'run Codex once, then: bao watch codex');
