@@ -66,3 +66,15 @@ test('a broken settings file is never overwritten', () => {
   assert.throws(() => install.installCodebuddy(), /not valid JSON/);
   assert.equal(fs.readFileSync(settingsFile(), 'utf8'), '{ not json', 'the file is left exactly as it was');
 });
+
+// 形状错误的 hooks 表同样不能「装成功」：往数组里写字符串键会被 JSON 序列化
+// 丢掉，界面打印已安装，实际一条也没有。
+test('a hooks value that is not an object is refused instead of silently dropped', () => {
+  fs.mkdirSync(path.join(tmpHome, '.codebuddy'), { recursive: true });
+  const broken = JSON.stringify({ hooks: 'nope' }, null, 2);
+  fs.writeFileSync(settingsFile(), broken);
+  assert.throws(() => install.installCodebuddy(), /refusing to overwrite/i);
+  assert.equal(fs.readFileSync(settingsFile(), 'utf8'), broken, 'the user file survived untouched');
+  assert.equal(install.uninstallCodebuddy().removed, 0, 'uninstall leaves a malformed file alone too');
+  assert.equal(fs.readFileSync(settingsFile(), 'utf8'), broken);
+});

@@ -77,6 +77,27 @@ function writeJson(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
 }
 
+// `hooks` 必须是「事件名 -> 组数组」的对象。如果它是数组或别的形状，往里写
+// `settings.hooks[event] = ...` 会被 JSON.stringify 静默丢掉（数组只序列化下标），
+// 于是命令打印「已安装」，而 IDE 里一条钩子都没有 —— 下次运行时灯永远不亮，
+// 用户却刚刚看到成功。遇到这种文件停下来，和「不是合法 JSON」一样处理。
+function ensureHooks(settings, file) {
+  const hooks = settings.hooks;
+  if (hooks === undefined || hooks === null) {
+    settings.hooks = {};
+    return;
+  }
+  if (typeof hooks !== 'object' || Array.isArray(hooks)) {
+    throw new Error(`${file} has a "hooks" value that is not an object; refusing to overwrite it`);
+  }
+}
+
+// 卸载时同样不碰形状异常的文件：没有可以安全识别的 hooks 表，就什么都不做。
+function hooksUsable(settings) {
+  return !settings.hooks
+    || (typeof settings.hooks === 'object' && !Array.isArray(settings.hooks));
+}
+
 // ---------------------------------------------------------------- Claude Code
 
 // SubagentStop 刻意不在列表里：它总在 Stop 之后几秒才到，映射成 busy 会把刚
@@ -111,7 +132,7 @@ function installClaude({ scope = 'user' } = {}) {
   const file = claudeSettingsPath(scope);
   const bak = backup(file);
   const settings = readJson(file);
-  settings.hooks = settings.hooks || {};
+  ensureHooks(settings, file);
 
   for (const event of CLAUDE_EVENTS) {
     const existing = stripOurs(settings.hooks[event] || []);
@@ -128,6 +149,8 @@ function uninstallClaude({ scope = 'user' } = {}) {
   const file = claudeSettingsPath(scope);
   if (!fs.existsSync(file)) return { file, removed: 0 };
   const settings = readJson(file);
+  // 形状异常的 hooks 表不碰：没有我们能安全识别的条目，重写只会改坏别人的文件。
+  if (!hooksUsable(settings)) return { file, backup: null, removed: 0 };
   let removed = 0;
 
   for (const event of Object.keys(settings.hooks || {})) {
@@ -326,7 +349,7 @@ function installCodebuddy() {
   const file = codebuddySettingsPath();
   const bak = backup(file);
   const settings = readJson(file);
-  settings.hooks = settings.hooks || {};
+  ensureHooks(settings, file);
 
   for (const event of CODEBUDDY_EVENTS) {
     // 保留别人的 hook（这台机器上 .wb-switch 就在用同一份文件），只替换我们自己的。
@@ -353,6 +376,7 @@ function uninstallCodebuddy() {
   const file = codebuddySettingsPath();
   if (!fs.existsSync(file)) return { file, removed: 0, backup: null };
   const settings = readJson(file);
+  if (!hooksUsable(settings)) return { file, removed: 0, backup: null };
   let removed = 0;
 
   for (const event of Object.keys(settings.hooks || {})) {

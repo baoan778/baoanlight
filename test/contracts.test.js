@@ -219,6 +219,19 @@ test('a settings file we cannot parse is never overwritten', () => {
   });
 });
 
+// `hooks` 必须是「事件名 -> 组数组」的对象。数组或字符串这种形状错误的文件
+// 不能被「成功安装」：JSON.stringify 会静默丢掉写进数组的字符串键，命令打印
+// 成功，而 IDE 里一条钩子都没有 —— 灯永远不亮，用户却刚刚看到「已安装」。
+test('a settings file whose hooks value is not an object is refused', () => {
+  withScopeProject(({ file }) => {
+    const broken = JSON.stringify({ hooks: [] }, null, 2);
+    fs.writeFileSync(file, broken);
+
+    assert.throws(() => install.installClaude({ scope: 'project' }), /refusing to overwrite/i);
+    assert.equal(fs.readFileSync(file, 'utf8'), broken, 'the user file survived untouched');
+  });
+});
+
 // 反过来：一个能读的文件，必须原样保住我们不认识的键。
 // 记事本等 Windows 编辑器会把 UTF-8 存成带 BOM 的形态：文件头一个不可见的
 // U+FEFF，JSON.parse 会直接报错。这种文件其实是好的，不能因此拒绝写入。
