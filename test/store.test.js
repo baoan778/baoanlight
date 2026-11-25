@@ -467,6 +467,25 @@ test('history keeps the last 30 days and drops the rest', () => {
   assert.ok(keys.every((k) => k >= '2020-01-11'), 'only the newest 30 survive');
 });
 
+// 同一天重启（stats.day === today）也必须裁历史。旧实现只在「跨天合并」那条
+// 分支里裁剪，一份被手改成 40 天的文件会原样留在内存与下一次写盘里，界面上的
+// 「近 30 天合计」于是把一个多月都算了进去，而文件永远不会自己缩小。
+test('a same-day stats file is trimmed to 30 history days too', () => {
+  const d = new Date();
+  const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const history = {};
+  for (let i = 40; i >= 1; i--) {
+    const x = new Date(2020, 0, i);
+    const key = `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+    history[key] = { byAgent: { claude: 1 }, events: {} };
+  }
+  const s = new Store();
+  s.mergeStats({ day: today, byAgent: { claude: 1 }, events: {}, history });
+  const keys = Object.keys(s.snapshot().stats.history);
+  assert.equal(keys.length, 30, 'capped at 30 even when the file is from today');
+  assert.ok(keys.every((k) => k >= '2020-01-11'), 'only the newest 30 survive');
+});
+
 // 今日战绩：进入完成/出错各记一次，同一状态连续上报不重复。
 test('done and error transitions are counted per agent', () => {
   const s = new Store();

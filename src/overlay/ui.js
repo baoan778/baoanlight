@@ -593,6 +593,18 @@ import {
     if (min < 60) return `${min} 分钟`;
     return `${Math.floor(min / 60)} 时 ${min % 60} 分`;
   }
+  // 最近 n 个自然日的日期 key（今天在最右）。近 7 天 / 近 30 天都要按**日历日**
+  // 取窗口：history 存的是「有记录的日子」，把所有条目累加会多算一天（最多 30 条
+  // 存档 + 今天 = 31 天），而被手改过的文件还会把几个月都算进「近 30 天」。
+  function lastDayKeys(n) {
+    const keys = [];
+    for (let i = n - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      keys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+    }
+    return keys;
+  }
   function renderScore(snap) {
     const box = document.getElementById('m-score');
     if (!box) return;
@@ -701,12 +713,7 @@ import {
       box.appendChild(row);
     }
     // 最近 7 天的日期 key（今天在最右）：柱状图和「近 7 天」共用。
-    const dayKeys = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      dayKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
-    }
+    const dayKeys = lastDayKeys(7);
     const dayMs = dayKeys.map((key) => {
       const h = snap?.stats?.history?.[key];
       let ms = h ? Object.values(h.byAgent || {}).reduce((a, b) => a + (b || 0), 0) : 0;
@@ -741,9 +748,15 @@ import {
       box.appendChild(row);
     }
 
-    // 近 30 天合计（不是自然月）：今天 + 最近 30 天存档。只有比近 7 天多时才单列一行。
+    // 近 30 天合计（不是自然月）：今天 + 最近 29 个自然日的存档。按日期 key
+    // 取窗口，而不是把 history 整个累加 —— 后者会多算一天，也挡不住旧文件里
+    // 超出 30 天的键。只有比近 7 天多时才单列一行。
     const month = { ms: 0, done: 0, error: 0 };
-    for (const h of Object.values(snap?.stats?.history || {})) {
+    for (const key of lastDayKeys(30)) {
+      // 今天的实时数字在下面单独加一次；history 里若有同名键也不重复计。
+      if (key === snap?.stats?.day) continue;
+      const h = snap?.stats?.history?.[key];
+      if (!h) continue;
       for (const ms of Object.values(h.byAgent || {})) month.ms += ms || 0;
       for (const ev of Object.values(h.events || {})) { month.done += ev.done || 0; month.error += ev.error || 0; }
     }
@@ -4624,7 +4637,10 @@ import {
   }
   function reportCsv(stats) {
     const lines = ['date,agent,name,minutes,done,error'];
-    for (const d of statsDays(stats).slice(-30)) {
+    // 按钮写的是「导出近 30 天」，导出的就必须是最近 30 个自然日 —— 不能是
+    // 「最后 30 个有记录的日子」（中间断几天就会悄悄把两个月前的数据带进来）。
+    const keep = new Set(lastDayKeys(30));
+    for (const d of statsDays(stats).filter((x) => keep.has(x.day))) {
       for (const r of agentRows(d)) {
         lines.push([
           d.day, csvCell(r.agent), csvCell(r.name),

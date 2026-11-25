@@ -126,7 +126,15 @@ class Store extends EventEmitter {
     if (!stats || typeof stats !== 'object' || !stats.byAgent
       || typeof stats.byAgent !== 'object' || Array.isArray(stats.byAgent)) return;
     const today = dayKey();
-    const history = { ...(stats.history && typeof stats.history === 'object' ? stats.history : {}) };
+    // 历史只保留最近 30 天。两个分支都要裁：同一天的分支原来直接照抄磁盘上的
+    // history，一份被手改过（或来自旧版本）的 90 天文件会一直留着，而「近 30 天
+    // 合计」就会把三个月都算进去 —— 数字看着合理，但标签是假的。
+    const trim = (h) => {
+      const keys = Object.keys(h).sort();
+      while (keys.length > 30) delete h[keys.shift()];
+      return h;
+    };
+    const history = trim({ ...(stats.history && typeof stats.history === 'object' ? stats.history : {}) });
     // stats.json 可能被手改过，或来自字段类型不同的旧版本：一个字符串会被
     // `this.stats.byAgent[agent] + ms` 变成字符串拼接（"abc100"），之后今日
     // 时长整列 NaN。只收有限的非负数。
@@ -148,8 +156,7 @@ class Store extends EventEmitter {
         || Object.keys(events).length > 0;
       if (stats.day && hasData) {
         history[stats.day] = { byAgent, events };
-        const keys = Object.keys(history).sort();
-        while (keys.length > 30) delete history[keys.shift()];
+        trim(history);
       }
       this.stats = { day: today, byAgent: {}, events: {}, history };
       return;

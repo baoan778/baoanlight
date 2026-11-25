@@ -302,10 +302,16 @@ test('one software with several sessions still shows a single row', async ({ pag
 
   // 分组顺序是「需要你 → 运行中 → 静止」，组内仍按固定软件顺序：
   // workbuddy 出错、claude 在跑，其余三个离线占位落在最后。
-  const rows = await page.evaluate(() =>
-    [...document.querySelectorAll('.pill')].map((el) => el.dataset.agent));
-  expect(rows, 'one row per software, urgent group first')
-    .toEqual(['workbuddy', 'claude', 'deepseek', 'codex', 'codebuddy']);
+  //
+  // 必须等状态真的画上去了再比顺序：五条离线占位本来就让上面两个计数成立，
+  // 所以一条独立的 `evaluate` 有可能在三条上报到达之前就比对了一次出厂顺序，
+  // 于是这条用例偶发变红（重试又通过）。把状态和顺序放进同一个轮询里。
+  await settled(page, () => [...document.querySelectorAll('.pill')]
+    .map((el) => `${el.dataset.agent}:${el.dataset.state}`))
+    .toEqual([
+      'workbuddy:error', 'claude:busy',
+      'deepseek:offline', 'codex:offline', 'codebuddy:offline',
+    ]);
 
   // 两个会话合成一行时，行尾要有 ×2：否则「Claude 出错了」看不出是三个里哪个。
   // 现在这个数字本身是展开按钮（点开逐条列出会话），名字保持干净。
@@ -2516,6 +2522,61 @@ test('the work report can be exported as Markdown and CSV', async ({ page }) => 
   const csvText2 = fs.readFileSync(await csv2.path(), 'utf8');
   expect(csvText2).toContain("'=1+1");
   expect(csvText2.split(/\r?\n/).some((line) => line.startsWith('=1+1'))).toBe(false);
+});
+
+// 「近 30 天合计」必须是一个真的 30 天窗口。history 存的是「有记录的日子」，
+// 旧实现把整份 history 累加：30 条存档 + 今天 = 31 天；一份更长的 stats.json
+// （手改过、或来自旧版本）甚至会把几个月都算进去。CSV 的按钮写着「导出近 30 天」，
+// 也必须按自然日过滤，而不是「最后 30 个有记录的日子」。
+test('the 30-day total and export use a real 30-day window', async ({ page }) => {
+  const pad = (n) => String(n).padStart(2, '0');
+  const dayKey = (ago) => {
+    const d = new Date();
+    d.setDate(d.getDate() - ago);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+  const old = dayKey(40);      // 窗口之外：不该进合计，也不该进 CSV
+  const recent = dayKey(20);   // 窗口之内
+  const save = {
+    day: store.stats.day, byAgent: store.stats.byAgent,
+    events: store.stats.events, history: store.stats.history,
+  };
+  store.stats.day = dayKey(0);
+  store.stats.byAgent = {};
+  store.stats.events = {};
+  store.stats.history = {
+    [old]: { byAgent: { claude: 2 * 3600000 }, events: { claude: { done: 9, error: 0 } } },
+    [recent]: { byAgent: { claude: 3600000 }, events: { claude: { done: 1, error: 0 } } },
+  };
+  store.emit('change', store.snapshot());
+
+  try {
+    await page.evaluate(() => document.getElementById('btn-menu').click());
+    await page.evaluate(() => {
+      for (const s of document.querySelectorAll('#menu summary')) {
+        if (s.textContent.trim() === '配置') s.parentElement.open = true;
+      }
+    });
+    const month = page.locator('#m-score .recent').filter({ hasText: '近 30 天合计' });
+    await expect(month).toContainText('1 时 0 分', { timeout: 6000 });
+    await expect(month).toContainText('完成 1');
+    await expect(month).not.toContainText('完成 10');
+    await expect(month).not.toContainText('3 时');
+
+    const [csv] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('#m-report-csv').click(),
+    ]);
+    const text = fs.readFileSync(await csv.path(), 'utf8');
+    expect(text).toContain(recent);
+    expect(text).not.toContain(old);
+  } finally {
+    store.stats.day = save.day;
+    store.stats.byAgent = save.byAgent;
+    store.stats.events = save.events;
+    store.stats.history = save.history;
+    store.emit('change', store.snapshot());
+  }
 });
 
 // ------------------------------------------------------- 自定义系统逐项检查
