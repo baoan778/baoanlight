@@ -637,6 +637,59 @@ test('a watcher that outlives the server resends live states but never replays a
   }
 });
 
+// 有些写入方会在每一行都带一个 `session`（或 `meta`）字段。以前这种记录被当成
+// 「纯元数据」直接 return，于是带状态的记录全被吞掉：灯一直不亮，也从不报错。
+test('a log whose every line carries a session field still reports states', async () => {
+  const logWatch = require('../src/adapters/log-watch');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-meta-'));
+  const file = path.join(dir, 'rollout-meta.jsonl');
+  const event = (type) => JSON.stringify({
+    session: 'carried-on-every-line', type: 'event_msg', payload: { type },
+  });
+  fs.writeFileSync(file, [
+    JSON.stringify({ type: 'session_meta', payload: { id: 'meta-1', cwd: '/tmp/x' } }),
+    event('turn_started'),
+  ].join('\n') + '\n');
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const previousPort = process.env.BAOANLIGHT_PORT;
+  process.env.BAOANLIGHT_PORT = String(PORT);
+  const handle = logWatch.run({
+    agent: 'codex', dir, interval: 40, quiet: true, manual: true,
+    lookback: 3_600_000, heartbeat: 60_000,
+  });
+
+  try {
+    const find = async () => (await api('/state')).sessions.find((s) => s.session === 'codex:meta-1') || null;
+    let busy = null;
+    for (let i = 0; i < 60 && !busy; i++) {
+      const s = await find();
+      if (s && s.state === 'busy') busy = s;
+      else await sleep(50);
+    }
+    assert.ok(busy, 'the busy event is read even though its line carries a session field');
+
+    fs.appendFileSync(file, event('turn_complete') + '\n');
+    let done = null;
+    for (let i = 0; i < 60 && !done; i++) {
+      const s = await find();
+      if (s && s.state === 'done') done = s;
+      else await sleep(50);
+    }
+    assert.ok(done, 'and so is the completion');
+  } finally {
+    handle.stop();
+    await api('/state', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: 'codex:meta-1', state: 'offline' }),
+    });
+    if (previousPort === undefined) delete process.env.BAOANLIGHT_PORT;
+    else process.env.BAOANLIGHT_PORT = previousPort;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // 有些写入方会持续追加，却把修改时间钉在创建时刻（实测 Codex 的 rollout：文件
 // 每秒都在长，mtime 一直停在开头）。观察器若只凭 mtime 判断「还新鲜吗」，会在
 // lookback 到期后把一个正在干活的会话踢出跟踪 —— 灯停在上一次 task_complete 上，
@@ -1262,7 +1315,7 @@ test('children spawned in the background never pop a console window', () => {
   const sites = [
     'const child = spawn(process.execPath, args,',   // server（detached）
     'const child = spawn(String(electron)',          // 窗口
-    "spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '', url],",   // 浏览器
+    "spawnImpl(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '', url],",   // 浏览器
   ];
   for (const anchor of sites) {
     const at = js.indexOf(anchor);

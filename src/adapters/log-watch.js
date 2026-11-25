@@ -293,22 +293,26 @@ function run(opts = {}) {
     const t = tracked.get(file);
     if (!t) return;
 
-    // A metadata line names the session and the folder it runs in.
+    const type = typeOf(rec);
+    const declared = rec.state || rec.status;
+    const next = STATES.includes(declared) ? declared
+      : (classify(declared) || classify(type));
+
+    // A metadata line names the session and the folder it runs in. 只有「不携带
+    // 状态事件」的记录才算纯元数据：有些写入方会在每一行都带上 `session` /
+    // `meta` 字段，先返回会让整条日志永远读不到状态 —— 灯一直不亮，也不报错。
     if (rec.type === 'session_meta' || rec.meta || rec.session || rec.thread) {
       const m = metaOf(rec);
       if (m.sessionId) t.sessionId = m.sessionId;
       if (m.cwd) t.cwd = m.cwd;
-      return;
-    }
-
-    // Session id can also arrive on the first ordinary record.
-    if (!t.sessionId) {
+      if (!next) return;
+    } else if (!t.sessionId) {
+      // Session id can also arrive on the first ordinary record.
       const m = metaOf(rec);
       if (m.sessionId) t.sessionId = m.sessionId;
       if (m.cwd) t.cwd = m.cwd;
     }
 
-    const type = typeOf(rec);
     const session = `${name}:${t.sessionId || fallbackId(file)}`;
     // 之前用文件名兜底报过状态、现在才学到真实 id：旧键必须收摊。否则同一个
     // 会话在列表里占两格，多出来的那格停在最后状态直到 TTL，忙碌时长也会重复计。
@@ -336,11 +340,8 @@ function run(opts = {}) {
     }
 
     // Some stores say it as a field rather than an event (`status: "in_progress"`),
-    // and the same vocabulary maps those onto the same three states.
-    const declared = rec.state || rec.status;
-    const next = STATES.includes(declared) ? declared
-      : (classify(declared) || classify(type));
-
+    // and the same vocabulary maps those onto the same three states（`next` 在上面
+    // 已经算好：纯元数据行需要它来区分「只是头信息」和「头信息 + 状态」）。
     if (next) {
       if (next === t.state) {
         // 同一个状态的生命周期事件（连续 function_call）也要定期重报，理由见
