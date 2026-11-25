@@ -494,6 +494,149 @@ test('a continuously busy session is re-reported so it never looks abandoned', a
   }
 });
 
+// 流式日志（stream / delta / tool 输出）每秒可能追加几十行，而它们只能表达
+// 「还在干活」这一件事。以前每一条都上报一次：每行一条本地 HTTP、一次服务端
+// 快照、一轮 SSE 广播，状态却始终是同一个 busy。现在按心跳窗口汇总 —— 状态与
+// 「静默」判定不变，但常驻观察器不再被一行一行的增量拖成忙循环。
+test('a busy log streaming ambient output reports at a heartbeat pace, not per line', async () => {
+  const logWatch = require('../src/adapters/log-watch');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-ambient-'));
+  const file = path.join(dir, 'rollout-ambient.jsonl');
+  fs.writeFileSync(file, [
+    JSON.stringify({ type: 'session_meta', payload: { id: 'ambient-1', cwd: '/tmp/x' } }),
+    JSON.stringify({ type: 'event_msg', payload: { type: 'turn_started' } }),
+  ].join('\n') + '\n');
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const previousPort = process.env.BAOANLIGHT_PORT;
+  process.env.BAOANLIGHT_PORT = String(PORT);
+  const handle = logWatch.run({
+    agent: 'codex', dir, interval: 40, quiet: true, manual: true,
+    lookback: 3_600_000, heartbeat: 2000,
+  });
+
+  try {
+    const find = async () => (await api('/state')).sessions.find((s) => s.session === 'codex:ambient-1') || null;
+    let first = null;
+    for (let i = 0; i < 60 && !first; i++) {
+      first = await find();
+      if (!first) await sleep(50);
+    }
+    assert.ok(first && first.state === 'busy', 'the turn start reports busy');
+
+    // 40 行环境噪音（只证明「还活着」）：都在心跳窗口内，不该逐行上报。
+    fs.appendFileSync(file, Array.from({ length: 40 }, () =>
+      JSON.stringify({ type: 'event_msg', payload: { type: 'output_delta' } })).join('\n') + '\n');
+    await sleep(500);
+    const mid = await find();
+    assert.equal(mid && mid.updatedAt, first.updatedAt,
+      'ambient lines inside the heartbeat window do not each force a report');
+
+    // 心跳窗口过去之后，持续送达的增量必须把忙碌会话重新报一遍；否则一个
+    // 长时间只写增量的会话会在 90 秒后变暗、最终被当作失联丢掉。
+    let after = null;
+    for (let i = 0; i < 60 && !after; i++) {
+      fs.appendFileSync(file, JSON.stringify({ type: 'event_msg', payload: { type: 'output_delta' } }) + '\n');
+      await sleep(100);
+      const s = await find();
+      if (s && s.updatedAt > first.updatedAt) after = s;
+    }
+    assert.ok(after, 'the heartbeat still refreshes a busy session');
+  } finally {
+    handle.stop();
+    await api('/state', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: 'codex:ambient-1', state: 'offline' }),
+    });
+    if (previousPort === undefined) delete process.env.BAOANLIGHT_PORT;
+    else process.env.BAOANLIGHT_PORT = previousPort;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// 用户手动 `bao watch codex` 起的观察器会活过 `bao stop && bao start`。server 换了
+// 进程之后，它必须把**此刻仍然成立**的状态（等待 / 忙碌 / 出错 / 空闲）重报回
+// 新 store，否则灯要等下一次变化才亮；但「完成」是过去时 —— 重放它会让一盏早已
+// 回落成空闲的紫灯再亮 30 秒，并多弹一条完成通知。
+test('a watcher that outlives the server resends live states but never replays a finished turn', async () => {
+  const logWatch = require('../src/adapters/log-watch');
+  const client = require('../src/client');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-resend-'));
+  const live = path.join(dir, 'rollout-live.jsonl');
+  const finished = path.join(dir, 'rollout-done.jsonl');
+  fs.writeFileSync(live, [
+    JSON.stringify({ type: 'session_meta', payload: { id: 'live-1', cwd: '/tmp/x' } }),
+    JSON.stringify({ type: 'event_msg', payload: { type: 'needs_input' } }),
+  ].join('\n') + '\n');
+  fs.writeFileSync(finished, [
+    JSON.stringify({ type: 'session_meta', payload: { id: 'done-1', cwd: '/tmp/x' } }),
+    JSON.stringify({ type: 'event_msg', payload: { type: 'task_started' } }),
+    JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete' } }),
+  ].join('\n') + '\n');
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const previousPort = process.env.BAOANLIGHT_PORT;
+  process.env.BAOANLIGHT_PORT = String(PORT);
+  // heartbeat 拉长：本用例只关心「server 换了进程」这一条重报路径。
+  const handle = logWatch.run({
+    agent: 'codex', dir, interval: 60, quiet: true, manual: true,
+    lookback: 3_600_000, heartbeat: 60_000, recoverMs: 100,
+  });
+  const realGet = client.get;
+
+  try {
+    const both = async () => {
+      const snap = await api('/state');
+      return {
+        live: snap.sessions.find((s) => s.session === 'codex:live-1') || null,
+        done: snap.sessions.find((s) => s.session === 'codex:done-1') || null,
+      };
+    };
+    let seen = null;
+    for (let i = 0; i < 60; i++) {
+      seen = await both();
+      if (seen.live && seen.live.state === 'waiting' && seen.done && seen.done.state === 'done') break;
+      await sleep(50);
+    }
+    assert.ok(seen.live && seen.live.state === 'waiting', 'the waiting session is live');
+    assert.ok(seen.done && seen.done.state === 'done', 'the finished turn is done');
+    const liveAt = seen.live.updatedAt;
+    const doneAt = seen.done.updatedAt;
+
+    // 让 watchdog 先探到当前 server 的 pid（同进程里的第二个 server 只是端口不同，
+    // pid 一样，所以这里直接把 health 换成一个新 pid，模拟真正的进程重启）。
+    await sleep(300);
+    client.get = async (p, opts) => (p === '/health' ? { ok: true, pid: 987654 } : realGet(p, opts));
+
+    let resent = null;
+    for (let i = 0; i < 80 && !resent; i++) {
+      const now = await both();
+      if (now.live && now.live.updatedAt > liveAt) resent = now;
+      else await sleep(50);
+    }
+    assert.ok(resent, 'a live waiting session is resent after the server changes process');
+    assert.equal(resent.live.state, 'waiting');
+    assert.equal(resent.done.updatedAt, doneAt, 'the finished turn is not replayed as a fresh completion');
+  } finally {
+    client.get = realGet;
+    handle.stop();
+    await api('/state', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: 'codex:live-1', state: 'offline' }),
+    });
+    await api('/state', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: 'codex:done-1', state: 'offline' }),
+    });
+    if (previousPort === undefined) delete process.env.BAOANLIGHT_PORT;
+    else process.env.BAOANLIGHT_PORT = previousPort;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // 有些写入方会持续追加，却把修改时间钉在创建时刻（实测 Codex 的 rollout：文件
 // 每秒都在长，mtime 一直停在开头）。观察器若只凭 mtime 判断「还新鲜吗」，会在
 // lookback 到期后把一个正在干活的会话踢出跟踪 —— 灯停在上一次 task_complete 上，
@@ -637,6 +780,66 @@ test('the dsh watcher follows a session projection through a whole turn', async 
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ session: 'deepseek:proj-1', state: 'offline' }),
+    });
+    if (previousPort === undefined) delete process.env.BAOANLIGHT_PORT;
+    else process.env.BAOANLIGHT_PORT = previousPort;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// dsh 的投影每次请求都会重写，其中 contextPressure 的变化走 fuel-only 上报，
+// 而服务端对 fuel-only 明确不刷新 updatedAt（额度上报不是「活动」）。观察器
+// 如果把它也算成心跳基准，那么「状态没变、额度一直在变」的忙碌会话就永远发不出
+// 真正的 busy 心跳：90 秒后变暗、10 分钟后降级成「状态未确认」、30 分钟后被当成
+// 失联从灯上丢掉 —— 而它其实一直在干活。
+test('a dsh turn that only updates its fuel still keeps its busy session fresh', async () => {
+  const dsh = require('../src/adapters/dsh-watch');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-dsh-fuel-'));
+  const file = path.join(dir, 'session-fuel.json');
+  // 只改 pressureTokens：状态始终是「回合未结束」，即 busy。
+  const write = (tokens) => fs.writeFileSync(file, JSON.stringify({
+    rows: {
+      turnBoundary: { val: { openTurnStartSeq: 1 } },
+      contextPressure: { val: { pressureTokens: tokens, contextWindow: 256000 } },
+    },
+  }));
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const previousPort = process.env.BAOANLIGHT_PORT;
+  process.env.BAOANLIGHT_PORT = String(PORT);
+  write(64000);
+  const handle = dsh.run({
+    dir, interval: 30, quiet: true, manual: true, lookback: 3_600_000, heartbeat: 400,
+  });
+
+  try {
+    const find = async () => (await api('/state')).sessions.find((s) => s.session === 'deepseek:fuel') || null;
+    let busy = null;
+    for (let i = 0; i < 60 && !busy; i++) {
+      const s = await find();
+      if (s && s.state === 'busy') busy = s;
+      else await sleep(50);
+    }
+    assert.ok(busy, 'an open turn reports busy');
+    const before = busy.updatedAt;
+
+    // 每 100ms 改写一次额度（比 400ms 的心跳窗口更密），状态不变。
+    for (let i = 1; i <= 12; i++) {
+      write(64000 + i * 10000);
+      await sleep(100);
+    }
+    await sleep(700);
+
+    const after = await find();
+    assert.ok(after && after.state === 'busy', 'the turn is still busy');
+    assert.ok(after.updatedAt > before,
+      'fuel-only updates must not starve the busy heartbeat (the lamp would go grey)');
+  } finally {
+    handle.stop();
+    await api('/state', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: 'deepseek:fuel', state: 'offline' }),
     });
     if (previousPort === undefined) delete process.env.BAOANLIGHT_PORT;
     else process.env.BAOANLIGHT_PORT = previousPort;

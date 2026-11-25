@@ -257,6 +257,9 @@ function run(opts = {}) {
   // 的会话会在 30 分钟后被当成失联丢掉。dsh / task / wbt 三个 watcher 都有这条
   // 心跳，只有通用日志观察器漏了。
   const heartbeatMs = Number(opts.heartbeat) > 0 ? Number(opts.heartbeat) : 20_000;
+  // 多久探一次 server 是否还活着（默认 20 秒）。做成可配置只为了测试能在
+  // 秒级内钉住「server 换了进程之后把活着的会话重报回去」这条路径。
+  const recoverMs = Number(opts.recoverMs) > 0 ? Number(opts.recoverMs) : 20_000;
   const quiet = !!opts.quiet;
   const label = entry ? entry.label : name;
 
@@ -320,10 +323,14 @@ function run(opts = {}) {
     if (type === 'token_count' || /fuel|usage|quota|rate_limit/i.test(normaliseType(type))) {
       const f = readFuel(rec.payload || rec.data || rec, opts.fuel);
       if (f) {
+        const prevFuel = t.fuel;
         // 记住这次读数：server 重启后 store 是空的，要靠 onRecover 把它重报
         // 回去，否则电量条要等下一条 fuel 日志才重新出现。
         t.fuel = f;
-        if (!t.recovering) setState({ session, fuel: f });
+        // 数值没变就不必再发：Codex 每次响应都会写一条 token_count，服务端只会
+        // 用同一个数字覆盖一遍。按取整后比较，浮点噪声不会被当成变化。
+        const changed = !prevFuel || Math.round(prevFuel.remaining) !== Math.round(f.remaining);
+        if (!t.recovering && changed) setState({ session, fuel: f });
       }
       return;
     }
@@ -371,7 +378,14 @@ function run(opts = {}) {
     }
 
     // Ambient event: keep a busy session from being swept as stale, nothing more.
-    if (!t.recovering && t.state === 'busy') {
+    //
+    // 但不必每一条都上报。流式日志每秒可能追加几十行增量（stream / delta /
+    // reasoning / tool 输出），而每一条都是一次本地 HTTP、一次服务端快照和一轮
+    // SSE 广播 —— 状态却始终是同一个「working」。服务端的「静默」要 90 秒才成立、
+    // 10 分钟后才降级，20 秒一次心跳完全够用；逐行上报只会把一个常驻观察器变成
+    // 忙循环。心跳窗口与下面「状态没变」那条用的是同一个值。
+    if (!t.recovering && t.state === 'busy'
+      && Date.now() - (t.reportedAt || 0) > heartbeatMs) {
       t.reportedAt = Date.now();
       setState({
         session, agent: name, state: 'busy', detail: 'working',
@@ -528,6 +542,10 @@ function run(opts = {}) {
   const resend = () => {
     for (const t of tracked.values()) {
       if (!t.session || !t.state || t.state === 'offline') continue;
+      // 「完成」是过去时，不是此刻仍然成立的状态。server 重启后重放它，会让
+      // 一盏早就熄灭的紫灯再亮 30 秒、多弹一条完成通知 —— 和「观察器首次看到
+      // 老文件时不重放 done」是同一条规矩，只是这里走的是另一条路径。
+      if (t.state === 'done') continue;
       const payload = {
         session: t.session, agent: name, state: t.state,
         detail: t.state === 'waiting' ? 'needs approval' : t.state === 'busy' ? 'working' : '',
@@ -537,7 +555,7 @@ function run(opts = {}) {
       setState(payload);
     }
   };
-  watchServer = keepAliveWith(stop, { onRecover: resend });
+  watchServer = keepAliveWith(stop, { onRecover: resend, everyMs: recoverMs });
 
   return { stop, tracked, dir };
 }

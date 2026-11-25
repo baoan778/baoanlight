@@ -234,6 +234,8 @@ function run(opts = {}) {
   const resend = () => {
     for (const [folder, t] of tracked) {
       if (!t.state || t.state === 'offline') continue;
+      // 「完成」是过去时：重放只会让旧任务板在 server 重启后再庆祝一次。
+      if (t.state === 'done') continue;
       setState({ session: `workbuddy:${path.basename(folder)}`, agent: 'workbuddy', state: t.state, detail: t.state === 'busy' ? 'working through tasks' : '' });
     }
   };

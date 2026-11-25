@@ -211,7 +211,11 @@ function run(opts = {}) {
 
       if (stateChanged) t.state = next;
       if (fuel) t.fuel = fuel;
-      t.reportedAt = now;
+      // 心跳只以带 state 的上报计时。fuel-only 更新在服务端**不**刷新 updatedAt
+      // （见 store.set 的额度分支），把它当心跳基准，会让真正的 busy 心跳永远发
+      // 不出去：一个持续改写额度、状态却没变的忙碌会话于是被判定为静默，10 分钟
+      // 后降级、30 分钟后当成失联从灯上丢掉 —— 而它其实一直在干活。
+      if (stateChanged || alive) t.reportedAt = now;
 
       const { cwd } = identityOf(rec);
       const payload = {

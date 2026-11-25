@@ -322,6 +322,9 @@ function run({
   const resend = () => {
     for (const st of files.values()) {
       if (!st.state || st.state === 'offline') continue;
+      // 不重放「完成」：那是过去时。重放会让一盏早已回落成空闲的紫灯在 server
+      // 重启后再亮一次，并多弹一条完成通知（与首次看到老文件时的规则一致）。
+      if (st.state === 'done') continue;
       setState({ session: st.session, agent: st.agent, state: st.state, detail: st.detail || '', cwd: st.cwd || '' });
     }
   };
