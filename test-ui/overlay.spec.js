@@ -786,7 +786,13 @@ test('a fuel update does not disturb the beacon', async ({ page }) => {
 // a healthy "ready".
 test('a quiet session is visibly dimmed', async ({ page }) => {
   await api('/state', { session: 'a', agent: 'claude', state: 'idle' });
-  await settled(page, () => document.querySelectorAll('.pill[data-agent="claude"]').length).toBe(1);
+  // 等「真实的 idle 行」出现，而不是只数元素个数：未运行的占位行也匹配同一个
+  // 选择器，它带着 .offline（opacity .38）。服务端广播有一个合并窗口，先看到
+  // 占位帧再看到真实帧是正常时序，不是缺陷。
+  await settled(page, () => {
+    const pill = document.querySelector('.pill[data-agent="claude"]');
+    return !!pill && !pill.classList.contains('offline') && pill.dataset.state === 'idle';
+  }).toBe(true);
   const fresh = await page.evaluate(() => getComputedStyle(document.querySelector('.pill[data-agent="claude"]')).opacity);
   expect(Number(fresh)).toBeGreaterThan(0.9);
 
@@ -1866,6 +1872,37 @@ for (const [name, cfg] of [
   });
 }
 
+// 勿扰只决定「此刻要不要打扰」，不该改写历史：一个在勿扰期间就结束的任务，
+// 解除后不能再补一条「完成了」。以前 notifySlots 在勿扰时直接返回，连记账一起
+// 跳过，解除后的第一帧就把几小时前的 busy→idle 当成刚刚完成。
+test('a completion from inside do-not-disturb is not announced afterwards', async ({ page }) => {
+  // 时段覆盖全天，开关由测试中途切换：模拟「傍晚开着机器人，22 点进入勿扰，
+  // 任务在夜里结束，早上解除」这条真实路径。
+  await withNotifySpy(page, { doNotDisturb: false, dndStart: '00:00', dndEnd: '23:59' });
+  const setDnd = (on) => page.evaluate((want) => {
+    const el = document.getElementById('m-dnd');
+    el.checked = want;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }, on);
+
+  await api('/state', { session: 'dnd-done', agent: 'claude', state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+
+  // 进入勿扰，任务在勿扰期间结束。
+  await setDnd(true);
+  await api('/state', { session: 'dnd-done', agent: 'claude', state: 'idle', event: 'Stop' });
+  await settled(page, () => document.body.dataset.state).toBe('idle');
+  await page.waitForTimeout(500);
+  expect(await notified(page)).toEqual([]);
+
+  // 解除勿扰，再用另一个软件的一次变化推动一帧：这一帧不能再补发「完成了」。
+  await setDnd(false);
+  await api('/state', { session: 'dnd-other', agent: 'codex', state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+  await page.waitForTimeout(500);
+  expect(await notified(page)).not.toContain('Claude Code 完成了');
+});
+
 // 启动瞬间不刷屏（重报的等待会话只播种），但过了那段窗口，一个新出现就
 // 在等待的软件必须提醒 —— 否则「一打开就请求权限」的会话会被整条吞掉。
 test('a software that appears already waiting after startup is announced', async ({ page }) => {
@@ -1874,6 +1911,69 @@ test('a software that appears already waiting after startup is announced', async
   await page.waitForTimeout(8300);
   await api('/state', { session: 'late1', agent: 'claude', state: 'waiting' });
   await expect.poll(() => notified(page)).toEqual(['Claude Code 需要你处理']);
+});
+
+// 托盘把窗口藏起来（或按 Ctrl+Alt+B）之后页面是 hidden，但「看不见」不等于
+// 「听不见」：系统通知、提示音、语音、托盘 tooltip 都不依赖窗口是否可见。以前
+// onmessage 在 hidden 时直接 return，于是「需要你」既不弹也不响，直到用户想起来
+// 把机器人显示回来 —— 而那时提醒早已过期。对一个承诺绝不漏报的工具，隐藏窗口
+// 不能把耳朵一起关掉。
+test('a hidden window still raises the notifications and sounds it owes you', async ({ page }) => {
+  await withNotifySpy(page, { sound: true, soundVolume: 0.2, soundStyle: '清脆叮咚' });
+  await api('/state', { session: 'hid1', agent: 'claude', state: 'busy' });
+  await settled(page, () => document.body.dataset.state).toBe('busy');
+  // 进入 busy 的那一声占着 2.5 秒的告警限流窗口。
+  await page.waitForTimeout(2600);
+  const before = await page.evaluate(() => window.__tones);
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await api('/state', { session: 'hid1', agent: 'claude', state: 'waiting' });
+
+  await expect.poll(() => notified(page)).toContain('Claude Code 需要你处理');
+  await expect.poll(() => page.evaluate(() => window.__tones)).toBeGreaterThan(before);
+
+  // 重新显示时补一次完整重绘：灯必须已经是黄的，而不是隐藏前的绿色。
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect(page.locator('#status-led')).toHaveAttribute('data-color', 'amber');
+});
+
+// 托盘把窗口藏起来之后，待办提醒不能跟着一起消失：它走的是系统通知与语音，
+// 和那张纸是否可见无关。用假时钟直接走完一个提醒周期，不必真等 15 分钟。
+test('a hidden window still reminds you about open to-dos', async ({ page }) => {
+  await page.clock.install();
+  await page.addInitScript(() => {
+    try { Object.defineProperty(navigator, 'language', { get: () => 'zh-CN' }); } catch { /* 老浏览器 */ }
+    // 托盘隐藏后的页面状态：hidden，但提醒必须照常发。
+    try { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); } catch { /* 老浏览器 */ }
+    window.__notified = [];
+    window.bao = {
+      serverUrl: location.origin,
+      getConfig: () => Promise.resolve({ notesRemindMinutes: 15, notesNotify: true }),
+      saveConfig: () => Promise.resolve({}),
+      getAutostart: () => Promise.resolve({ enabled: false }),
+      setAutostart: () => Promise.resolve({ enabled: false }),
+      getNotes: () => Promise.resolve({
+        day: '2026-11-25', items: [], open: 2, done: 0, doneToday: 0, olderOpen: 0,
+      }),
+      saveNotes: () => Promise.resolve({}),
+      contentSize: () => {}, hotRect: () => {}, onCursor: () => {},
+      notify: (title, body) => window.__notified.push({ title, body }),
+      openTerminal: () => {}, trayStatus: () => {}, quit: () => {},
+      dragStart: () => {}, dragEnd: () => {},
+    };
+  });
+  await page.reload();
+  // 假时钟下 waitForFunction 的轮询也会被冻住，改用 Node 侧轮询。
+  await expect.poll(() => page.evaluate(() => !document.getElementById('memo-badge').hidden)).toBe(true);
+  await page.clock.fastForward(16 * 60 * 1000);
+  await expect.poll(() => page.evaluate(() => (window.__notified || []).map((n) => n.title)))
+    .toContain('待办提醒');
 });
 
 // 设置里的卡住阈值必须真的决定提醒时机，而不只是诊断文案。

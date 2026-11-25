@@ -1006,8 +1006,13 @@ import {
 
   function notifySlots(slots) {
     if (!inElectron || !bridge.notify) return;
-    if (isDnd()) return;
     const list = slots || [];
+    // 勿扰 / 全局静音只有一个含义：现在不要打扰。但它们仍然要**记账**（下面
+    // slotSeen 照常更新），只是不弹。以前勿扰在这里直接 return，连记账一起跳过，
+    // 于是解除勿扰后的第一帧会把几小时前就结束的 busy→idle 当成「刚刚完成」，
+    // 补一条关于过去时的假通知。逐软件静音（isAgentMuted）一直是这么做的，
+    // 两者现在遵循同一条规则；「卡住提醒」是另一条通道，仍然会在解除后补发。
+    const silent = isDnd() || isMuted();
     const seeding = !notifySeeded && Date.now() < notifyArmedAt;
     if (list.some((s) => s && s.count)) notifySeeded = true;
     // 这一帧里消失的软件（关掉/退出/被清空）也要把记录清掉，理由同下面的离线槽位。
@@ -1042,8 +1047,8 @@ import {
       if ((finished || s.state === 'done') && cfg.notifyDone === false) continue;
       const now = Date.now();
       if (now - (slotNotifiedAt.get(s.agent) || 0) < 6000) continue;
-      // 静音期间不弹，也不记时间戳：解除静音后如果状态还在，下一次变化自然会提醒。
-      if (isMuted()) continue;
+      // 勿扰 / 静音期间不弹，也不记时间戳：解除后如果状态又变了一次，照常提醒。
+      if (silent) continue;
       slotNotifiedAt.set(s.agent, now);
       bridge.notify(`${displayName(s.agent)} ${text}`, '');
     }
@@ -1750,6 +1755,13 @@ import {
     if (!previewing) notifySlots(notifyRows);
     renderFuel(snap.fuel);
     if (!previewing) notifyFuel(snap.fuel);
+    // 托盘把窗口藏起来（Ctrl+Alt+B / 托盘菜单）之后，页面是 hidden —— 但
+    // 「看不见」不等于「听不见」。系统通知、提示音、语音、卡住提醒、托盘 tooltip
+    // 全都由这条渲染路径驱动，以前在 onmessage 里直接跳过整帧，于是「需要你」
+    // 既不弹也不响，直到用户想起来把机器人显示回来（那时提醒早已过期）。
+    // 上面的提醒一处都不能少；真正需要像素的重建（pill / 展开行 / 铭牌 / 热区）
+    // 留到重新可见时由 visibilitychange 那次 render 补画。
+    if (document.hidden) return;
     // sessions arrive newest-first, so [0] is the software that spoke last
     const liveTop = sessions[0];
     if (!previewing) {
@@ -1859,9 +1871,10 @@ import {
       let snap;
       try { snap = JSON.parse(e.data); } catch (_) { return; }
       lastSnap = snap;
-      // 藏起来时别重建 DOM：把快照记下，等可见了再 render 一次补齐。
-      if (document.hidden) { snapDirty = true; return; }
-      snapDirty = false;
+      // 藏起来时不重建列表（render 会在提醒之后提前返回），但提醒本身照常执行：
+      // 系统通知、提示音、语音、托盘 tooltip 都不依赖窗口是否可见。快照标脏，
+      // 重新可见时补一次完整重绘。
+      snapDirty = document.hidden;
       // 心跳帧的唯一作用是让 quietFor 往前走（卡住检测依赖它）。状态没变时
       // 不重写 pill / 槽位 / 铭牌 —— 一个常驻窗口每次心跳都重排 DOM 是要耗电的，
       // 而这条通道每 30 秒就来一次。
@@ -2456,11 +2469,13 @@ import {
   setInterval(refreshNotes, 15_000);
   // 提醒：只在有未完成、没静音、没过勿扰时出现，频率由设置里的「提醒间隔」决定。
   // 它只 flash 一行字 / 弹通知，绝不改变灯的颜色。
+  // 窗口藏起来不算「不需要提醒」：系统通知与语音不依赖那张纸是否可见，否则托盘
+  // 隐藏机器人（Ctrl+Alt+B）之后，待办就再也不会提醒你。
   setInterval(() => {
     const open = Number(notesState.open) || 0;
     const mins = NOTES_REMIND_CHOICES.includes(Number(cfg.notesRemindMinutes))
       ? Number(cfg.notesRemindMinutes) : 30;
-    if (!open || mins <= 0 || document.hidden) return;
+    if (!open || mins <= 0) return;
     if (isMuted() || isDnd()) return;
     if (Date.now() < memoSnoozeUntil) return;
     if (Date.now() - noteRemindAt < mins * 60_000) return;
