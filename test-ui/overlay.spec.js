@@ -356,6 +356,10 @@ test('the need group puts the longest wait first and says how long', async ({ pa
 // 静默超过阈值（默认 10 分钟）的「运行中」不能再是绿色：它是不确定，可能卡住。
 // 这是用户看到的「只会显示一种绿色」的直接来源。
 test('a running software silent past the stale window turns grey, not green', async ({ page }) => {
+  await page.evaluate(() => {
+    window.__renders = [];
+    window.addEventListener('bao:render', (e) => window.__renders.push(e.detail));
+  });
   await api('/state', { session: 'stuck', agent: 'claude', state: 'busy', detail: 'running Bash' });
   await settled(page, () => document.body.dataset.state).toBe('busy');
 
@@ -370,6 +374,11 @@ test('a running software silent past the stale window turns grey, not green', as
     await settled(page, () => document.querySelector('.pill[data-agent="claude"] span')?.textContent)
       .toContain('静默 2 分钟');
     await settled(page, () => document.body.dataset.state).toBe('unknown');
+    // 灯环上「最后说话的软件」那一小段也必须降级：主灯已经灰了，它不能还绿着。
+    await settled(page, () => {
+      const last = window.__renders[window.__renders.length - 1];
+      return last ? last.live : null;
+    }).toBe('#ccd3dc');
   } finally {
     store.staleBusyMs = 10 * 60 * 1000;
   }

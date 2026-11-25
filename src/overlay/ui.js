@@ -1764,9 +1764,12 @@ import {
     if (document.hidden) return;
     // sessions arrive newest-first, so [0] is the software that spoke last
     const liveTop = sessions[0];
+    // 静默超时的「运行中」已经降级成「不确定」，那条「最后说话的软件」的小灯
+    // 也必须跟着降级：主灯和它同时在说两种话，是用户最难解释的一种不一致。
+    const liveState = liveTop ? viewState(liveTop) : null;
     if (!previewing) {
       publish(displayState, color, slots, agentLabel,
-        liveTop ? HEX[COLOR[liveTop.state]] : null,
+        liveState ? HEX[COLOR[liveState]] : null,
         activeAgents(snap, slots, worstKey));
     }
 
