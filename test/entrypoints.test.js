@@ -60,6 +60,32 @@ test('the supervisor passes every start flag through to the foreground child', (
   assert.ok(!normal.includes('--no-watch'));
 });
 
+// 已经有 server 在跑时，`bao start --browser` 仍必须是「开浏览器标签」。以前
+// 这条分支只看「要不要开窗口」，会把用户明确要求的浏览器模式悄悄换成桌面窗口。
+test('an already-running server still honours --browser', () => {
+  const { startDecision } = require('../src/cli');
+  assert.equal(startDecision({}, null), 'start');
+  assert.equal(startDecision({ browser: true }, { port: 4747, clients: 0 }), 'browser');
+  assert.equal(startDecision({ browser: true }, { port: 4747, clients: 2 }), 'browser');
+  // 没有 --browser 时：已经有窗口就什么都不做，只有 server 才把窗口接上去。
+  assert.equal(startDecision({}, { port: 4747, clients: 1 }), 'already');
+  assert.equal(startDecision({}, { port: 4747, clients: 0 }), 'attach');
+  assert.equal(startDecision({ 'no-overlay': true }, { port: 4747, clients: 0 }), 'already');
+});
+
+test('openBrowser hands the URL to the Windows shell, never to an Electron window', () => {
+  const { openBrowser } = require('../src/cli');
+  const calls = [];
+  const url = openBrowser(4799, {
+    spawnImpl: (cmd, args) => { calls.push({ cmd, args }); return { on() {} }; },
+  });
+  assert.equal(url, 'http://127.0.0.1:4799/');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].cmd, /cmd(\.exe)?$/i);
+  assert.deepEqual(calls[0].args.slice(0, 4), ['/d', '/c', 'start', '']);
+  assert.equal(calls[0].args[4], url, 'the address is opened in the default browser');
+});
+
 test('boolean flags are not stolen by the positional argument behind them', () => {
   const { parse } = require('../src/cli');
   const { flags, positional } = parse(['start', '--no-overlay', '--no-watch', '--port', '4817']);

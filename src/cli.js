@@ -278,6 +278,34 @@ function needsWindow(flags = {}) {
   return !flags['no-overlay'] && !flags.browser;
 }
 
+// 在系统默认浏览器里打开机器人页面。Windows 的 `start` 是 cmd 内建命令，没有
+// 可执行文件可查，必须交给 cmd。不走 shell: true —— Node 24 起它会在 stderr 打
+// 一条 DEP0190 弃用警告，而用户看到的应当是「打开了浏览器」。
+// 第一个参数空字符串是 start 的窗口标题占位（`start "标题" 目标`）。
+// `spawnImpl` 只给测试注入，生产路径永远是 child_process.spawn。
+function openBrowser(port, { spawnImpl = spawn } = {}) {
+  const url = `http://127.0.0.1:${port}/`;
+  const child = spawnImpl(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '', url], {
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  if (child && typeof child.on === 'function') child.on('error', () => {});
+  return url;
+}
+
+// 已经有一个 server 在跑时，`bao start` 该做什么。
+//   browser -> 用户要的是浏览器标签（即使 server 已经在跑，也不能改成开窗口）
+//   attach  -> 服务器在、窗口不在：只把窗口接上去
+//   already -> 什么都不用做
+//   start   -> 没有 server：照常启动
+// 拆成纯函数是为了让「--browser 被静默换成桌面窗口」这条回归有测试钉住。
+function startDecision(flags = {}, running = null) {
+  if (!running) return 'start';
+  if (flags.browser) return 'browser';
+  if (running.clients > 0 || flags['no-overlay']) return 'already';
+  return 'attach';
+}
+
 // 首次运行：窗口运行时不在时，先在这个进程里同步装好，再脱离终端。
 // 以前把下载留给脱离后的子进程 —— 它的 stdio 是 ignore，用户看不到任何进度，
 // 而父进程 180 秒后就 taskkill 整棵树：慢网络上必然得到一次「启动失败」。
@@ -312,17 +340,23 @@ async function cmdStartDetached(flags) {
   }
 
   const running = await client.health();
-  if (running && (running.clients > 0 || flags['no-overlay'])) {
-    console.log(`${c.dim('already running on port ' + running.port)}`);
-    console.log(c.dim('  stop it with:  bao stop'));
-    return;
-  }
-
-  // A server with no robot attached is not a desk robot — you closed the
-  // window and the state kept flowing to nobody.
-  if (running) {
-    console.log(c.dim('server already running — opening the robot'));
-    return cmdOverlay(flags);
+  // 已经有一个 server 在跑时，`--browser` 仍然表示「在浏览器里看」：不能因为
+  // 我们不需要再起 server，就把它悄悄换成打开桌面窗口。其余情况见 startDecision。
+  switch (startDecision(flags, running)) {
+    case 'browser':
+      console.log(`robot in browser: ${openBrowser(Number(running.port) || port)}`);
+      return;
+    case 'already':
+      console.log(`${c.dim('already running on port ' + running.port)}`);
+      console.log(c.dim('  stop it with:  bao stop'));
+      return;
+    case 'attach':
+      // A server with no robot attached is not a desk robot — you closed the
+      // window and the state kept flowing to nobody.
+      console.log(c.dim('server already running — opening the robot'));
+      return cmdOverlay(flags);
+    default:
+      break;
   }
 
   // 窗口运行时在这里、带着用户的终端装好，**然后**才脱离终端。需要的下载
@@ -514,16 +548,7 @@ async function cmdStart(flags) {
   }
 
   if (flags.browser) {
-    const url = `http://127.0.0.1:${port}/`;
-    // Windows 的 `start` 是 cmd 内建命令，没有可执行文件可查，必须交给 cmd。
-    // 不走 shell: true —— Node 24 起它会在 stderr 打一条 DEP0190 弃用警告，
-    // 而用户看到的应当是「打开了浏览器」，不是一段无关的警告。
-    // 第一个参数空字符串是 start 的窗口标题占位（`start "标题" 目标`）。
-    spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '', url], {
-      stdio: 'ignore',
-      windowsHide: true,
-    }).on('error', () => {});
-    console.log(`robot in browser: ${url}`);
+    console.log(`robot in browser: ${openBrowser(port)}`);
     return hold();
   }
 
@@ -1420,4 +1445,7 @@ if (require.main === module) {
   main().catch((err) => { console.error(err.message || err); process.exit(1); });
 }
 
-module.exports = { parse, printStatus, startChildArgs, needsWindow, ensureWindowRuntime };
+module.exports = {
+  parse, printStatus, startChildArgs, needsWindow, ensureWindowRuntime,
+  openBrowser, startDecision,
+};
