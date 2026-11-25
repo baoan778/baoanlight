@@ -153,7 +153,7 @@ bao stop               # 全部关闭
 ## 开发与测试
 
 ```bash
-npm test               # 275 个逻辑测试（状态机、适配器、鉴权、安装器、自愈…）
+npm test               # 278 个逻辑测试（状态机、适配器、鉴权、安装器、自愈…）
 npx playwright test    # 154 个渲染测试（真实浏览器里的界面与落地页）
 npm run test:electron  # 12 项 Electron 主进程烟测（需先 npm run setup）
 npm run lint           # 未定义 / 未使用的变量、重复键、死代码
