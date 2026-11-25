@@ -36,10 +36,13 @@ function post(pathname, payload, { timeout = 1200 } = {}) {
             + ' or restart with `bao stop && bao start`.\n'
           );
         }
-        let out = '';
-        res.on('data', (c) => (out += c));
+        // 和 server 的 readBody 同一条规矩：按字节收，最后一次性解码。
+        // `out += chunk` 会对每个 TCP 分片各做一次 UTF-8 解码，一个中文字符
+        // 正好跨在两个分片之间时，两边都会变成 U+FFFD（详情里的「�」）。
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
         res.on('end', () => {
-          try { resolve(JSON.parse(out)); } catch { resolve(null); }
+          try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { resolve(null); }
         });
         // 响应流中途出错（server 被 kill、连接被重置）时错误是异步 emit 的：
         // 没有监听器就是未捕获异常，钩子进程以非 0 退出 —— 正好违反「钩子
@@ -58,10 +61,10 @@ function get(pathname, { timeout = 1200, port } = {}) {
     const req = http.get(
       { host: '127.0.0.1', port: Number(port) || config.runningPort(), path: pathname, timeout },
       (res) => {
-        let out = '';
-        res.on('data', (c) => (out += c));
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
         res.on('end', () => {
-          try { resolve(JSON.parse(out)); } catch { resolve(null); }
+          try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { resolve(null); }
         });
         res.on('error', () => resolve(null));
       }

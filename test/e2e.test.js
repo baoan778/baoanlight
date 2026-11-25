@@ -72,11 +72,42 @@ test('health can be asked about a specific port, and a dead one is not baoanligh
   assert.equal(await client.healthAt(1), null, 'a closed port is not an answer');
 });
 
+// 响应按 TCP 分片到达，而一个中文字符可能跨在两个分片之间。`out += chunk`
+// 会对每个分片各做一次 UTF-8 解码，半个字符被解成 U+FFFD —— 详情与日志里的
+// 「�」就是这么来的。客户端必须像 server 的 readBody 一样按字节收、最后解码。
+test('a response split mid-character is decoded, not turned into replacement marks', async () => {
+  const http = require('node:http');
+  const client = require('../src/client');
+  const text = '完成：中文与 emoji 😀';
+  const json = `{"text":${JSON.stringify(text)}}`;
+  const body = Buffer.from(json, 'utf8');
+  // 切在第一个中文字符的字节中间（「中」是 3 字节，切在它第 2 个字节之后）。
+  const cut = Buffer.byteLength(json.slice(0, json.indexOf('中'))) + 2;
+  const srv = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.write(body.subarray(0, cut));
+    setTimeout(() => res.end(body.subarray(cut)), 30);
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  const previousPort = process.env.BAOANLIGHT_PORT;
+  process.env.BAOANLIGHT_PORT = String(port);
+  try {
+    const got = await client.get('/x', { port });
+    assert.equal(got && got.text, text, 'GET decodes the whole character');
+    const posted = await client.post('/x', {});
+    assert.equal(posted && posted.text, text, 'POST decodes it too');
+  } finally {
+    if (previousPort === undefined) delete process.env.BAOANLIGHT_PORT;
+    else process.env.BAOANLIGHT_PORT = previousPort;
+    await new Promise((r) => srv.close(r));
+  }
+});
+
 // A running server with nobody watching is not a running traffic light. `sig
 // start` used to see the server, say "already running", and leave you staring
 // at a desktop with no window on it.
-test('health says how many overlays are actually watching', async () => {
-  const h = await api('/health');
+test('health says how many overlays are actually watching', async () => {  const h = await api('/health');
   assert.equal(typeof h.clients, 'number', 'health must report watcher count');
   assert.equal(h.clients, 0, 'no overlay is attached in tests');
 });
