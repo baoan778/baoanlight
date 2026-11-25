@@ -95,6 +95,8 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
   });
 
   const clients = new Set();
+  // 合并短时间内的多次状态变化（见下面 store.on('change') 的注释）。
+  let broadcastTimer = null;
 
   // 轻量事件日志：环形缓冲，`bao log` 或 `/log` 读取。只记「有意义」的事 ——
   // 状态切换、被拒绝的写入、读不懂的事件 —— 不落盘，重启即清。常驻进程里
@@ -381,8 +383,19 @@ function start({ port = config.port(), ttlMs, idleTtlMs, quietAfterMs, unusedTtl
   process.once('exit', flushStats);
 
   store.on('change', () => {
-    const line = `data: ${JSON.stringify(frame())}\n\n`;
-    for (const c of clients) { try { c.write(line); } catch { clients.delete(c); } }
+    // 没有窗口在听就什么都不用做：新连接建立时会立刻收到一帧完整快照。
+    if (!clients.size) return;
+    if (broadcastTimer) return;
+    // 一条广播 = 一次完整快照的序列化 + 每个窗口一次 socket 写入。钩子和观察器
+    // 忙起来时会在几十毫秒内连报好几条（多个会话同时变化），把同一个窗口里的
+    // 变化合并成一帧：客户端看到的仍是最新状态，中间帧本来也会被下一帧覆盖。
+    // 50ms 远低于人眼可辨的延迟，也低于任何轮询粒度。
+    broadcastTimer = setTimeout(() => {
+      broadcastTimer = null;
+      const line = `data: ${JSON.stringify(frame())}\n\n`;
+      for (const c of clients) { try { c.write(line); } catch { clients.delete(c); } }
+    }, 50);
+    if (broadcastTimer.unref) broadcastTimer.unref();
   });
 
   // 心跳：snapshot 里的 quietFor 是「算的那一刻」的静止时长，而 change 只在
