@@ -17,7 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const { setState } = require('../client');
-const { keepAliveWith } = require('./watchdog');
+const { keepAliveWith, registerStopSignals } = require('./watchdog');
 const agents = require('./agents');
 
 const POLL_MS = 1500;
@@ -301,7 +301,9 @@ function run({
   const timer = setInterval(tick, interval);
 
   let watchServer = null;
+  let offSignals = () => {};
   const stop = () => {
+    offSignals();
     clearInterval(timer);
     if (watchServer) clearInterval(watchServer);
     const jobs = [];
@@ -316,7 +318,7 @@ function run({
     if (manual) return undefined;
     return Promise.allSettled(jobs).finally(() => process.exit(0));
   };
-  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, stop);
+  offSignals = registerStopSignals(stop, manual);
   // server 重启后把还活着的会话重报一遍：store 是新的，transcript 还在，
   // 但会话要等下一条记录才会重新出现。
   const resend = () => {

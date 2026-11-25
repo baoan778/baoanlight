@@ -33,4 +33,22 @@ function keepAliveWith(stop, { everyMs = 20_000, missesAllowed = 3, onRecover } 
   return timer;
 }
 
-module.exports = { keepAliveWith };
+// 每个观察器都要响应 Ctrl+C，但 `bao watch all` 在同一个进程里跑四个观察器：
+// 8 个 SIGINT/SIGTERM 监听器一叠加，Node 就会在启动时打印
+// MaxListenersExceededWarning —— 一次完全正常的启动，看起来却像内存泄漏。
+// `manual` 模式（watch all、测试）由调用方统一处理信号，这里不注册；其余情况
+// 注册并在 stop 时摘掉，反复启停也不会越积越多。返回的函数是幂等的。
+function registerStopSignals(stop, manual) {
+  if (manual) return () => {};
+  const onSignal = () => stop();
+  const signals = ['SIGINT', 'SIGTERM'];
+  for (const sig of signals) process.on(sig, onSignal);
+  let removed = false;
+  return () => {
+    if (removed) return;
+    removed = true;
+    for (const sig of signals) process.removeListener(sig, onSignal);
+  };
+}
+
+module.exports = { keepAliveWith, registerStopSignals };

@@ -25,7 +25,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { setState } = require('../client');
-const { keepAliveWith } = require('./watchdog');
+const { keepAliveWith, registerStopSignals } = require('./watchdog');
 
 // 首次看到一份投影时，只要「刚刚结束」的 idle 才值得补发。一个几十分钟前
 // 就完成的会话，在观察器每次重启后都重新占一行，列表会越长越乱。
@@ -259,7 +259,9 @@ function run(opts = {}) {
   const timer = setInterval(scan, pollMs);
 
   let watchServer = null;
+  let offSignals = () => {};
   const stop = () => {
+    offSignals();
     clearInterval(timer);
     if (watchServer) clearInterval(watchServer);
     const jobs = [];
@@ -274,7 +276,7 @@ function run(opts = {}) {
     if (opts.manual) return undefined;
     return Promise.allSettled(jobs).finally(() => process.exit(0));
   };
-  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, stop);
+  offSignals = registerStopSignals(stop, opts.manual);
   // server 重启回来之后把还活着的会话连同上下文电量重报：store 是新的，
   // 投影文件还在，但会话要等下一条变化才会重新出现。
   const resend = () => {

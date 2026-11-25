@@ -374,3 +374,39 @@ test('the workbuddy task board reports only what it can prove', () => {
   assert.equal(tasks.deriveTaskState([]), null);
   assert.equal(tasks.deriveTaskState([{ status: 'cancelled' }]), 'idle');
 });
+
+// `bao watch all` 在同一个进程里跑四个观察器。每个都注册一对 SIGINT/SIGTERM，
+// 再加上 CLI 自己的三个，一次完全正常的启动就会打印
+// MaxListenersExceededWarning —— 用户看到的像「内存泄漏」，其实只是重复注册。
+// manual 模式（watch all / 测试）不该注册；其他模式注册了也必须在 stop 时摘掉。
+test('watchers do not stack signal listeners in a shared process', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const { registerStopSignals } = require('../src/adapters/watchdog');
+  const before = {
+    int: process.listenerCount('SIGINT'),
+    term: process.listenerCount('SIGTERM'),
+  };
+
+  const off = registerStopSignals(() => {}, false);
+  assert.equal(process.listenerCount('SIGINT'), before.int + 1);
+  assert.equal(process.listenerCount('SIGTERM'), before.term + 1);
+  off();
+  off();   // 幂等：stop 被调用两次（信号 + watchdog）不能摘掉别人的监听器
+  assert.equal(process.listenerCount('SIGINT'), before.int);
+  assert.equal(process.listenerCount('SIGTERM'), before.term);
+
+  const noop = registerStopSignals(() => {}, true);
+  assert.equal(process.listenerCount('SIGINT'), before.int, 'manual mode registers nothing');
+  noop();
+
+  // 真的跑一次观察器：启动和停止都不该改变监听器数量。
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bao-signals-'));
+  const handle = logWatch.run({ agent: 'codex', dir, interval: 50, quiet: true, manual: true });
+  assert.equal(process.listenerCount('SIGINT'), before.int);
+  assert.equal(process.listenerCount('SIGTERM'), before.term);
+  handle.stop();
+  assert.equal(process.listenerCount('SIGINT'), before.int);
+  assert.equal(process.listenerCount('SIGTERM'), before.term);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

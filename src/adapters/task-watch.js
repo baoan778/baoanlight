@@ -21,7 +21,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { setState } = require('../client');
-const { keepAliveWith } = require('./watchdog');
+const { keepAliveWith, registerStopSignals } = require('./watchdog');
 
 // 「完成」是瞬态：首次看到一块任务板时，只有刚刚结束的 done 才值得重放。
 // 一块几小时前就全部完成的板子，在观察器每次重启后都重放一次 done，会多闪
@@ -212,7 +212,9 @@ function run(opts = {}) {
   const timer = setInterval(scan, pollMs);
 
   let watchServer = null;
+  let offSignals = () => {};
   const stop = () => {
+    offSignals();
     clearInterval(timer);
     if (watchServer) clearInterval(watchServer);
     // 任何还亮着的状态都要熄掉，不只是 busy：watcher 退出意味着「这个来源
@@ -228,7 +230,7 @@ function run(opts = {}) {
     // 服务端从来看不到 offline。
     return Promise.allSettled(jobs).finally(() => process.exit(0));
   };
-  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, stop);
+  offSignals = registerStopSignals(stop, opts.manual);
   // server 重启回来之后把还亮着的会话重报：任务板上的状态没变，不会触发
   // 常规的「状态变化才上报」，于是重启后这些灯要等下一次状态切换才重新亮起。
   const resend = () => {

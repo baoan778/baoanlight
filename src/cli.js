@@ -1029,6 +1029,9 @@ function cmdWatchAll(flags = {}) {
       // here — that would kill every other watcher in this process.
       const h = w.run({
         agent: name, quiet: flags.quiet, interval: flags.interval, throwOnMissing: true,
+        // 四个观察器跑在同一个进程里：信号由下面的 cmdWatchAll 统一处理，
+        // 各自再注册一对就会叠出 8 个监听器和一条 MaxListenersExceededWarning。
+        manual: true,
       });
       handles.set(name, h);
       pending.delete(name);

@@ -18,7 +18,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { keepAliveWith } = require('./watchdog');
+const { keepAliveWith, registerStopSignals } = require('./watchdog');
 const { setState } = require('../client');
 const config = require('../config');
 const agents = require('./agents');
@@ -519,8 +519,10 @@ function run(opts = {}) {
   // 机器人退出后这三条 watcher 不该变成孤儿进程：连续几次探不到 server 就自己收摊。
   // 20s × 3 的宽限，足够覆盖一次「stop 后马上 start」的重启，又不会永远赖着不走。
   let watchServer = null;
+  let offSignals = () => {};
 
   const stop = () => {
+    offSignals();
     clearInterval(timer);
     if (watchServer) clearInterval(watchServer);
     const jobs = [];
@@ -536,7 +538,7 @@ function run(opts = {}) {
     // 连接，服务端从来看不到收摊，灯就停在一个已经不存在的会话上。
     return Promise.allSettled(jobs).finally(() => process.exit(0));
   };
-  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, stop);
+  offSignals = registerStopSignals(stop, opts.manual);
 
   // server 重启回来之后，把还活着的会话连同它的电量一起重报：store 是新的，
   // 已经跟踪到的会话不会凭空自己长出来。
